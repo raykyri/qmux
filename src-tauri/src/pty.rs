@@ -51,6 +51,7 @@ const RESTORED_SCROLLBACK_TERMINAL_RESET: &[u8] = b"\x18\x1b>\x1b[0m\x1b(B\x1b[4
 // restore and any trim still close a mid-alternate-screen entry.
 const LIVE_PANE_TERMINAL_MODE_RESET: &[u8] = b"\x1b>\x1b[0m\x1b(B\x1b[4l\x1b[?1l\x1b[?7h\x1b[?9l\x1b[?25h\x1b[?45l\x1b[?66l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?2004l\x1b[?2026l\x1b[>4;0m\x1b[=0u";
 const SUBMIT_KEY_DELAY: Duration = Duration::from_millis(15);
+const NATIVE_INPUT_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_PTY_COLS: u16 = 100;
 const DEFAULT_PTY_ROWS: u16 = 24;
 const MIN_INITIAL_COLS: u16 = 20;
@@ -102,8 +103,13 @@ static DEFERRED_ATTACHES: std::sync::LazyLock<Mutex<HashSet<String>>> =
 /// queueing keeps it from blocking on a full PTY buffer — a TUI stopped with
 /// ^S/SIGSTOP would otherwise wedge the callback's thread until the child
 /// drained. The map lock is only ever held for a lookup/insert/remove.
+enum NativeInputMessage {
+    Data(Vec<u8>),
+    Flush(std::sync::mpsc::SyncSender<Result<u64, String>>),
+}
+
 static NATIVE_INPUT_SENDERS: std::sync::LazyLock<
-    Mutex<HashMap<String, std::sync::mpsc::Sender<Vec<u8>>>>,
+    Mutex<HashMap<String, std::sync::mpsc::Sender<NativeInputMessage>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -1215,19 +1221,32 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
 /// Binds the shared native sequencing to the concrete bridge calls for
 /// `options.pane_id`.
 fn dispatch_native_pane_input(state: &AppState, options: &PaneWriteOptions) -> Result<(), String> {
-    // A submit that carries its own paste is delivered atomically: paste and Return in
-    // one main-actor hop (see native_terminal::paste_and_submit) so the Return can't
-    // reach the pty ahead of a still-in-flight paste. This replaces the generic
-    // paste → fixed-delay → Return sequence below, whose cross-hop gap left that
-    // reorder window open. Hold the per-pane send lock across the whole sequence so it
-    // serializes against other submits, exactly as write_pane_sequenced does.
-    if options.paste && options.submit {
+    // Native input takes an extra asynchronous hop through the per-pane PTY writer.
+    // A successful Ghostty paste/keypress call therefore only means its bytes were
+    // queued, not that the child received them. Put acknowledged writer barriers on
+    // both sides of the submit delay: the paste must be written and flushed before the
+    // delay starts, and Return must be written and flushed before this turn is reported
+    // delivered. The barriers also stop the writer's ordinary keystroke coalescer from
+    // merging the paste and Return back into one PTY write.
+    if options.submit {
         let send_lock = state.pane_send_lock(&options.pane_id);
         let _send_guard = send_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let data = strip_bracketed_paste_markers(&options.data);
-        return crate::native_terminal::paste_and_submit(&options.pane_id, &data);
+        return write_native_data_and_submit(
+            &data,
+            || {
+                if options.paste {
+                    crate::native_terminal::paste_approved_text(&options.pane_id, &data)
+                } else {
+                    crate::native_terminal::send_text(&options.pane_id, &data)
+                }
+            },
+            || crate::native_terminal::submit(&options.pane_id),
+            || flush_native_host_input(&options.pane_id),
+            SUBMIT_KEY_DELAY,
+        );
     }
     write_native_pane_input(
         state,
@@ -1236,6 +1255,31 @@ fn dispatch_native_pane_input(state: &AppState, options: &PaneWriteOptions) -> R
         |data| crate::native_terminal::paste_approved_text(&options.pane_id, data),
         || crate::native_terminal::submit(&options.pane_id),
     )
+}
+
+fn write_native_data_and_submit(
+    data: &str,
+    emit_data: impl FnOnce() -> Result<(), String>,
+    submit: impl FnOnce() -> Result<(), String>,
+    mut flush_input: impl FnMut() -> Result<u64, String>,
+    submit_key_delay: Duration,
+) -> Result<(), String> {
+    let before_data = flush_input()?;
+    emit_data()?;
+    let after_data = flush_input()?;
+    if !data.is_empty() && after_data <= before_data {
+        return Err("native terminal accepted input action but emitted no PTY input".to_string());
+    }
+
+    if !submit_key_delay.is_zero() {
+        thread::sleep(submit_key_delay);
+    }
+    submit()?;
+    let after_submit = flush_input()?;
+    if after_submit <= after_data {
+        return Err("native terminal accepted submit key but emitted no PTY input".to_string());
+    }
+    Ok(())
 }
 
 fn write_native_pane_input(
@@ -1436,11 +1480,12 @@ pub fn write_native_host_input(
         .get(pane_id)
         .cloned();
     let bytes = match sender {
-        Some(sender) => match sender.send(bytes) {
+        Some(sender) => match sender.send(NativeInputMessage::Data(bytes)) {
             Ok(()) => return Ok(()),
             // The writer thread exited (write failure, teardown race); fall
             // through to the synchronous write so the error surfaces here.
-            Err(std::sync::mpsc::SendError(bytes)) => bytes,
+            Err(std::sync::mpsc::SendError(NativeInputMessage::Data(bytes))) => bytes,
+            Err(std::sync::mpsc::SendError(NativeInputMessage::Flush(_))) => unreachable!(),
         },
         None => bytes,
     };
@@ -1454,6 +1499,26 @@ pub fn write_native_host_input(
         .write_all(&bytes)
         .and_then(|()| writer.flush())
         .map_err(|err| format!("failed to write native pane {pane_id}: {err}"))
+}
+
+/// Waits until every native input message queued before this call has reached
+/// the PTY and returns the cumulative number of bytes written by this pane's
+/// input worker. The position lets programmatic paste/submit callers verify
+/// that Ghostty actually emitted bytes for each accepted action.
+fn flush_native_host_input(pane_id: &str) -> Result<u64, String> {
+    let sender = NATIVE_INPUT_SENDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(pane_id)
+        .cloned()
+        .ok_or_else(|| format!("native input writer for pane {pane_id} is unavailable"))?;
+    let (acknowledge, result) = std::sync::mpsc::sync_channel(0);
+    sender
+        .send(NativeInputMessage::Flush(acknowledge))
+        .map_err(|_| format!("native input writer for pane {pane_id} stopped before flush"))?;
+    result
+        .recv_timeout(NATIVE_INPUT_FLUSH_TIMEOUT)
+        .map_err(|_| format!("timed out flushing native input for pane {pane_id}"))?
 }
 
 /// Registers a native pane's input writer thread, replacing (and thereby
@@ -1484,21 +1549,68 @@ fn remove_native_input_writer(pane_id: &str) {
 fn start_native_input_writer(
     pane_id: String,
     writer: SharedWriter,
-) -> std::sync::mpsc::Sender<Vec<u8>> {
-    let (sender, receiver) = std::sync::mpsc::channel::<Vec<u8>>();
+) -> std::sync::mpsc::Sender<NativeInputMessage> {
+    let (sender, receiver) = std::sync::mpsc::channel::<NativeInputMessage>();
     thread::spawn(move || {
-        while let Ok(mut pending) = receiver.recv() {
-            // Coalesce whatever queued while this thread was busy or parked;
-            // one write+flush per batch instead of per keystroke burst.
-            while let Ok(more) = receiver.try_recv() {
-                pending.extend_from_slice(&more);
-            }
-            let Ok(mut writer) = writer.lock() else {
-                return;
+        let mut written_bytes = 0_u64;
+        while let Ok(message) = receiver.recv() {
+            let (mut pending, mut acknowledge) = match message {
+                NativeInputMessage::Data(data) => (data, None),
+                NativeInputMessage::Flush(acknowledge) => {
+                    let result = writer
+                        .lock()
+                        .map_err(|_| format!("native pane {pane_id} writer lock poisoned"))
+                        .and_then(|mut writer| {
+                            writer.flush().map_err(|err| {
+                                format!("failed to flush native pane {pane_id}: {err}")
+                            })
+                        })
+                        .map(|()| written_bytes);
+                    let failed = result.is_err();
+                    let _ = acknowledge.send(result);
+                    if failed {
+                        return;
+                    }
+                    continue;
+                }
             };
-            if let Err(err) = writer.write_all(&pending).and_then(|()| writer.flush()) {
-                eprintln!("qmux: failed to write input to native pane {pane_id}: {err}");
-                return;
+            // Coalesce adjacent data messages, but never cross an acknowledged
+            // flush barrier. Programmatic paste/submit uses that barrier to retain
+            // its PTY-level separation; ordinary keystroke bursts stay amortized.
+            while let Ok(more) = receiver.try_recv() {
+                match more {
+                    NativeInputMessage::Data(data) => pending.extend_from_slice(&data),
+                    NativeInputMessage::Flush(flush) => {
+                        acknowledge = Some(flush);
+                        break;
+                    }
+                }
+            }
+            let result = writer
+                .lock()
+                .map_err(|_| format!("native pane {pane_id} writer lock poisoned"))
+                .and_then(|mut writer| {
+                    writer
+                        .write_all(&pending)
+                        .and_then(|()| writer.flush())
+                        .map_err(|err| {
+                            format!("failed to write input to native pane {pane_id}: {err}")
+                        })
+                });
+            match result {
+                Ok(()) => {
+                    written_bytes = written_bytes.saturating_add(pending.len() as u64);
+                    if let Some(acknowledge) = acknowledge {
+                        let _ = acknowledge.send(Ok(written_bytes));
+                    }
+                }
+                Err(err) => {
+                    if let Some(acknowledge) = acknowledge {
+                        let _ = acknowledge.send(Err(err.clone()));
+                    }
+                    eprintln!("qmux: {err}");
+                    return;
+                }
             }
         }
     });
@@ -2278,7 +2390,9 @@ mod tests {
         // The registered fast path must accept both writes without consulting
         // pane state (no pane exists in this test AppState).
         write_native_host_input(&state, pane_id, b"hello ".to_vec()).unwrap();
+        assert_eq!(flush_native_host_input(pane_id).unwrap(), 6);
         write_native_host_input(&state, pane_id, b"world".to_vec()).unwrap();
+        assert_eq!(flush_native_host_input(pane_id).unwrap(), 11);
 
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while sink.lock().unwrap().len() < 11 && std::time::Instant::now() < deadline {
@@ -2666,30 +2780,56 @@ mod tests {
     }
 
     #[test]
-    fn native_submission_uses_approved_paste_then_submit_key() {
-        let state = test_state();
-        let options = write_options("test", true, true);
+    fn native_submission_flushes_paste_and_submit_separately() {
         let calls = RefCell::new(Vec::new());
+        let positions = RefCell::new(vec![0_u64, 12, 13].into_iter());
 
-        write_native_pane_input(
-            &state,
-            &options,
-            |data| {
-                calls.borrow_mut().push(format!("text:{data:?}"));
-                Ok(())
-            },
-            |data| {
-                calls.borrow_mut().push(format!("paste:{data:?}"));
+        write_native_data_and_submit(
+            "test",
+            || {
+                calls.borrow_mut().push("paste".to_string());
                 Ok(())
             },
             || {
-                calls.borrow_mut().push("submit-key".to_string());
+                calls.borrow_mut().push("submit".to_string());
                 Ok(())
             },
+            || {
+                calls.borrow_mut().push("flush".to_string());
+                positions
+                    .borrow_mut()
+                    .next()
+                    .ok_or_else(|| "unexpected flush".to_string())
+            },
+            Duration::ZERO,
         )
         .unwrap();
 
-        assert_eq!(calls.into_inner(), ["paste:\"test\"", "submit-key"]);
+        assert_eq!(
+            calls.into_inner(),
+            ["flush", "paste", "flush", "submit", "flush"]
+        );
+    }
+
+    #[test]
+    fn native_submission_rejects_a_submit_that_emits_no_bytes() {
+        let positions = RefCell::new(vec![0_u64, 12, 12].into_iter());
+
+        let err = write_native_data_and_submit(
+            "test",
+            || Ok(()),
+            || Ok(()),
+            || {
+                positions
+                    .borrow_mut()
+                    .next()
+                    .ok_or_else(|| "unexpected flush".to_string())
+            },
+            Duration::ZERO,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("submit key"));
     }
 
     fn spawn_test_pty(state: &AppState, pane_id: &str, args: Vec<String>) -> PaneInfo {

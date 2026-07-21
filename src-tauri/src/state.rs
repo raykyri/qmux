@@ -444,6 +444,7 @@ pub struct ResearchWorkspaceDependencies {
 struct AgentSendTracking {
     outstanding_sends: VecDeque<AgentOutstandingSend>,
     ups_seq: u64,
+    next_send_id: u64,
 }
 
 /// Backstop lifetime for an outstanding send that never echoes a UserPromptSubmit.
@@ -482,6 +483,8 @@ pub enum AgentSendSource {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentOutstandingSend {
+    #[serde(default)]
+    pub id: u64,
     pub text: String,
     pub sent_at_seq: u64,
     #[serde(default)]
@@ -7663,7 +7666,7 @@ impl AppState {
         agent_id: &str,
         text: String,
         source: AgentSendSource,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         let mut model = self
             .inner
             .model
@@ -7674,13 +7677,16 @@ impl AppState {
             .entry(agent_id.to_string())
             .or_default();
         tracking.prune_expired(now_millis());
+        tracking.next_send_id = tracking.next_send_id.wrapping_add(1).max(1);
+        let send_id = tracking.next_send_id;
         tracking.outstanding_sends.push_back(AgentOutstandingSend {
+            id: send_id,
             text,
             sent_at_seq: tracking.ups_seq,
             sent_at_ms: now_millis(),
             source,
         });
-        Ok(())
+        Ok(send_id)
     }
 
     pub fn match_agent_prompt_submit(
@@ -7829,6 +7835,57 @@ impl AppState {
                     .iter()
                     .any(|send| send.source == source)
             }))
+    }
+
+    /// Whether the exact send recorded by `record_agent_send` is still waiting for
+    /// its prompt-submit echo. Unlike a source-wide query, this cannot mistake an
+    /// older or newer queued turn for the one a submit-confirmation watch owns.
+    pub fn agent_has_outstanding_send_id(
+        &self,
+        agent_id: &str,
+        send_id: u64,
+    ) -> Result<bool, String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(model
+            .agent_send_tracking
+            .get_mut(agent_id)
+            .is_some_and(|tracking| {
+                tracking.prune_expired(now_millis());
+                tracking
+                    .outstanding_sends
+                    .iter()
+                    .any(|send| send.id == send_id)
+            }))
+    }
+
+    /// Removes one exact advisory send record, used to roll back tracking when
+    /// the pane write fails after the record was reserved but before delivery.
+    pub fn remove_agent_outstanding_send_id(
+        &self,
+        agent_id: &str,
+        send_id: u64,
+    ) -> Result<bool, String> {
+        let mut model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let Some(tracking) = model.agent_send_tracking.get_mut(agent_id) else {
+            return Ok(false);
+        };
+        let Some(index) = tracking
+            .outstanding_sends
+            .iter()
+            .position(|send| send.id == send_id)
+        else {
+            return Ok(false);
+        };
+        tracking.outstanding_sends.remove(index);
+        Ok(true)
     }
 
     pub fn mark_transcript_tail(&self, agent_id: &str, path: &str) -> Result<bool, String> {
