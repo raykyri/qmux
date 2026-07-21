@@ -16,6 +16,9 @@ export type AppShortcutCommand =
   | { type: "moveSidebarItem"; direction: -1 | 1 }
   | { type: "openSettings" }
   | { type: "openCommandPalette" }
+  | { type: "newDocument" }
+  | { type: "focusFollowups" }
+  | { type: "openFolderMenu" }
   | { type: "toggleTranscriptOrBrowser" }
   | { type: "splitPaneBelow" }
   | { type: "restoreClosedPane" }
@@ -112,6 +115,16 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   if (onePrimaryModifier && !option && shift && key === "e") {
     return { type: "toggleTranscriptOrBrowser" };
   }
+  // Research-surface commands. Ghostty binds neither chord, so claiming them
+  // while a terminal is focused costs nothing (its AppKit layer swallows any
+  // unbound Command chord anyway); outside research mode they execute as
+  // no-ops.
+  if (command && !control && !option && !shift && key === "j") {
+    return { type: "focusFollowups" };
+  }
+  if (command && !control && !option && !shift && key === "o") {
+    return { type: "openFolderMenu" };
+  }
   if (command && !control && !option && key === "d") {
     return { type: "splitPaneBelow" };
   }
@@ -160,6 +173,11 @@ export function contextualizeAppShortcut(
   }
   if (sidebarMode === "research" && command.type === "cycleAllTab") {
     return { type: "cyclePaneTab", direction: command.direction };
+  }
+  // ⌘D: research has no splits, so the chord creates the other research
+  // artifact instead — a document alongside ⌘T's new query.
+  if (sidebarMode === "research" && command.type === "splitPaneBelow") {
+    return { type: "newDocument" };
   }
   return command;
 }
@@ -211,6 +229,12 @@ function appShortcutLabel(command: AppShortcutCommand): string {
       return "open settings";
     case "openCommandPalette":
       return "open the command palette";
+    case "newDocument":
+      return "create a document";
+    case "focusFollowups":
+      return "jump to the follow-ups";
+    case "openFolderMenu":
+      return "open the research folder menu";
     case "toggleTranscriptOrBrowser":
       return "toggle the transcript or browser";
     case "splitPaneBelow":
@@ -314,6 +338,9 @@ export function parseAppShortcutCommand(
     case "toggleSidebarMode":
     case "openSettings":
     case "openCommandPalette":
+    case "newDocument":
+    case "focusFollowups":
+    case "openFolderMenu":
     case "toggleTranscriptOrBrowser":
     case "splitPaneBelow":
     case "restoreClosedPane":

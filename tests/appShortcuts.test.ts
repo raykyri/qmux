@@ -119,6 +119,40 @@ test("uses command-t for new research and new panes elsewhere", () => {
   });
 });
 
+test("uses command-d for a new document on Research and splits elsewhere", () => {
+  const command = resolveAppShortcut(shortcut({ key: "d", metaKey: true }));
+  assert.deepEqual(command, { type: "splitPaneBelow" });
+  assert.deepEqual(contextualizeAppShortcut(command!, "research"), {
+    type: "newDocument",
+  });
+  assert.deepEqual(contextualizeAppShortcut(command!, "terminal"), {
+    type: "splitPaneBelow",
+  });
+});
+
+test("binds follow-up navigation and the folder menu to research chords", () => {
+  const followups = resolveAppShortcut(shortcut({ key: "j", metaKey: true }));
+  assert.deepEqual(followups, { type: "focusFollowups" });
+  const folderMenu = resolveAppShortcut(shortcut({ key: "o", metaKey: true }));
+  assert.deepEqual(folderMenu, { type: "openFolderMenu" });
+  // Mode-independent commands: App executes them only on the research
+  // surface, so contextualization leaves them alone.
+  for (const command of [followups!, folderMenu!]) {
+    assert.deepEqual(contextualizeAppShortcut(command, "research"), command);
+    assert.deepEqual(contextualizeAppShortcut(command, "terminal"), command);
+  }
+  // Modified variants stay unclaimed.
+  assert.equal(
+    resolveAppShortcut(shortcut({ key: "j", metaKey: true, shiftKey: true })),
+    null,
+  );
+  assert.equal(
+    resolveAppShortcut(shortcut({ key: "o", metaKey: true, altKey: true })),
+    null,
+  );
+  assert.equal(resolveAppShortcut(shortcut({ key: "o", ctrlKey: true })), null);
+});
+
 test("keeps the Home shortcut within the active mode", () => {
   const command = resolveAppShortcut(
     shortcut({ key: "h", metaKey: true, shiftKey: true }),
@@ -219,6 +253,15 @@ test("parses semantic commands from native payloads", () => {
   assert.deepEqual(parseAppShortcutCommand("openCommandPalette", null), {
     type: "openCommandPalette",
   });
+  assert.deepEqual(parseAppShortcutCommand("newDocument", null), {
+    type: "newDocument",
+  });
+  assert.deepEqual(parseAppShortcutCommand("focusFollowups", null), {
+    type: "focusFollowups",
+  });
+  assert.deepEqual(parseAppShortcutCommand("openFolderMenu", null), {
+    type: "openFolderMenu",
+  });
   assert.equal(parseAppShortcutCommand("launcherOrCycleAdapter", null), null);
   assert.equal(parseAppShortcutCommand("focusTab", -1), null);
   assert.equal(parseAppShortcutCommand("notACommand", null), null);
@@ -244,6 +287,11 @@ test("show/hide accelerator conflicts name the shadowed in-app shortcut", () => 
   // ⌘K only opens the palette for web targets, but a system-wide chord
   // shadows that too.
   assert.equal(showHideShortcutConflict("Command+K"), "open the command palette");
+  assert.equal(showHideShortcutConflict("Command+J"), "jump to the follow-ups");
+  assert.equal(
+    showHideShortcutConflict("Command+O"),
+    "open the research folder menu",
+  );
   // Non-colliding and non-DOM chords stay quiet.
   assert.equal(showHideShortcutConflict("Option+Space"), null);
   assert.equal(showHideShortcutConflict("Shift+Command+A"), null);
@@ -263,6 +311,9 @@ test("only pane-targeted commands are withheld from an unknown origin pane", () 
   // Everything else is pane-independent and must survive: the native monitor
   // already consumed the keystroke, so withholding these would lose it.
   assert.equal(appShortcutTargetsActivePane({ type: "toggleSidebarMode" }), false);
+  assert.equal(appShortcutTargetsActivePane({ type: "newDocument" }), false);
+  assert.equal(appShortcutTargetsActivePane({ type: "focusFollowups" }), false);
+  assert.equal(appShortcutTargetsActivePane({ type: "openFolderMenu" }), false);
   assert.equal(appShortcutTargetsActivePane({ type: "focusHome" }), false);
   assert.equal(appShortcutTargetsActivePane({ type: "openSettings" }), false);
   assert.equal(

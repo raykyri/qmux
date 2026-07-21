@@ -28,6 +28,7 @@ import {
   researchSwipeDirection,
 } from "../../lib/researchHistory";
 import { researchBranchInfo } from "../../lib/researchBranches";
+import { listenToResearchFollowupsFocus } from "../../lib/researchShortcuts";
 import {
   conversationActivityToolCalls,
   conversationToolCallLabel,
@@ -135,6 +136,8 @@ interface ResearchDocumentProps {
   onPublish: (target: PublishDialogTarget) => void;
   publicationBinding?: PublicationBinding | null;
   onPublicationBindingChange: (binding: PublicationBinding) => void;
+  /** Show held-⌘ shortcut badges (the ⌘J follow-ups hint). */
+  shortcutHintsShown: boolean;
 }
 
 // The backend caps snapshots at 64MB, which is still far beyond what markdown
@@ -1499,6 +1502,7 @@ function ResearchDocument({
   onPublish,
   publicationBinding,
   onPublicationBindingChange,
+  shortcutHintsShown,
 }: ResearchDocumentProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   // Browser-style visit history for the header's back/forward controls, reset
@@ -2412,6 +2416,26 @@ function ResearchDocument({
       mouseTarget?.removeEventListener("mouseup", onMouseUp);
     };
   }, [goBack, goForward]);
+
+  // ⌘J routed from the app-level shortcut dispatcher: bring the follow-up
+  // composer into view and hand it the caret. Focus reads the live disabled
+  // state off the textarea (archived trees, running tails) rather than
+  // re-subscribing on every composer state change; scrolling still works for
+  // a disabled composer so the chord always lands on the follow-ups area.
+  useEffect(
+    () =>
+      listenToResearchFollowupsFocus(() => {
+        const textarea = followupTextareaRef.current;
+        if (textarea && !textarea.disabled) {
+          textarea.focus({ preventScroll: true });
+        }
+        followupComposerRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+      }),
+    [],
+  );
 
   // Trackpads and horizontal mouse wheels both arrive as WheelEvents. Accumulate
   // one physical gesture until its horizontal travel is decisive, navigate once,
@@ -4548,6 +4572,14 @@ function ResearchDocument({
             <X size={12} aria-hidden="true" />
           </button>
         </div>
+      ) : null}
+      {!dockedAsk && shortcutHintsShown ? (
+        <span
+          className="pane-tab-shortcut-hint research-followup-shortcut-hint"
+          aria-hidden="true"
+        >
+          ⌘J
+        </span>
       ) : null}
       {!dockedAsk ? (
         <div

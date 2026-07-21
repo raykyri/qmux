@@ -427,6 +427,12 @@
   transform: rotate(180deg);
 }
 
+/* Held-⌘ badge for the folder menu chord, over the trigger's chevron edge.
+   The switcher root is already position: relative for the dropdown. */
+.research-folder-shortcut-hint {
+  right: 8px;
+}
+
 /* Plain count like the terminal sidebar's group counts, not a pill. */
 .research-folder-count {
   flex: none;
@@ -1331,10 +1337,20 @@
 }
 
 .research-followup-composer.is-thread {
+  /* Anchors the held-⌘ ⌘J badge to the card's corner. */
+  position: relative;
   padding: 10px 12px;
   border: 1px solid var(--surface-border-default);
   border-radius: 10px;
   background: var(--content-card-bg);
+}
+
+/* Held-⌘ badge for the follow-ups chord, on the thread composer card beside
+   the mode tabs. The base hint style centers on `top`, so pin it inside the
+   card's top padding instead of straddling the border. */
+.research-followup-shortcut-hint {
+  top: 20px;
+  right: 12px;
 }
 
 /* Terminal/cancel controls carried by a run streaming in a non-selected

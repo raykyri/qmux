@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type { GroupInfo } from "../../types";
 import type { ResearchFolderScope } from "../../lib/researchScope";
+import { listenToResearchFolderMenuToggle } from "../../lib/researchShortcuts";
 
 interface ResearchFolderSwitcherProps {
   folders: GroupInfo[];
@@ -18,6 +19,8 @@ interface ResearchFolderSwitcherProps {
   // Tree counts (active + archived) keyed by workspace id for the menu badges.
   treeCounts: Map<string, number>;
   folderPickerBusy: boolean;
+  /** Show the held-⌘ shortcut badge on the trigger. */
+  shortcutHintsShown: boolean;
   onSelectScope: (scope: ResearchFolderScope) => void;
   onNewFolder: () => Promise<GroupInfo | null>;
   onOpenFolder: (folder: GroupInfo) => Promise<void>;
@@ -31,6 +34,7 @@ export default function ResearchFolderSwitcher({
   scope,
   treeCounts,
   folderPickerBusy,
+  shortcutHintsShown,
   onSelectScope,
   onNewFolder,
   onOpenFolder,
@@ -63,6 +67,13 @@ export default function ResearchFolderSwitcher({
     };
   }, [open]);
 
+  // ⌘O routed from the app-level shortcut dispatcher; toggling (rather than
+  // only opening) lets the same chord dismiss the menu it summoned.
+  useEffect(
+    () => listenToResearchFolderMenuToggle(() => setOpen((current) => !current)),
+    [],
+  );
+
   const scopedFolder = folders.find((folder) => folder.id === scope);
   const folderName = (folder: GroupInfo) => folder.nameOverride || folder.name;
 
@@ -92,6 +103,14 @@ export default function ResearchFolderSwitcher({
         </span>
         <ChevronDown size={13} aria-hidden="true" className={open ? "is-open" : undefined} />
       </button>
+      {shortcutHintsShown ? (
+        <span
+          className="pane-tab-shortcut-hint research-folder-shortcut-hint"
+          aria-hidden="true"
+        >
+          ⌘O
+        </span>
+      ) : null}
       {open ? (
         <div className="research-folder-menu" role="menu" aria-label="Research folders">
           {folders.length > 0 ? (
