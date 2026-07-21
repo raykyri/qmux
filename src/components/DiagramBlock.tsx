@@ -127,17 +127,61 @@ function sanitizeSvg(svg: string): string {
   return clean;
 }
 
+// Diagram source is agent-authored and untrusted, and rendering runs
+// synchronously on the privileged webview's main thread: Viz.renderString is
+// synchronous, and Mermaid's cancellation flag only suppresses the later React
+// state update — it cannot interrupt layout already in progress. Neither
+// DOMPurify nor Mermaid strict mode bounds algorithmic cost, so a dense graph
+// well under the 100k-char Markdown cap can still stall the UI during layout,
+// sanitization, and DOM insertion. Reject an over-budget graph before layout,
+// and an over-budget generated SVG before it is sanitized and inserted.
+const MAX_DIAGRAM_SOURCE_CHARS = 20_000;
+// Non-blank source lines — a cheap proxy for node/edge count that bounds the
+// graph the engines lay out without parsing either dialect.
+const MAX_DIAGRAM_STATEMENTS = 500;
+const MAX_DIAGRAM_SVG_CHARS = 2_000_000;
+
+function assertDiagramWithinLimits(code: string): void {
+  if (code.length > MAX_DIAGRAM_SOURCE_CHARS) {
+    throw new Error(
+      `diagram source exceeds the ${MAX_DIAGRAM_SOURCE_CHARS.toLocaleString()}-character limit`,
+    );
+  }
+  let statements = 0;
+  for (const line of code.split("\n")) {
+    if (line.trim() === "") {
+      continue;
+    }
+    statements += 1;
+    if (statements > MAX_DIAGRAM_STATEMENTS) {
+      throw new Error(
+        `diagram exceeds the ${MAX_DIAGRAM_STATEMENTS.toLocaleString()}-statement limit`,
+      );
+    }
+  }
+}
+
+function assertRenderedSvgWithinLimits(svg: string): string {
+  if (svg.length > MAX_DIAGRAM_SVG_CHARS) {
+    throw new Error(
+      `rendered diagram exceeds the ${MAX_DIAGRAM_SVG_CHARS.toLocaleString()}-character limit`,
+    );
+  }
+  return svg;
+}
+
 let mermaidSeq = 0;
 
 async function renderDiagram(lang: DiagramLang, code: string): Promise<string> {
+  assertDiagramWithinLimits(code);
   if (lang === "mermaid") {
     const mermaid = await getMermaid();
     const id = `qmux-mermaid-${mermaidSeq++}`;
     const { svg } = await mermaid.render(id, code);
-    return sanitizeSvg(svg);
+    return sanitizeSvg(assertRenderedSvgWithinLimits(svg));
   }
   const viz = await getViz();
-  return sanitizeSvg(viz.renderString(code, { format: "svg" }));
+  return sanitizeSvg(assertRenderedSvgWithinLimits(viz.renderString(code, { format: "svg" })));
 }
 
 // Defers work until the element is near the viewport so long transcripts don't pay to build
