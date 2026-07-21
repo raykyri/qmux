@@ -191,6 +191,8 @@ enum AppShortcutCommand {
     MoveSidebarItem(i8),
     OpenSettings,
     OpenCommandPalette,
+    FocusFollowups,
+    OpenFolderMenu,
     ToggleTranscriptOrBrowser,
     SplitPaneBelow,
     RestoreClosedPane,
@@ -218,6 +220,8 @@ impl AppShortcutCommand {
             Self::MoveSidebarItem(_) => ("moveSidebarItemDown", None),
             Self::OpenSettings => ("openSettings", None),
             Self::OpenCommandPalette => ("openCommandPalette", None),
+            Self::FocusFollowups => ("focusFollowups", None),
+            Self::OpenFolderMenu => ("openFolderMenu", None),
             Self::ToggleTranscriptOrBrowser => ("toggleTranscriptOrBrowser", None),
             Self::SplitPaneBelow => ("splitPaneBelow", None),
             Self::RestoreClosedPane => ("restoreClosedPane", None),
@@ -299,6 +303,16 @@ fn classify_app_shortcut(
     // in appShortcuts.ts.
     if one_primary_modifier && !option && shift && key == "e" {
         return Some(AppShortcutCommand::ToggleTranscriptOrBrowser);
+    }
+    // Research-surface commands, claimed even for a focused terminal so they
+    // keep working on research-scoped live terminals. Ghostty binds neither
+    // chord, so a terminal loses nothing (its AppKit layer swallows unbound
+    // Command chords anyway); the frontend no-ops them outside research mode.
+    if command && !control && !option && !shift && key == "j" {
+        return Some(AppShortcutCommand::FocusFollowups);
+    }
+    if command && !control && !option && !shift && key == "o" {
+        return Some(AppShortcutCommand::OpenFolderMenu);
     }
     if command && !control && !option && key == "d" {
         return Some(AppShortcutCommand::SplitPaneBelow);
@@ -1457,6 +1471,19 @@ mod tests {
         assert_eq!(
             AppShortcutCommand::MoveSidebarItem(-1).event_fields(),
             ("moveSidebarItemUp", None)
+        );
+        assert_eq!(
+            super::classify_app_shortcut("j", false, false, false, true),
+            Some(AppShortcutCommand::FocusFollowups)
+        );
+        assert_eq!(
+            super::classify_app_shortcut("o", false, false, false, true),
+            Some(AppShortcutCommand::OpenFolderMenu)
+        );
+        assert_eq!(
+            super::classify_app_shortcut("j", true, false, false, true),
+            None,
+            "shift-command-j is not a qmux chord"
         );
         for key in [";", "k", "a", "z", "Enter"] {
             assert_eq!(

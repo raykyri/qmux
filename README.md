@@ -200,13 +200,17 @@ hosted view can show proposal status without a separate collaboration database.
 - In Research, `Cmd/Ctrl-[` / `Cmd/Ctrl-]` or `Alt-Left` / `Alt-Right`
   navigate response history. Mouse back/forward buttons and horizontal
   two-finger trackpad or mouse-wheel gestures do the same.
+- In Research, `Cmd-D`: create a new document (`Cmd-T` starts a new query).
+- In Research, `Cmd-J`: jump to the open document's follow-up composer.
+- In Research, `Cmd-O`: open or close the research folder menu.
 - `Cmd-Shift-T`: switch back to Terminal from Research; otherwise restore the
   most recently closed pane.
 - `Cmd-Shift-H`: focus Home.
 - `Cmd-Shift-E` / `Ctrl-Shift-E`: expand or restore the active transcript pane,
   or toggle the browser overlay on shell-only panes.
 - `Escape`: close the browser overlay when it is open and the key reaches qmux.
-- `Cmd-D` / `Cmd-Shift-D`: split the active terminal downward.
+- `Cmd-D` / `Cmd-Shift-D`: split the active terminal downward (in Research,
+  plain `Cmd-D` creates a new document instead).
 - `Cmd-W`: close the active pane.
 - `Ctrl-W`: close the active pane unless focus is in a terminal or text field.
 - `Cmd-K`: open the command palette (tab navigation, pane actions, saved

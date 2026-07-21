@@ -201,6 +201,10 @@ import {
 } from "./lib/threadGraph";
 import { formatPlainTextTranscript, transcriptJumpTargets } from "./lib/turnTimeline";
 import { requestScrollToMessage } from "./lib/transcriptNavigation";
+import {
+  requestResearchFollowupsFocus,
+  requestResearchFolderMenuToggle,
+} from "./lib/researchShortcuts";
 import { createTranscriptPublicationDraft } from "./lib/publicationDrafts";
 import type { PublicationBinding } from "./lib/publication";
 import { useNativeWebOverlayRegion } from "./hooks/useNativeWebOverlayRegion";
@@ -7726,6 +7730,7 @@ function MainApp() {
       id: "action:new-document",
       section: "Actions",
       title: "New document",
+      hint: sidebarMode === "research" ? "⌘D" : undefined,
       action: () => void createDocumentFromSidebar(),
     });
     commands.push({
@@ -10370,6 +10375,22 @@ function MainApp() {
         case "openCommandPalette":
           setCommandPaletteOpen(true);
           return;
+        case "newDocument":
+          createDocumentFromSidebar();
+          return;
+        case "focusFollowups":
+          // Only the research stage renders a document; the mounted document
+          // (if any) scrolls its follow-up composer into view and focuses it.
+          if (currentSidebarMode === "research") {
+            requestResearchFollowupsFocus();
+          }
+          return;
+        case "openFolderMenu":
+          // The folder switcher is only mounted on the research sidebar.
+          if (currentSidebarMode === "research") {
+            requestResearchFolderMenuToggle();
+          }
+          return;
         case "toggleTranscriptOrBrowser":
           if (
             activeSurfaceRef.current === "pane" &&
@@ -10496,6 +10517,7 @@ function MainApp() {
     activeResearchTreeId,
     focusResearchHome,
     createResearchFromSidebar,
+    createDocumentFromSidebar,
     moveActiveResearchTree,
     selectResearchTree,
     sidebarMode,
@@ -11659,6 +11681,7 @@ function MainApp() {
             scope={researchScope}
             treeCounts={researchFolderTreeCounts}
             folderPickerBusy={folderPickerStatus !== null}
+            shortcutHintsShown={shortcutHintsShown}
             onSelectScope={(scope) => {
               changeResearchFolderScope(scope);
               setResearchMultiSelectIds([]);
@@ -11984,21 +12007,39 @@ function MainApp() {
                   <FileText size={14} aria-hidden="true" />
                   <span>New doc</span>
                 </button>
+                {shortcutHintsShown ? (
+                  <span
+                    className="pane-tab-shortcut-hint sidebar-action-shortcut-hint"
+                    aria-hidden="true"
+                  >
+                    ⌘D
+                  </span>
+                ) : null}
               </div>
             </>
           )}
-          <button
-            type="button"
-            className="control-button sidebar-settings-button"
-            aria-label="Settings menu"
-            aria-haspopup="menu"
-            aria-expanded={settingsMenu ? true : undefined}
-            title="Settings menu"
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={toggleSettingsMenuFromButton}
-          >
-            <Settings size={14} aria-hidden="true" />
-          </button>
+          <div className="sidebar-action-with-hint">
+            <button
+              type="button"
+              className="control-button sidebar-settings-button"
+              aria-label="Settings menu"
+              aria-haspopup="menu"
+              aria-expanded={settingsMenu ? true : undefined}
+              title="Settings menu"
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={toggleSettingsMenuFromButton}
+            >
+              <Settings size={14} aria-hidden="true" />
+            </button>
+            {shortcutHintsShown ? (
+              <span
+                className="pane-tab-shortcut-hint sidebar-settings-shortcut-hint"
+                aria-hidden="true"
+              >
+                ⌘,
+              </span>
+            ) : null}
+          </div>
         </div>
         {markdownDropTargetActive ? (
           <div className="research-markdown-drop-overlay" role="status" aria-live="polite">
@@ -13599,6 +13640,7 @@ function MainApp() {
               onError={setError}
               onToast={handleResearchDocumentToast}
               onPublish={setPublicationTarget}
+              shortcutHintsShown={shortcutHintsShown}
               publicationBinding={
                 publicationBindings.find(
                   (binding) =>
