@@ -2394,7 +2394,7 @@
   right: 16px;
   z-index: 35;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
   max-width: 720px;
   margin: 0 auto;
@@ -2412,7 +2412,7 @@
   flex: 1;
   min-width: 0;
   line-height: 1.4;
-  text-align: center;
+  text-align: left;
 }
 
 .error-banner-dismiss {

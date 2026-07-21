@@ -119,7 +119,9 @@ export default function PaneSearchBar({
         onChange={(event) => onTermChange(event.currentTarget.value)}
         onKeyDown={handleKeyDown}
       />
-      <span className="pane-search-count">{matchLabel}</span>
+      {matchCount === null ? null : (
+        <span className="pane-search-count">{matchLabel}</span>
+      )}
       {showOptions ? <div className="pane-search-toggles">
         <button
           type="button"

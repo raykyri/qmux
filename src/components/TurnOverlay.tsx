@@ -115,6 +115,10 @@ interface TurnOverlayProps {
 
 // Gap kept between the last transcript message and the top of the composer.
 const COMPOSER_CLEARANCE = 16;
+// Reserve used before the floating composer has completed its first live
+// measurement. Matches the transcript's historical CSS bottom padding so a
+// fresh mount does not flash its tail underneath the composer for one frame.
+const DEFAULT_COMPOSER_RESERVE = 132;
 
 // How close to the bottom (in px) the user must be for new turns or a growing
 // composer to keep the transcript pinned to the bottom.
@@ -314,9 +318,9 @@ export default function TurnOverlay({
   // start at the latest turn. A scrolled-up offset is restored verbatim: new
   // turns only append below, so the same offset still lands on the same
   // content. useLayoutEffect runs before paint, so the pane never flashes at
-  // the wrong spot first; the rAF re-assert catches the composer's
-  // reserved-space reflow (its padding-bottom grows scrollHeight a frame late,
-  // most visibly on a fresh remount where the composer measures from zero).
+  // the wrong spot first; the rAF re-assert catches the composer's measured
+  // tail-spacer reflow, most visibly on a fresh remount where the composer
+  // measures from zero.
   useLayoutEffect(() => {
     const saved = agentId ? getTranscriptScroll?.(agentId) : undefined;
     if (saved && !saved.stuck) {
@@ -477,19 +481,31 @@ export default function TurnOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queueSplit, composerBaseHeight, agentId, Boolean(input)]);
 
+  const timelineItems = useMemo(
+    () => buildTimelineItems(turns, showActivityDetail),
+    [turns, showActivityDetail],
+  );
+  const hasTimelineContent = timelineItems.length > 0 || thinking;
+  // WebKit can omit a scrollable flex container's block-end padding from its
+  // effective scroll range. Represent the floating composer's clearance as a
+  // real, non-shrinking tail item instead, so scrollHeight and the bottom
+  // sentinel share the same physical end. Split mode already ends the
+  // timeline above its queue and needs no tail reserve.
+  const tailReserveHeight =
+    !queueSplit && input && hasTimelineContent
+      ? composerHeight > 0
+        ? composerHeight + COMPOSER_CLEARANCE
+        : DEFAULT_COMPOSER_RESERVE
+      : 0;
   const timelineStyle: CSSProperties | undefined = queueSplit
     ? { bottom: effectiveQueueSplitHeight, paddingBottom: 10 }
-    : composerHeight > 0
-      ? { paddingBottom: composerHeight + COMPOSER_CLEARANCE }
+    : tailReserveHeight > 0
+      ? { paddingBottom: 0 }
       : undefined;
   const inputStyle: CSSProperties | undefined = queueSplit
     ? { height: effectiveQueueSplitHeight }
     : undefined;
   const splitBoundsNow = queueSplit ? splitBounds() : null;
-  const timelineItems = useMemo(
-    () => buildTimelineItems(turns, showActivityDetail),
-    [turns, showActivityDetail],
-  );
   const assistantRunCopyText = useMemo(
     () => assistantRunCopyTextByItemKey(timelineItems),
     [timelineItems],
@@ -719,7 +735,13 @@ export default function TurnOverlay({
             <span className="turn-thinking-label">{thinkingLabel}</span>
           </div>
         ) : null}
-        <div ref={bottomSentinelRef} className="turn-timeline-sentinel" aria-hidden="true" />
+        <div
+          className="turn-timeline-tail-space"
+          style={tailReserveHeight > 0 ? { height: tailReserveHeight } : undefined}
+          aria-hidden="true"
+        >
+          <div ref={bottomSentinelRef} className="turn-timeline-sentinel" />
+        </div>
         </div>
       </TranscriptLinkActionsProvider>
       {input ? (

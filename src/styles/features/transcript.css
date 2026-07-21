@@ -25,15 +25,29 @@
   padding: 24px;
 }
 
-/* Zero-height marker after the last timeline row, watched by TurnOverlay's
-   intersection observer to keep a pinned view at the bottom through content
-   that grows outside React commits (late-rendering diagrams, decoding
-   images). The negative margin cancels the column's flex gap so the marker
-   adds no visible height anywhere, including the centered empty state. */
-.turn-timeline-sentinel {
+/* A real flex item reserves the floating composer's height at the tail. WebKit
+   does not reliably include block-end padding in a flex scroller's usable
+   scroll range, which could leave the final transcript lines underneath the
+   composer even at maximum scrollTop. The negative margin cancels the column
+   gap before this item; its explicit height is therefore the exact clearance
+   after the last row. */
+.turn-timeline-tail-space {
+  position: relative;
   flex: 0 0 auto;
   height: 0;
   margin-top: -5px;
+}
+
+/* Zero-height marker at the physical end of the tail reserve, watched by
+   TurnOverlay's intersection observer to keep a pinned view at the bottom
+   through content that grows outside React commits (late-rendering diagrams,
+   decoding images). Absolute positioning keeps it from adding to the reserve. */
+.turn-timeline-sentinel {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 0;
 }
 
 .turn-pane-split-cell .turn-timeline,
