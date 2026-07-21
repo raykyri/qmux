@@ -193,7 +193,11 @@ export function appShortcutTargetsActivePane(command: AppShortcutCommand): boole
   return (
     command.type === "closePane" ||
     command.type === "splitPaneBelow" ||
-    command.type === "toggleTranscriptOrBrowser"
+    command.type === "toggleTranscriptOrBrowser" ||
+    // Reorders the active sidebar item (pane or research tree). A native chord
+    // from an already-removed pane must be dropped, not run against whatever is
+    // active now, or it persistently reorders an unrelated item.
+    command.type === "moveSidebarItem"
   );
 }
 
