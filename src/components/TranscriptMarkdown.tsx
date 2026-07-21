@@ -108,6 +108,17 @@ function MarkdownLink({ href, ...props }: ComponentPropsWithoutRef<"a">) {
         event.preventDefault();
         openLink(safe);
       }}
+      onAuxClick={(event) => {
+        // A middle (or other auxiliary) click would otherwise keep WebKit's
+        // native navigation and bypass openLink — where qmux routes loopback
+        // file-server URLs into the sandboxed overlay and everything else
+        // through the guarded external opener. Never let it navigate natively;
+        // route a middle click through the same classifier as a primary click.
+        event.preventDefault();
+        if (event.button === 1) {
+          openLink(safe);
+        }
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         openLinkMenu(safe, event.clientX, event.clientY);
