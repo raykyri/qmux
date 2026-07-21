@@ -137,6 +137,30 @@ export function plainTextTranscriptMessages(
     });
 }
 
+export interface TranscriptJumpTarget {
+  /** Matches the `data-message-key` the transcript renders on each message. */
+  key: string;
+  text: string;
+}
+
+/**
+ * The trailing `limit` user prompts, oldest first, for the transcript's
+ * "Go to…" menu. Only user messages qualify: they are what a reader navigates
+ * by, and assistant replies are long enough that a truncated label carries no
+ * information. Text is the same plain-text fold the copy-transcript path uses,
+ * so tagged instruction wrappers are already stripped.
+ */
+export function transcriptJumpTargets(turns: Turn[], limit: number): TranscriptJumpTarget[] {
+  const targets = buildTimelineItems(turns, false).flatMap((item) => {
+    if (item.role !== "user") {
+      return [];
+    }
+    const text = plainTextMessageItemText(item);
+    return text ? [{ key: item.key, text }] : [];
+  });
+  return targets.slice(Math.max(0, targets.length - limit));
+}
+
 function plainTextMessageItemText(item: MessageItem) {
   const text = item.blocks
     .flatMap((block) => (block.type === "text" ? [block.text] : []))

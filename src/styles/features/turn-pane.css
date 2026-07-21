@@ -788,6 +788,41 @@
   overscroll-behavior: contain;
 }
 
+.turn-pane-jump-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.turn-pane-jump-item {
+  align-items: flex-start;
+  padding-block: 4px;
+  padding-inline: 10px;
+  text-align: left;
+}
+
+/* Prompts run to arbitrary length, so each entry clamps to two lines with a
+   trailing ellipsis. The clamp lives on an inner span rather than the button:
+   WebKit lays a button's children out in an anonymous inner box, so a
+   line-clamp set on the button never reaches the text and the prompt renders
+   in full. Keeping the button's padding off the clamped box also avoids
+   WebKit letting a third line bleed into padding-bottom instead of
+   ellipsizing. `overflow-wrap` keeps an unbroken token — a URL or a long path
+   — from pushing the menu wider than its measured width. */
+.turn-pane-jump-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
 .turn-pane-branch-item {
   display: block;
   padding-inline: 10px;

@@ -198,7 +198,8 @@ import {
   pendingGraphOverlayTurns,
   threadIdForAgent,
 } from "./lib/threadGraph";
-import { formatPlainTextTranscript } from "./lib/turnTimeline";
+import { formatPlainTextTranscript, transcriptJumpTargets } from "./lib/turnTimeline";
+import { requestScrollToMessage } from "./lib/transcriptNavigation";
 import { createTranscriptPublicationDraft } from "./lib/publicationDrafts";
 import type { PublicationBinding } from "./lib/publication";
 import { useNativeWebOverlayRegion } from "./hooks/useNativeWebOverlayRegion";
@@ -452,6 +453,8 @@ const LEFT_SIDEBAR_MAX_WIDTH = 420;
 // Below this width the New shell/New agent buttons drop their icons to keep the
 // labels readable. (The icon-only Settings cog always keeps its icon.)
 const LEFT_SIDEBAR_COMPACT_WIDTH = 270;
+// How many recent prompts the transcript menu's "Go to…" section lists.
+const TRANSCRIPT_JUMP_TARGET_LIMIT = 20;
 const PANE_TAB_DRAG_START_THRESHOLD = 4;
 const PANE_TAB_DRAG_CLICK_SUPPRESS_MS = 100;
 type ResearchViewedAckOptions = {
@@ -11363,6 +11366,14 @@ function MainApp() {
               onFork={(options) => void forkActivePane(options)}
               branches={agent && !researchBound ? (branchesByAgent[agent.id] ?? []) : []}
               onSelectBranch={(branch) => void selectBranch(branch)}
+              jumpTargets={
+                agent ? transcriptJumpTargets(surface.turns, TRANSCRIPT_JUMP_TARGET_LIMIT) : []
+              }
+              // Addressed to the id TurnOverlay listens on, which falls back to
+              // the pane when the surface has no agent.
+              onJumpToMessage={(messageKey) =>
+                requestScrollToMessage(agent?.id ?? surface.pane.id, messageKey)
+              }
               showQueueSplit={Boolean(agent) && !researchBound}
               queueSplit={surface.queueSplit}
               onToggleQueueSplit={toggleActiveQueueSplit}

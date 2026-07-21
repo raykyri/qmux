@@ -12,6 +12,7 @@ import { placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
 import { writeClipboardText } from "../lib/clipboard";
 import PromptLibraryMenu from "./PromptLibraryMenu";
 import { formatRelativeTime, sessionMenuTitle } from "../lib/transcriptSessions";
+import type { TranscriptJumpTarget } from "../lib/turnTimeline";
 import type { BranchInfo, TranscriptOption } from "../types";
 
 // How long the "copied" toast stays up after copying the session id.
@@ -46,6 +47,11 @@ interface TurnPaneHeaderProps {
   branches: BranchInfo[];
   // Focuses another branch, reopening its pane if it was closed.
   onSelectBranch: (branch: BranchInfo) => void;
+  // The recent user prompts offered by the menu's "Go to…" section, oldest
+  // first. Empty when the pane has no transcript to jump around in.
+  jumpTargets: TranscriptJumpTarget[];
+  // Scrolls the transcript to a prompt by its message key.
+  onJumpToMessage: (messageKey: string) => void;
   showQueueSplit: boolean;
   queueSplit: boolean;
   onToggleQueueSplit: () => void;
@@ -105,6 +111,8 @@ export default function TurnPaneHeader({
   onFork,
   branches,
   onSelectBranch,
+  jumpTargets,
+  onJumpToMessage,
   showQueueSplit,
   queueSplit,
   onToggleQueueSplit,
@@ -140,7 +148,10 @@ export default function TurnPaneHeader({
   // opens when either has something to offer. A lineage of one is just this
   // session, which the header already names — not worth a list.
   const siblingBranches = branches.length > 1 ? branches : [];
-  const canOpenBranchMenu = canFork || siblingBranches.length > 0;
+  // Jumping counts as a reason to open the menu on its own: a session that
+  // cannot fork (no recorded session id yet) can still have a transcript worth
+  // navigating.
+  const canOpenBranchMenu = canFork || siblingBranches.length > 0 || jumpTargets.length > 0;
 
   // Clear any pending toast timer on unmount so it can't fire into a gone component.
   useEffect(() => {
@@ -512,6 +523,33 @@ export default function TurnPaneHeader({
                   >
                     Fork session in worktree
                   </button>
+                  {jumpTargets.length > 0 ? (
+                    <>
+                      <div className="menu-divider" role="separator" />
+                      <div className="turn-pane-branch-label">Go to…</div>
+                      <div
+                        className="turn-pane-jump-list"
+                        role="group"
+                        aria-label="Go to message"
+                      >
+                        {jumpTargets.map((target) => (
+                          <button
+                            key={target.key}
+                            type="button"
+                            role="menuitem"
+                            className="menu-item menu-item--compact turn-pane-jump-item"
+                            title={target.text}
+                            onClick={() => {
+                              setMenuOpen(false);
+                              onJumpToMessage(target.key);
+                            }}
+                          >
+                            <span className="turn-pane-jump-text">{target.text}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  ) : null}
                 </div>,
                 document.body,
               )

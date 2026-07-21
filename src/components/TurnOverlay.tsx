@@ -24,6 +24,7 @@ import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
 import { requestSaveDraftAsPrompt } from "../lib/promptLibrary";
 import { taggedUserInstructionDetails } from "../lib/taggedInstructions";
+import { listenToScrollToMessage } from "../lib/transcriptNavigation";
 import {
   assistantRunCopyTextByItemKey,
   buildTimelineItems,
@@ -218,6 +219,28 @@ export default function TurnOverlay({
     }
   };
 
+  // Scrolls the timeline itself rather than calling scrollIntoView, which would
+  // also scroll ancestor containers. Writing scrollTop fires the timeline's own
+  // scroll handler, so stickiness unsticks on its own when the target is above
+  // the fold — the jump is an ordinary scroll as far as the rest of the pane is
+  // concerned.
+  const scrollToMessage = (messageKey: string) => {
+    const timeline = timelineRef.current;
+    if (!timeline) {
+      return;
+    }
+    const target = timeline.querySelector<HTMLElement>(
+      `[data-message-key="${CSS.escape(messageKey)}"]`,
+    );
+    if (!target) {
+      return;
+    }
+    const margin = 12;
+    const targetRect = target.getBoundingClientRect();
+    const viewRect = timeline.getBoundingClientRect();
+    timeline.scrollTop += targetRect.top - viewRect.top - margin;
+  };
+
   const handleTimelineScroll = () => {
     const timeline = timelineRef.current;
     if (!timeline) {
@@ -340,6 +363,15 @@ export default function TurnOverlay({
     const frame = requestAnimationFrame(scrollToBottom);
     return () => cancelAnimationFrame(frame);
   }, [agentId, getTranscriptScroll]);
+
+  // The "Go to…" menu lives in the header, which this component receives as an
+  // opaque prop, so jump requests arrive as a window event keyed by agent.
+  useEffect(() => {
+    if (!agentId) {
+      return;
+    }
+    return listenToScrollToMessage(agentId, scrollToMessage);
+  }, [agentId]);
 
   // Keep pinned to the bottom when new turns arrive or the composer grows (e.g. a
   // queued message), but only while the user is already near the bottom — instant,
@@ -863,6 +895,10 @@ function MessageItemView({
   const showHeader = !taggedInstructionMessage && (showName || showMessageActions);
   return (
     <article
+      // Stable across re-parses (see the key derivation in turnTimeline), so
+      // the "Go to…" menu can address a message by key and still find it after
+      // a transcript refresh.
+      data-message-key={item.key}
       className={`turn-card role-${item.role}${
         taggedInstructionMessage ? " is-tagged-instruction-message" : ""
       }${timelineStatusClass(item.status)}${stickyClassName}`}
