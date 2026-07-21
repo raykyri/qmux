@@ -237,13 +237,58 @@ export function timelineItemsAfterLastToolCall(items: MessageItem[]) {
   return withoutTranscriptActivities(items);
 }
 
+// A FIFO of pending tool calls that matches results in amortized O(1). Matched
+// entries are tombstoned in a shared `resolved` set rather than spliced out of
+// an array, and a head cursor skips past dead entries, so a transcript with N
+// tool calls and N results is processed in O(N) instead of O(N²). The same
+// entry can live in more than one queue (by id and by status); the shared
+// tombstone keeps every queue consistent.
+class PendingToolQueue {
+  private readonly items: ToolEntry[] = [];
+  private head = 0;
+
+  push(entry: ToolEntry): void {
+    this.items.push(entry);
+  }
+
+  /** Removes and returns the oldest live entry satisfying `matches`, or null. */
+  take(resolved: Set<ToolEntry>, matches: (entry: ToolEntry) => boolean): ToolEntry | null {
+    while (this.head < this.items.length && resolved.has(this.items[this.head])) {
+      this.head += 1;
+    }
+    for (let index = this.head; index < this.items.length; index += 1) {
+      const entry = this.items[index];
+      if (!resolved.has(entry) && matches(entry)) {
+        resolved.add(entry);
+        return entry;
+      }
+    }
+    return null;
+  }
+}
+
 export function buildTimelineItems(turns: Turn[], showActivityDetail = true): MessageItem[] {
   const items: MessageItem[] = [];
-  // Tool calls awaiting a result, in arrival order. A result carrying a
-  // tool-use id collapses into its own call (even across a status boundary);
+  // Tool calls awaiting a result, indexed for O(1) matching. A result carrying
+  // a tool-use id collapses into its own call (even across a status boundary);
   // an id-less result collapses into the oldest pending call; a keyed result
-  // whose call isn't pending renders as its own row.
-  const pending: ToolEntry[] = [];
+  // whose call isn't pending renders as its own row. Every pending call is in
+  // the by-status queue; those with an id are also in the by-id queue. A match
+  // through either tombstones the entry in `resolved` so the other queue skips
+  // it.
+  const resolved = new Set<ToolEntry>();
+  const pendingByStatus = new Map<string, PendingToolQueue>();
+  const pendingById = new Map<string, PendingToolQueue>();
+  // Real statuses are non-empty, so "" is a safe key for the undefined status.
+  const statusKey = (status?: TurnTimelineStatus) => status ?? "";
+  const queueFor = (map: Map<string, PendingToolQueue>, key: string) => {
+    let queue = map.get(key);
+    if (!queue) {
+      queue = new PendingToolQueue();
+      map.set(key, queue);
+    }
+    return queue;
+  };
   // Keys derive from the originating turn id and block position, not a running
   // sequence number: when older turns are truncated (the per-agent cap) or a
   // graph refresh prepends history, sequence-numbered keys shift and React
@@ -363,7 +408,10 @@ export function buildTimelineItems(turns: Turn[], showActivityDetail = true): Me
       status,
     };
     pushToolEntry(entry, status, participant);
-    pending.push(entry);
+    queueFor(pendingByStatus, statusKey(status)).push(entry);
+    if (entry.id) {
+      queueFor(pendingById, entry.id).push(entry);
+    }
   };
 
   const attachToolResult = (
@@ -382,17 +430,21 @@ export function buildTimelineItems(turns: Turn[], showActivityDetail = true): Me
     // fallback would show the stray payload as that call's result and strand
     // the call's real result as a duplicate orphan row below it. Only an
     // id-less result falls back to the oldest same-status pending call.
-    let index = toolUseId
-      ? pending.findIndex((entry) => entry.id === toolUseId && entry.status === status)
-      : pending.findIndex((entry) => entry.status === status);
-    if (index === -1 && toolUseId) {
-      index = pending.findIndex((entry) => entry.id === toolUseId);
+    let matched: ToolEntry | null = null;
+    if (toolUseId) {
+      const idQueue = pendingById.get(toolUseId);
+      if (idQueue) {
+        matched =
+          idQueue.take(resolved, (entry) => entry.status === status) ??
+          idQueue.take(resolved, () => true);
+      }
+    } else {
+      matched = pendingByStatus.get(statusKey(status))?.take(resolved, () => true) ?? null;
     }
 
-    if (index !== -1) {
-      const [entry] = pending.splice(index, 1);
-      entry.result = block.content;
-      entry.isError = block.isError;
+    if (matched) {
+      matched.result = block.content;
+      matched.isError = block.isError;
       return;
     }
 
