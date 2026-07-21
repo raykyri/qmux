@@ -9,7 +9,9 @@ src-tauri/gen/
 .DS_Store
 
 .codex/
-.claude/
+.claude/*
+!.claude/agents/
+!.claude/commands/
 
 # Legacy in-repo session dir: older builds stored session data and thread graphs
 # in the checkout. Active state now lives in the global qmux data root, but keep
