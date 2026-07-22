@@ -7061,6 +7061,7 @@ function MainApp() {
       prompt: string;
       adapter: string;
       model: string | null;
+      effort: string | null;
       workspaceId: string | null;
     }) => {
       const group = await resolveResearchComposerWorkspace(input.workspaceId);
@@ -7070,6 +7071,7 @@ function MainApp() {
           prompt: input.prompt,
           adapter: input.adapter,
           model: input.model,
+          effort: input.effort,
           workspaceId: group.id,
         });
       } catch (err) {
