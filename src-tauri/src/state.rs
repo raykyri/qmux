@@ -306,11 +306,13 @@ struct Model {
     /// spawns one watcher thread, not dozens. Cleared when that thread resolves.
     /// Transient (not persisted).
     agent_escape_watch: HashSet<String>,
-    /// Agents with a submit-confirmation grace watch already in flight. A drained
-    /// queued/direct turn arms `watch_agent_after_queued_send` to re-send a dropped
-    /// Return; this dedupes so overlapping sends spawn one watcher thread. Cleared
-    /// when that thread resolves. Transient (not persisted).
-    agent_submit_watch: HashSet<String>,
+    /// `(agent_id, send_id)` pairs with a submit-confirmation watch already in
+    /// flight. A drained queued/direct turn arms `watch_agent_after_queued_send` to
+    /// recover a dropped Return; keying by the exact send means overlapping sends
+    /// (a direct send shortly after a queued drain) each get their own confirmation
+    /// instead of the second going unwatched, while re-arming the *same* send stays
+    /// deduped. Cleared when the watcher thread resolves. Transient (not persisted).
+    agent_submit_watch: HashSet<(String, u64)>,
     agent_drafts: HashMap<String, String>,
     recent_sessions: HashMap<String, RecentSessionInfo>,
     /// Agents whose currently-running (just-sent) queued turn requested a pause; when
@@ -576,6 +578,15 @@ pub struct QueuedTurn {
     pub wait_for: Option<QueuedTurnWait>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<QueuedTurnDelivery>,
+    /// Whether this turn's text may already be sitting in the pane's composer from
+    /// a previous delivery attempt — a send whose paste landed but whose submit was
+    /// never confirmed. Draining a tagged turn submits a bare Return instead of
+    /// re-pasting, so a retry can never concatenate a second copy of the text onto
+    /// the one already in the composer. The tag is process-local by design: it is
+    /// never persisted, because the composer's contents do not survive an agent
+    /// process restart, and a restored turn must re-paste normally.
+    #[serde(skip)]
+    pub possibly_pasted: bool,
 }
 
 impl QueuedTurn {
@@ -586,6 +597,7 @@ impl QueuedTurn {
             pause_after: false,
             wait_for: None,
             delivery: None,
+            possibly_pasted: false,
         }
     }
 
@@ -596,6 +608,7 @@ impl QueuedTurn {
             pause_after: false,
             wait_for: Some(wait_for),
             delivery: None,
+            possibly_pasted: false,
         }
     }
 
@@ -606,6 +619,7 @@ impl QueuedTurn {
             pause_after: false,
             wait_for: None,
             delivery: Some(delivery),
+            possibly_pasted: false,
         }
     }
 }
@@ -638,6 +652,7 @@ impl<'de> Deserialize<'de> for QueuedTurn {
                 pause_after: false,
                 wait_for: None,
                 delivery: None,
+                possibly_pasted: false,
             },
             Repr::Full {
                 id,
@@ -653,6 +668,9 @@ impl<'de> Deserialize<'de> for QueuedTurn {
                 pause_after,
                 wait_for,
                 delivery,
+                // Deliberately never restored: the composer's contents do not
+                // survive the agent process, so a loaded turn re-pastes normally.
+                possibly_pasted: false,
             },
         })
     }
@@ -985,6 +1003,24 @@ pub enum AgentPromptSubmitMatch {
     MissingPrompt {
         outstanding_sends: usize,
     },
+}
+
+/// What a submit-confirmation watch observes when it re-checks a send it wrote to a
+/// pane (see `check_agent_submit_watch`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubmitWatchStatus {
+    /// The send's prompt-submit echo popped it (or an idle boundary cleared the
+    /// tracking): the turn started, the watch stands down.
+    Confirmed,
+    /// The send is still outstanding, but *some* UserPromptSubmit arrived after it
+    /// was written — most likely this very turn submitting with text that failed
+    /// the exact match (a mangled or concatenated paste). Recovery must stand down:
+    /// a Return nudge or a requeue on top of a turn that actually started risks a
+    /// duplicate, and a visible stall is the safer failure.
+    StillPendingWithPromptActivity,
+    /// The send is still outstanding and no prompt of any kind has been submitted
+    /// since it was written: the turn shows no sign of having started.
+    StillPending,
 }
 
 pub struct PaneRuntime {
@@ -5610,7 +5646,9 @@ impl AppState {
                     .agents_with_reported_background_tasks
                     .remove(&agent_id);
                 model.agent_escape_watch.remove(&agent_id);
-                model.agent_submit_watch.remove(&agent_id);
+                model
+                    .agent_submit_watch
+                    .retain(|(watched_agent, _)| watched_agent != &agent_id);
                 // A turn claimed for delivery but not yet settled when the pane goes
                 // away: roll it back to the front of the queue so it isn't lost (and so
                 // the has_queue check below keeps the agent for restart recovery).
@@ -6255,23 +6293,27 @@ impl AppState {
         }
     }
 
-    /// Reserves the submit-confirmation grace watch for an agent, returning `true` when
-    /// the caller should spawn the watcher and `false` when one is already in flight (so
-    /// rapid back-to-back sends spawn a single thread). Best-effort: a poisoned lock
-    /// returns `false`, skipping the watch rather than racing.
-    pub fn begin_agent_submit_watch(&self, agent_id: &str) -> bool {
+    /// Reserves the submit-confirmation watch for one exact send, returning `true` when
+    /// the caller should spawn the watcher and `false` when that send is already being
+    /// watched. Best-effort: a poisoned lock returns `false`, skipping the watch rather
+    /// than racing.
+    pub fn begin_agent_submit_watch(&self, agent_id: &str, send_id: u64) -> bool {
         let Ok(mut model) = self.inner.model.lock() else {
             return false;
         };
-        model.agent_submit_watch.insert(agent_id.to_string())
+        model
+            .agent_submit_watch
+            .insert((agent_id.to_string(), send_id))
     }
 
-    /// Clears the submit-confirmation grace watch reservation once the watcher thread
+    /// Clears a submit-confirmation watch reservation once its watcher thread
     /// resolves. Best-effort: a poisoned lock just leaves the entry, which only costs
-    /// the next send its watch until the agent is next removed.
-    pub fn end_agent_submit_watch(&self, agent_id: &str) {
+    /// a re-arm of that exact send its watch until the agent is next removed.
+    pub fn end_agent_submit_watch(&self, agent_id: &str, send_id: u64) {
         if let Ok(mut model) = self.inner.model.lock() {
-            model.agent_submit_watch.remove(agent_id);
+            model
+                .agent_submit_watch
+                .remove(&(agent_id.to_string(), send_id));
         }
     }
 
@@ -7887,29 +7929,79 @@ impl AppState {
             }))
     }
 
-    /// Whether the exact send recorded by `record_agent_send` is still waiting for
-    /// its prompt-submit echo. Unlike a source-wide query, this cannot mistake an
-    /// older or newer queued turn for the one a submit-confirmation watch owns.
-    pub fn agent_has_outstanding_send_id(
+    /// What a submit-confirmation watch should conclude about one exact send: gone
+    /// (confirmed), still outstanding with prompt activity after it, or still
+    /// outstanding with no prompt submitted since. The distinction matters because
+    /// `match_agent_prompt_submit` only pops on an exact text match — a turn that
+    /// submitted with mangled text leaves its record outstanding forever, and
+    /// recovery must not treat that as "never started".
+    pub fn check_agent_submit_watch(
         &self,
         agent_id: &str,
         send_id: u64,
-    ) -> Result<bool, String> {
+    ) -> Result<SubmitWatchStatus, String> {
         let mut model = self
             .inner
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model
-            .agent_send_tracking
-            .get_mut(agent_id)
-            .is_some_and(|tracking| {
-                tracking.prune_expired(now_millis());
-                tracking
-                    .outstanding_sends
-                    .iter()
-                    .any(|send| send.id == send_id)
-            }))
+        let Some(tracking) = model.agent_send_tracking.get_mut(agent_id) else {
+            return Ok(SubmitWatchStatus::Confirmed);
+        };
+        tracking.prune_expired(now_millis());
+        let Some(send) = tracking
+            .outstanding_sends
+            .iter()
+            .find(|send| send.id == send_id)
+        else {
+            return Ok(SubmitWatchStatus::Confirmed);
+        };
+        if tracking.ups_seq > send.sent_at_seq {
+            Ok(SubmitWatchStatus::StillPendingWithPromptActivity)
+        } else {
+            Ok(SubmitWatchStatus::StillPending)
+        }
+    }
+
+    /// Reclaims a send that was written to a pane but never echoed a prompt submit:
+    /// atomically removes the exact outstanding-send record and puts the turn back
+    /// at the front of its agent's queue, returning the new queue snapshot. Returns
+    /// `Ok(None)` — without touching the queue — when the record is already gone
+    /// (its echo won the race, or an idle boundary cleared it), so a turn that did
+    /// start can never be requeued into a duplicate. Callers should tag the turn
+    /// `possibly_pasted` so its retry submits without re-pasting.
+    pub fn requeue_unconfirmed_send(
+        &self,
+        agent_id: &str,
+        send_id: u64,
+        turn: QueuedTurn,
+    ) -> Result<Option<Vec<QueuedTurn>>, String> {
+        let queued_turns = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let Some(tracking) = model.agent_send_tracking.get_mut(agent_id) else {
+                return Ok(None);
+            };
+            let Some(index) = tracking
+                .outstanding_sends
+                .iter()
+                .position(|send| send.id == send_id)
+            else {
+                return Ok(None);
+            };
+            tracking.outstanding_sends.remove(index);
+            let queue = model
+                .agent_turn_queues
+                .entry(agent_id.to_string())
+                .or_default();
+            queue.push_front(turn);
+            queue.iter().cloned().collect::<Vec<_>>()
+        };
+        self.persist();
+        Ok(Some(queued_turns))
     }
 
     /// Removes one exact advisory send record, used to roll back tracking when
@@ -8893,7 +8985,9 @@ fn prune_agent_locked(model: &mut Model, agent_id: &str) {
     model.agent_status_activity.remove(agent_id);
     model.agent_active_subagents.remove(agent_id);
     model.agent_escape_watch.remove(agent_id);
-    model.agent_submit_watch.remove(agent_id);
+    model
+        .agent_submit_watch
+        .retain(|(watched_agent, _)| watched_agent != agent_id);
     clear_recent_session_binding_locked(model, Some(agent_id), None);
 }
 

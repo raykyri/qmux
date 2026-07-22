@@ -3,10 +3,10 @@ use crate::adapters::{
     spawn_sibling_agent_session,
 };
 use crate::events::QmuxEvent;
-use crate::pty::{PaneWriteOptions, write_pane};
+use crate::pty::{PaneWriteOptions, write_pane, write_pane_detailed};
 use crate::state::{
     AgentSendSource, AgentTurnClaim, AppState, GlobalDraft, IdleAdvance, QueuedTurn,
-    QueuedTurnDelivery,
+    QueuedTurnDelivery, SubmitWatchStatus,
 };
 use crate::workspace::{AgentInfo, AgentStatus};
 use serde::{Deserialize, Serialize};
@@ -337,7 +337,13 @@ pub fn submit_agent_turn(
             if !policy.can_steer(agent.status) {
                 return Err("Agent does not support steering in its current state".to_string());
             }
-            send_agent_turn(state, &agent, data, AgentSendSource::Steer)?;
+            send_agent_turn(
+                state,
+                &agent,
+                &QueuedTurn::new(data),
+                AgentSendSource::Steer,
+            )
+            .map_err(|err| err.message)?;
             let queued_turns = state.agent_queued_turns(&agent.id)?;
             Ok(SubmitAgentTurnResult {
                 queued: false,
@@ -614,21 +620,26 @@ fn send_claimed_turn(
             state.clear_agent_inflight(agent_id);
             deliver_queued_turn_to_new_pane(state, &agent, &turn.text, delivery)
                 .map(|_| DispatchOutcome::StayedIdle)
+                .map_err(|message| TurnSendError {
+                    message,
+                    text_delivered: false,
+                })
         }
-        None => send_agent_turn(
-            state,
-            &agent,
-            turn.text.clone(),
-            AgentSendSource::QueuedTurn,
-        )
-        .map(|_| DispatchOutcome::Ran),
+        None => send_agent_turn(state, &agent, &turn, AgentSendSource::QueuedTurn)
+            .map(|_| DispatchOutcome::Ran),
     };
     let outcome = match send_result {
         Ok(outcome) => outcome,
         Err(err) => {
+            // When the turn's text already reached the pane (the paste landed and
+            // only the submit leg failed), tag the requeued turn so its retry
+            // submits a bare Return instead of pasting a second copy that would
+            // concatenate onto the one sitting in the composer.
+            let mut turn = turn;
+            turn.possibly_pasted = turn.possibly_pasted || err.text_delivered;
             state.requeue_inflight_after_failed_drain(agent_id, turn);
             state.finish_agent_drain(agent_id);
-            return Err(err);
+            return Err(err.message);
         }
     };
     // Delivered: clear the in-flight record so it isn't re-queued on the next restart
@@ -994,48 +1005,82 @@ fn deliver_queued_turn_to_new_pane(
     Ok(())
 }
 
-/// Restores a just-popped turn to the front of the queue after a drain fails to
-/// deliver it. If even the rollback fails the turn is genuinely lost, so log it
-/// rather than dropping it silently — the caller already propagates the original
-/// send error.
+/// A failed turn send. `text_delivered` reports whether the turn's text had
+/// already reached the pane when the failure occurred (the paste landed; only the
+/// submit leg failed), so the requeue can tag the turn `possibly_pasted` and its
+/// retry can avoid pasting a duplicate copy.
+struct TurnSendError {
+    message: String,
+    text_delivered: bool,
+}
+
+/// The pane write for one turn: a `possibly_pasted` turn's text is (very likely)
+/// already sitting in the composer from a failed prior attempt, so it submits a
+/// bare Return instead of pasting a second copy — the concatenation that tag
+/// exists to prevent. The outstanding-send record still carries the full text, so
+/// the prompt-submit echo of the already-pasted content confirms it normally.
+fn turn_write_options(pane_id: String, turn: &QueuedTurn) -> PaneWriteOptions {
+    if turn.possibly_pasted {
+        PaneWriteOptions {
+            pane_id,
+            data: String::new(),
+            paste: false,
+            submit: true,
+        }
+    } else {
+        PaneWriteOptions {
+            pane_id,
+            data: turn.text.clone(),
+            paste: true,
+            submit: true,
+        }
+    }
+}
+
+/// Writes one turn into the agent's own pane: reserve prompt-correlation, paste
+/// and submit, promote the status, then arm the submit-confirmation watch. Does
+/// not requeue on failure — the caller owns the turn and decides (a queue drain
+/// rolls it back to the front, tagged via `TurnSendError::text_delivered`).
 fn send_agent_turn(
     state: &AppState,
     agent: &AgentInfo,
-    data: String,
+    turn: &QueuedTurn,
     source: AgentSendSource,
-) -> Result<(), String> {
-    let pane_id = agent
-        .pane_id
-        .clone()
-        .ok_or_else(|| format!("agent {} does not have an attached pane", agent.id))?;
-    let text = data.clone();
-    let is_command = is_tui_command_turn(&text);
+) -> Result<(), TurnSendError> {
+    let pane_id = agent.pane_id.clone().ok_or_else(|| TurnSendError {
+        message: format!("agent {} does not have an attached pane", agent.id),
+        text_delivered: false,
+    })?;
+    let is_command = is_tui_command_turn(&turn.text);
     // Reserve prompt-correlation before Return reaches the PTY. The acknowledged
     // native path does not return until Return has been flushed, so Claude can emit
     // UserPromptSubmit on another thread before this function resumes. Recording
     // afterward would miss that echo and leave a false outstanding send for the
     // watchdog. Roll the exact record back if delivery fails.
-    let send_id = match state.record_agent_send(&agent.id, text, source) {
+    let send_id = match state.record_agent_send(&agent.id, turn.text.clone(), source) {
         Ok(send_id) => Some(send_id),
         Err(err) => {
             eprintln!("qmux: failed to record send for agent {}: {err}", agent.id);
             None
         }
     };
-    if let Err(err) = write_pane(
-        state,
-        PaneWriteOptions {
-            pane_id,
-            data,
-            paste: true,
-            submit: true,
-        },
-    ) {
+    if let Err(failure) = write_pane_detailed(state, turn_write_options(pane_id, turn)) {
         if let Some(send_id) = send_id {
             let _ = state.remove_agent_outstanding_send_id(&agent.id, send_id);
         }
-        return Err(err);
+        // A possibly-pasted turn's text was delivered by the *previous* attempt,
+        // whatever this write's payload leg (a bare Return) reports.
+        return Err(TurnSendError {
+            message: failure.error,
+            text_delivered: failure.data_delivered || turn.possibly_pasted,
+        });
     }
+    // Everything from here on happened after the turn's bytes reached the pane, so
+    // any failure reports the text as delivered.
+    let delivered_err = |message: String| TurnSendError {
+        message,
+        text_delivered: true,
+    };
     // Field-scoped status write: a full-struct update_agent here would drop the lock
     // between read and write and could clobber a concurrent SessionStart hook's
     // session_id/transcript_path (leaving the session unresumable/unforkable). Only
@@ -1051,13 +1096,17 @@ fn send_agent_turn(
         // in place — wedging the pane at "Working…" and freezing the queue behind it.
         // Demote that stale working status so the queue can't deadlock. Skills that do
         // start a real turn re-promote via their own UserPromptSubmit/PreToolUse hooks.
-        if let Some(current) = state.agent(&agent.id)?
+        if let Some(current) = state.agent(&agent.id).map_err(delivered_err)?
             && matches!(current.status, AgentStatus::Running | AgentStatus::Starting)
         {
-            state.set_agent_status(&agent.id, AgentStatus::AwaitingInput)?;
+            state
+                .set_agent_status(&agent.id, AgentStatus::AwaitingInput)
+                .map_err(delivered_err)?;
         }
     } else {
-        state.set_agent_status(&agent.id, AgentStatus::Running)?;
+        state
+            .set_agent_status(&agent.id, AgentStatus::Running)
+            .map_err(delivered_err)?;
     }
     // A plain-text turn is pasted then submitted with a trailing Return. The paste is
     // durable (it lands in the composer) but the lone Return can be dropped, leaving
@@ -1065,32 +1114,71 @@ fn send_agent_turn(
     // TUI commands: they can run hooklessly, so they never echo the UserPromptSubmit
     // the watchdog keys on, and a spurious Return after one could misfire.
     if !is_command && let Some(send_id) = send_id {
-        watch_agent_after_queued_send(state, agent, source, send_id);
+        watch_agent_after_queued_send(state, agent, source, send_id, turn);
     }
     Ok(())
 }
 
-/// Grace before checking whether a just-sent turn actually submitted. A real submit
-/// echoes a `UserPromptSubmit` hook (which pops the outstanding send) and writes the
-/// prompt to the transcript within a few hundred ms, so a window this size reliably
-/// separates "submitted and running" from "the Return was dropped and the text is
-/// sitting unsubmitted".
+/// Grace before the first check of whether a just-sent turn actually submitted. A
+/// real submit echoes a `UserPromptSubmit` hook (which pops the outstanding send)
+/// and writes the prompt to the transcript within a few hundred ms, so a window
+/// this size reliably separates "submitted and running" from "the Return was
+/// dropped and the text is sitting unsubmitted".
 const SUBMIT_CONFIRM_GRACE: std::time::Duration = std::time::Duration::from_millis(1200);
 
+/// Additional waits before the second and final checks (cumulative ~3s and ~8s
+/// after the send). Each non-final check that finds the send still unmatched — and
+/// no prompt of any kind submitted since — nudges another bare Return; the final
+/// check reclaims the turn instead (see [`reclaim_unconfirmed_send`]).
+const SUBMIT_CONFIRM_RECHECKS: [std::time::Duration; 2] = [
+    std::time::Duration::from_millis(1800),
+    std::time::Duration::from_millis(5000),
+];
+
+/// What one submit-watch check should do, derived from [`SubmitWatchStatus`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubmitWatchDecision {
+    /// Confirmed — or ambiguous (a prompt was submitted after our send but failed
+    /// the exact text match, so the turn very likely started). Both stop recovery:
+    /// nudging or requeueing a turn that actually started risks a duplicate, and a
+    /// visible stall is the safer failure.
+    StandDown,
+    /// Still pending with checks remaining: re-send a bare Return (no paste — the
+    /// text is already in the composer) and keep watching.
+    NudgeReturn,
+    /// Still pending on the final check: the turn never started despite the nudges;
+    /// return it to the queue.
+    Reclaim,
+}
+
+fn decide_submit_watch(status: SubmitWatchStatus, final_check: bool) -> SubmitWatchDecision {
+    match status {
+        SubmitWatchStatus::Confirmed | SubmitWatchStatus::StillPendingWithPromptActivity => {
+            SubmitWatchDecision::StandDown
+        }
+        SubmitWatchStatus::StillPending if final_check => SubmitWatchDecision::Reclaim,
+        SubmitWatchStatus::StillPending => SubmitWatchDecision::NudgeReturn,
+    }
+}
+
 /// After a queued/direct turn is pasted-and-submitted into an agent's own pane,
-/// verify the submit landed and re-send a bare Return if it did not. The failure this
-/// recovers: the bracketed paste reaches the TUI (visible in the composer) but the
-/// trailing Return is dropped — because it arrives before the composer is re-armed to
+/// verify the submit landed and recover if it did not. The failure this recovers:
+/// the bracketed paste reaches the TUI (visible in the composer) but the trailing
+/// Return is dropped — because it arrives before the composer is re-armed to
 /// submit, or, on the native surface, races the still-in-flight paste — leaving the
-/// turn stranded with the tab stuck at a false "Working…". Only turns that go into the
-/// agent's own pane and echo their prompt promptly are watched: `Steer` targets a busy
-/// agent whose echo legitimately waits for the current turn boundary, so it is excluded
-/// to avoid a spurious mid-turn Return.
+/// turn stranded with the tab stuck at a false "Working…". Recovery escalates: a
+/// bare Return is re-sent at each non-final check, and a turn still showing no sign
+/// of having started by the final check is returned to the queue (tagged
+/// possibly-pasted so its retry cannot duplicate the text). Only turns that go into
+/// the agent's own pane and echo their prompt promptly are watched: `Steer` targets
+/// a busy agent whose echo legitimately waits for the current turn boundary, so it
+/// is excluded to avoid a spurious mid-turn Return.
 fn watch_agent_after_queued_send(
     state: &AppState,
     agent: &AgentInfo,
     source: AgentSendSource,
     send_id: u64,
+    turn: &QueuedTurn,
 ) {
     if !matches!(
         source,
@@ -1101,55 +1189,119 @@ fn watch_agent_after_queued_send(
     let Some(pane_id) = agent.pane_id.clone() else {
         return;
     };
-    // Dedupe: one watcher per agent. Overlapping sends (a direct send onto a draining
-    // agent) reuse the in-flight watch rather than spawning racers.
-    if !state.begin_agent_submit_watch(&agent.id) {
+    // One watcher per exact send: overlapping sends (a direct send shortly after a
+    // queued drain) each get their own confirmation instead of the second going
+    // unwatched, while a double arm of the same send stays deduped.
+    if !state.begin_agent_submit_watch(&agent.id, send_id) {
         return;
     }
     let state = state.clone();
     let agent_id = agent.id.clone();
+    let turn = turn.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(SUBMIT_CONFIRM_GRACE);
-        let nudged = resolve_agent_submit_watch(&state, &agent_id, &pane_id, send_id);
-        state.end_agent_submit_watch(&agent_id);
-        if nudged {
-            eprintln!(
-                "qmux: re-sent Return for agent {agent_id}; a sent turn appeared unsubmitted"
-            );
-        }
+        run_agent_submit_watch(&state, &agent_id, &pane_id, send_id, turn);
+        state.end_agent_submit_watch(&agent_id, send_id);
     });
 }
 
-/// The post-grace half of [`watch_agent_after_queued_send`]: re-sends a bare Return
-/// when the exact sent turn is still unmatched, and returns whether it did so. Only a
-/// matching prompt-submit echo (or normal outstanding-send cleanup) stands the watch
-/// down. Late transcript/status activity from the previous turn is not confirmation
-/// and must not suppress recovery.
-fn resolve_agent_submit_watch(
+/// The watcher-thread body of [`watch_agent_after_queued_send`]: sleep, check,
+/// act, repeat through the escalation schedule.
+fn run_agent_submit_watch(
     state: &AppState,
     agent_id: &str,
     pane_id: &str,
     send_id: u64,
-) -> bool {
-    // A real submit's UserPromptSubmit echo pops this exact outstanding send.
-    if !state
-        .agent_has_outstanding_send_id(agent_id, send_id)
-        .unwrap_or(false)
-    {
-        return false;
+    turn: QueuedTurn,
+) {
+    let checks = 1 + SUBMIT_CONFIRM_RECHECKS.len();
+    let delays = std::iter::once(SUBMIT_CONFIRM_GRACE).chain(SUBMIT_CONFIRM_RECHECKS);
+    for (index, delay) in delays.enumerate() {
+        std::thread::sleep(delay);
+        let Ok(status) = state.check_agent_submit_watch(agent_id, send_id) else {
+            return;
+        };
+        match decide_submit_watch(status, index + 1 == checks) {
+            SubmitWatchDecision::StandDown => {
+                if status == SubmitWatchStatus::StillPendingWithPromptActivity {
+                    eprintln!(
+                        "qmux: a turn sent to agent {agent_id} never matched its prompt echo, \
+                         but a prompt was submitted after it; standing down to avoid a duplicate"
+                    );
+                }
+                return;
+            }
+            SubmitWatchDecision::NudgeReturn => {
+                // Best-effort: a failure here leaves the turn where it was, no
+                // worse off; the next check escalates.
+                let _ = write_pane(
+                    state,
+                    PaneWriteOptions {
+                        pane_id: pane_id.to_string(),
+                        data: String::new(),
+                        paste: false,
+                        submit: true,
+                    },
+                );
+                eprintln!(
+                    "qmux: re-sent Return for agent {agent_id}; a sent turn appeared unsubmitted"
+                );
+            }
+            SubmitWatchDecision::Reclaim => {
+                reclaim_unconfirmed_send(state, agent_id, pane_id, send_id, turn);
+                return;
+            }
+        }
     }
-    // Re-send just the Return (no paste — the text is already in the composer).
-    // Best-effort: a failure here leaves the turn where it was, no worse off.
-    write_pane(
-        state,
-        PaneWriteOptions {
-            pane_id: pane_id.to_string(),
-            data: String::new(),
-            paste: false,
-            submit: true,
-        },
-    )
-    .is_ok()
+}
+
+/// The final escalation of a submit watch: the exact send is still unmatched and no
+/// prompt at all was submitted since it was written, so after the unanswered Return
+/// nudges the turn is treated as never-started and returned to the front of its
+/// queue — tagged possibly-pasted, so the eventual retry submits a bare Return
+/// rather than pasting a duplicate copy onto the text already in the composer. The
+/// agent's optimistic Running from the failed send is demoted so the tab doesn't
+/// sit at a false "Working…" and future drain triggers aren't gated off. Removing
+/// the outstanding-send record and requeueing are atomic; if the prompt echo lands
+/// in the race window the whole reclaim is a no-op.
+fn reclaim_unconfirmed_send(
+    state: &AppState,
+    agent_id: &str,
+    pane_id: &str,
+    send_id: u64,
+    mut turn: QueuedTurn,
+) {
+    turn.possibly_pasted = true;
+    let queued_turns = match state.requeue_unconfirmed_send(agent_id, send_id, turn) {
+        Ok(Some(queued_turns)) => queued_turns,
+        Ok(None) => return,
+        Err(err) => {
+            eprintln!("qmux: failed to reclaim an unconfirmed turn for agent {agent_id}: {err}");
+            return;
+        }
+    };
+    eprintln!(
+        "qmux: a turn sent to agent {agent_id} never started; returned it to the queue"
+    );
+    if let Ok(Some(agent)) = state.agent(agent_id)
+        && matches!(agent.status, AgentStatus::Running | AgentStatus::Starting)
+    {
+        let _ = state.set_agent_status(agent_id, AgentStatus::AwaitingInput);
+    }
+    state.emit(QmuxEvent::new(
+        "agent.turn_queued",
+        Some(pane_id.to_string()),
+        Some(agent_id.to_string()),
+        json!({ "pendingTurns": queued_turns.len(), "queuedTurns": queued_turns.clone() }),
+    ));
+    state.emit(QmuxEvent::new(
+        "agent.queue_error",
+        Some(pane_id.to_string()),
+        Some(agent_id.to_string()),
+        json!({
+            "error": "A sent turn never started; it was returned to the queue",
+            "queuedTurns": queued_turns,
+        }),
+    ));
 }
 
 /// Sends a user turn straight to the agent, but only after reserving the drain guard
@@ -1164,9 +1316,14 @@ fn send_direct_or_queue(
     if !state.begin_direct_send(&agent.id)? {
         return queue_agent_turn(state, agent, QueuedTurn::new(data));
     }
-    let result = send_agent_turn(state, agent, data, AgentSendSource::DirectSend);
+    let result = send_agent_turn(
+        state,
+        agent,
+        &QueuedTurn::new(data),
+        AgentSendSource::DirectSend,
+    );
     state.finish_agent_drain(&agent.id);
-    result?;
+    result.map_err(|err| err.message)?;
     let queued_turns = state.agent_queued_turns(&agent.id)?;
     Ok(SubmitAgentTurnResult {
         queued: false,
@@ -1487,27 +1644,25 @@ mod tests {
     }
 
     #[test]
-    fn submit_watch_resends_return_when_turn_looks_unsubmitted() {
+    fn submit_watch_nudges_then_reclaims_a_turn_that_never_submitted() {
         let state = test_state();
-        state
-            .insert_agent(sample_agent_with_id(
-                "agent-1",
-                AgentStatus::Running,
-                Some("pane-1"),
-            ))
-            .unwrap();
-        state
-            .insert_pane(sample_pane_runtime("pane-1", Some("agent-1")))
-            .unwrap();
 
-        // A queued send that never echoed a UserPromptSubmit still looks dropped,
-        // so the watch re-sends one.
+        // A queued send that never echoed a UserPromptSubmit — and saw no prompt
+        // of any kind after it — looks dropped: non-final checks nudge a Return,
+        // the final check reclaims the turn.
         let send_id = state
             .record_agent_send("agent-1", "commit".to_string(), AgentSendSource::QueuedTurn)
             .unwrap();
-        assert!(resolve_agent_submit_watch(
-            &state, "agent-1", "pane-1", send_id
-        ));
+        let status = state.check_agent_submit_watch("agent-1", send_id).unwrap();
+        assert_eq!(status, SubmitWatchStatus::StillPending);
+        assert_eq!(
+            decide_submit_watch(status, false),
+            SubmitWatchDecision::NudgeReturn
+        );
+        assert_eq!(
+            decide_submit_watch(status, true),
+            SubmitWatchDecision::Reclaim
+        );
     }
 
     #[test]
@@ -1520,26 +1675,79 @@ mod tests {
                 Some("pane-1"),
             ))
             .unwrap();
-        state
-            .insert_pane(sample_pane_runtime("pane-1", Some("agent-1")))
-            .unwrap();
 
         let send_id = state
             .record_agent_send("agent-1", "commit".to_string(), AgentSendSource::QueuedTurn)
             .unwrap();
         // A late status/transcript mutation from the previous turn is not proof
         // that this exact prompt submitted; its outstanding record still requires
-        // the recovery Return.
+        // recovery.
         state
             .set_agent_status("agent-1", AgentStatus::Running)
             .unwrap();
-        assert!(resolve_agent_submit_watch(
-            &state, "agent-1", "pane-1", send_id
-        ));
+        assert_eq!(
+            state.check_agent_submit_watch("agent-1", send_id).unwrap(),
+            SubmitWatchStatus::StillPending
+        );
     }
 
     #[test]
     fn submit_watch_stands_down_when_send_already_echoed() {
+        let state = test_state();
+
+        // No outstanding send (the UserPromptSubmit echo already popped it):
+        // nothing to nudge even though the agent is otherwise quiet.
+        let status = state.check_agent_submit_watch("agent-1", 1).unwrap();
+        assert_eq!(status, SubmitWatchStatus::Confirmed);
+        assert_eq!(
+            decide_submit_watch(status, false),
+            SubmitWatchDecision::StandDown
+        );
+        assert_eq!(
+            decide_submit_watch(status, true),
+            SubmitWatchDecision::StandDown
+        );
+    }
+
+    #[test]
+    fn submit_watch_stands_down_after_any_prompt_submit() {
+        let state = test_state();
+
+        let send_id = state
+            .record_agent_send("agent-1", "commit".to_string(), AgentSendSource::QueuedTurn)
+            .unwrap();
+        // A prompt submitted after our send that fails the exact text match (e.g.
+        // the paste was mangled or concatenated) leaves the record outstanding —
+        // but the turn very likely started, so recovery must stand down on every
+        // check rather than nudge or requeue a duplicate.
+        state
+            .match_agent_prompt_submit("agent-1", Some("commit commit"))
+            .unwrap();
+        let status = state.check_agent_submit_watch("agent-1", send_id).unwrap();
+        assert_eq!(status, SubmitWatchStatus::StillPendingWithPromptActivity);
+        assert_eq!(
+            decide_submit_watch(status, false),
+            SubmitWatchDecision::StandDown
+        );
+        assert_eq!(
+            decide_submit_watch(status, true),
+            SubmitWatchDecision::StandDown
+        );
+    }
+
+    #[test]
+    fn submit_watch_reservation_is_per_send() {
+        let state = test_state();
+        assert!(state.begin_agent_submit_watch("agent-1", 1));
+        // Same send: deduped. A different overlapping send: watched independently.
+        assert!(!state.begin_agent_submit_watch("agent-1", 1));
+        assert!(state.begin_agent_submit_watch("agent-1", 2));
+        state.end_agent_submit_watch("agent-1", 1);
+        assert!(state.begin_agent_submit_watch("agent-1", 1));
+    }
+
+    #[test]
+    fn reclaim_returns_the_turn_to_the_queue_tagged_and_demotes_running() {
         let state = test_state();
         state
             .insert_agent(sample_agent_with_id(
@@ -1548,22 +1756,80 @@ mod tests {
                 Some("pane-1"),
             ))
             .unwrap();
-        state
-            .insert_pane(sample_pane_runtime("pane-1", Some("agent-1")))
-            .unwrap();
 
-        // No outstanding send (the UserPromptSubmit echo already popped it): nothing to
-        // nudge even though the agent is otherwise quiet.
-        assert!(!resolve_agent_submit_watch(&state, "agent-1", "pane-1", 1));
+        let send_id = state
+            .record_agent_send("agent-1", "commit".to_string(), AgentSendSource::QueuedTurn)
+            .unwrap();
+        reclaim_unconfirmed_send(
+            &state,
+            "agent-1",
+            "pane-1",
+            send_id,
+            QueuedTurn::new("commit".to_string()),
+        );
+
+        // The turn is back at the front, tagged so its retry submits without
+        // re-pasting; the record is consumed; the false "Working…" is demoted.
+        let queued = state.agent_queued_turns("agent-1").unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].text, "commit");
+        assert!(queued[0].possibly_pasted);
+        assert!(state.outstanding_agent_sends("agent-1").unwrap().is_empty());
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::AwaitingInput
+        ));
     }
 
     #[test]
-    fn submit_watch_reservation_dedupes_until_resolved() {
+    fn reclaim_is_a_noop_once_the_echo_landed() {
         let state = test_state();
-        assert!(state.begin_agent_submit_watch("agent-1"));
-        assert!(!state.begin_agent_submit_watch("agent-1"));
-        state.end_agent_submit_watch("agent-1");
-        assert!(state.begin_agent_submit_watch("agent-1"));
+        state
+            .insert_agent(sample_agent_with_id(
+                "agent-1",
+                AgentStatus::Running,
+                Some("pane-1"),
+            ))
+            .unwrap();
+
+        let send_id = state
+            .record_agent_send("agent-1", "commit".to_string(), AgentSendSource::QueuedTurn)
+            .unwrap();
+        // The echo wins the race just before the reclaim runs: the turn started,
+        // so nothing may be requeued and the running status stays.
+        state
+            .match_agent_prompt_submit("agent-1", Some("commit"))
+            .unwrap();
+        reclaim_unconfirmed_send(
+            &state,
+            "agent-1",
+            "pane-1",
+            send_id,
+            QueuedTurn::new("commit".to_string()),
+        );
+
+        assert!(state.agent_queued_turns("agent-1").unwrap().is_empty());
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        ));
+    }
+
+    #[test]
+    fn possibly_pasted_turns_submit_without_repasting() {
+        let mut turn = QueuedTurn::new("commit".to_string());
+        let options = turn_write_options("pane-1".to_string(), &turn);
+        assert_eq!(options.data, "commit");
+        assert!(options.paste);
+        assert!(options.submit);
+
+        // A retry of a turn whose text already reached the composer sends only the
+        // Return, so it can never concatenate a second copy of the text.
+        turn.possibly_pasted = true;
+        let options = turn_write_options("pane-1".to_string(), &turn);
+        assert_eq!(options.data, "");
+        assert!(!options.paste);
+        assert!(options.submit);
     }
 
     #[test]

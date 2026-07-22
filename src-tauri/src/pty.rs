@@ -182,6 +182,34 @@ pub struct PaneWriteOptions {
     pub submit: bool,
 }
 
+/// A pane write failure that records how far the paste-then-submit sequence got.
+/// `data_delivered` distinguishes "the payload never reached the pane" from "the
+/// payload landed but the trailing submit (or a post-payload barrier) failed". The
+/// turn queue uses the flag to requeue a failed turn as possibly-pasted, so its
+/// retry submits a bare Return instead of pasting a second copy of the text onto
+/// the one already sitting in the composer.
+#[derive(Debug)]
+pub struct PaneWriteFailure {
+    pub error: String,
+    pub data_delivered: bool,
+}
+
+impl PaneWriteFailure {
+    fn before_data(error: String) -> Self {
+        Self {
+            error,
+            data_delivered: false,
+        }
+    }
+
+    fn after_data(error: String) -> Self {
+        Self {
+            error,
+            data_delivered: true,
+        }
+    }
+}
+
 pub fn spawn_shell_pane(
     state: &AppState,
     initial_size: Option<InitialPaneSize>,
@@ -1175,12 +1203,30 @@ pub fn complete_pending_attach(state: &AppState, pane_id: &str) {
 }
 
 pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), String> {
-    if state.research_pane_accepts_input(&options.pane_id)? == Some(false) {
-        return Err(
+    write_pane_detailed(state, options).map_err(|failure| failure.error)
+}
+
+/// The full-fidelity variant of [`write_pane`]: on failure, reports whether the
+/// payload had already reached the pane (see [`PaneWriteFailure`]). Turn sends use
+/// this so a submit-leg failure can be retried without re-pasting the text.
+pub fn write_pane_detailed(
+    state: &AppState,
+    options: PaneWriteOptions,
+) -> Result<(), PaneWriteFailure> {
+    if state
+        .research_pane_accepts_input(&options.pane_id)
+        .map_err(PaneWriteFailure::before_data)?
+        == Some(false)
+    {
+        return Err(PaneWriteFailure::before_data(
             "research terminals are read-only; create a follow-up branch instead".to_string(),
-        );
+        ));
     }
-    if state.pane_is_native(&options.pane_id)? == Some(true) {
+    if state
+        .pane_is_native(&options.pane_id)
+        .map_err(PaneWriteFailure::before_data)?
+        == Some(true)
+    {
         // Runs on the calling (background) thread; each bridge call hops to
         // the main thread internally (`DispatchQueue.main.sync`) for just the
         // AppKit work. A submit holds the per-pane send lock across those
@@ -1199,8 +1245,11 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
         return dispatch_native_pane_input(state, &options);
     }
     let writer = state
-        .pane_writer(&options.pane_id)?
-        .ok_or_else(|| format!("pane {} was not found", options.pane_id))?;
+        .pane_writer(&options.pane_id)
+        .map_err(PaneWriteFailure::before_data)?
+        .ok_or_else(|| {
+            PaneWriteFailure::before_data(format!("pane {} was not found", options.pane_id))
+        })?;
 
     // Write the data (and paste markers) under the writer lock, then release it before
     // the submit-key delay. The bracketed-paste body stays atomic within this first
@@ -1226,7 +1275,10 @@ pub fn write_pane(state: &AppState, options: PaneWriteOptions) -> Result<(), Str
 
 /// Binds the shared native sequencing to the concrete bridge calls for
 /// `options.pane_id`.
-fn dispatch_native_pane_input(state: &AppState, options: &PaneWriteOptions) -> Result<(), String> {
+fn dispatch_native_pane_input(
+    state: &AppState,
+    options: &PaneWriteOptions,
+) -> Result<(), PaneWriteFailure> {
     // Native input takes an extra asynchronous hop through the per-pane PTY writer.
     // A successful Ghostty paste/keypress call therefore only means its bytes were
     // queued, not that the child received them. Put acknowledged writer barriers on
@@ -1273,12 +1325,16 @@ fn write_native_data_and_submit(
     submit_key_delay: Duration,
     submit_retry_delay: Duration,
     submit_attempts: usize,
-) -> Result<(), String> {
-    let before_data = flush_input()?;
-    emit_data()?;
-    let after_data = flush_input()?;
+) -> Result<(), PaneWriteFailure> {
+    let before_data = flush_input().map_err(PaneWriteFailure::before_data)?;
+    emit_data().map_err(PaneWriteFailure::before_data)?;
+    // Once the payload action succeeded, its bytes are queued toward the PTY, so any
+    // later failure — a barrier, the submit key — reports the data as delivered.
+    let after_data = flush_input().map_err(PaneWriteFailure::after_data)?;
     if !data.is_empty() && after_data <= before_data {
-        return Err("native terminal accepted input action but emitted no PTY input".to_string());
+        return Err(PaneWriteFailure::before_data(
+            "native terminal accepted input action but emitted no PTY input".to_string(),
+        ));
     }
 
     if !submit_key_delay.is_zero() {
@@ -1286,8 +1342,8 @@ fn write_native_data_and_submit(
     }
     let submit_attempts = submit_attempts.max(1);
     for attempt in 1..=submit_attempts {
-        submit()?;
-        if flush_input()? > after_data {
+        submit().map_err(PaneWriteFailure::after_data)?;
+        if flush_input().map_err(PaneWriteFailure::after_data)? > after_data {
             return Ok(());
         }
 
@@ -1298,7 +1354,7 @@ fn write_native_data_and_submit(
         if !submit_retry_delay.is_zero() {
             thread::sleep(submit_retry_delay);
         }
-        if flush_input()? > after_data {
+        if flush_input().map_err(PaneWriteFailure::after_data)? > after_data {
             return Ok(());
         }
 
@@ -1327,7 +1383,7 @@ fn write_native_pane_input(
     send_text: impl FnOnce(&str) -> Result<(), String>,
     paste_approved_text: impl FnOnce(&str) -> Result<(), String>,
     submit: impl FnOnce() -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<(), PaneWriteFailure> {
     write_pane_sequenced(
         state,
         options,
@@ -1361,7 +1417,7 @@ fn write_pane_sequenced(
     options: &PaneWriteOptions,
     emit_data: impl FnOnce(&PaneWriteOptions) -> Result<(), String>,
     emit_submit: impl FnOnce() -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<(), PaneWriteFailure> {
     // A submit is a multi-write sequence — paste body, a short delay, then Return —
     // so two submits racing to the same pane could interleave as `…A……B…\r\r`,
     // merging both turns onto one line and dropping a Return. Hold the per-pane
@@ -1376,13 +1432,13 @@ fn write_pane_sequenced(
         .as_deref()
         .map(|lock| lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
 
-    emit_data(options)?;
+    emit_data(options).map_err(PaneWriteFailure::before_data)?;
 
     if options.submit {
         if !SUBMIT_KEY_DELAY.is_zero() {
             thread::sleep(SUBMIT_KEY_DELAY);
         }
-        emit_submit()?;
+        emit_submit().map_err(PaneWriteFailure::after_data)?;
     }
 
     // A lone Esc keystroke (exactly ESC — arrow keys and other sequences arrive as
@@ -2940,6 +2996,64 @@ mod tests {
         .unwrap();
 
         assert_eq!(submit_calls.get(), NATIVE_SUBMIT_ACK_ATTEMPTS);
+    }
+
+    #[test]
+    fn native_submit_leg_failure_reports_payload_delivered() {
+        let positions = RefCell::new(vec![0_u64, 12].into_iter());
+
+        // The paste landed (12 > 0) before the submit key errored: the turn queue
+        // must learn the text is already in the composer so the retry doesn't
+        // paste a duplicate copy.
+        let failure = write_native_data_and_submit(
+            "test",
+            || Ok(()),
+            || Err("bridge lost".to_string()),
+            || {
+                positions
+                    .borrow_mut()
+                    .next()
+                    .ok_or_else(|| "unexpected flush".to_string())
+            },
+            Duration::ZERO,
+            Duration::ZERO,
+            NATIVE_SUBMIT_ACK_ATTEMPTS,
+        )
+        .unwrap_err();
+
+        assert!(failure.data_delivered);
+        assert!(failure.error.contains("bridge lost"));
+    }
+
+    #[test]
+    fn native_payload_failure_reports_payload_undelivered() {
+        // The paste action itself failed: nothing reached the composer, so the
+        // retry must re-paste the full text.
+        let failure = write_native_data_and_submit(
+            "test",
+            || Err("paste rejected".to_string()),
+            || Ok(()),
+            || Ok(0),
+            Duration::ZERO,
+            Duration::ZERO,
+            NATIVE_SUBMIT_ACK_ATTEMPTS,
+        )
+        .unwrap_err();
+        assert!(!failure.data_delivered);
+
+        // The paste was accepted but verifiably never emitted PTY input: also
+        // undelivered.
+        let failure = write_native_data_and_submit(
+            "test",
+            || Ok(()),
+            || Ok(()),
+            || Ok(0),
+            Duration::ZERO,
+            Duration::ZERO,
+            NATIVE_SUBMIT_ACK_ATTEMPTS,
+        )
+        .unwrap_err();
+        assert!(!failure.data_delivered);
     }
 
     fn spawn_test_pty(state: &AppState, pane_id: &str, args: Vec<String>) -> PaneInfo {
