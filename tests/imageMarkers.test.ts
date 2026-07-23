@@ -8,6 +8,8 @@ import {
 
 const CACHE_MARKER =
   "[Image: source: /Users/raymond/.claude/image-cache/0da57d2c-6591-467c-8abf-6961554736e0/2.png]";
+const CODEX_IMAGE_BLOCK =
+  '<image name=[Image] path="/var/folders/example/T/codex-clipboard-BvUGfw.png">\n</image>';
 
 test("splitImageMarkers returns plain text untouched", () => {
   assert.deepEqual(splitImageMarkers("fix the login bug"), [
@@ -52,10 +54,32 @@ test("splitImageMarkers handles adjacent markers", () => {
   ]);
 });
 
+test("splitImageMarkers collapses a Codex clipboard image block", () => {
+  assert.deepEqual(splitImageMarkers(`inspect this:\n${CODEX_IMAGE_BLOCK}\nthanks`), [
+    { kind: "text", text: "inspect this:\n" },
+    { kind: "image", text: CODEX_IMAGE_BLOCK },
+    { kind: "text", text: "\nthanks" },
+  ]);
+});
+
+test("splitImageMarkers accepts quoted Codex image names and reordered attributes", () => {
+  const marker =
+    "<image path='/var/folders/example/image.png' name=\"[Image]\">\r\n  </image>";
+  assert.deepEqual(splitImageMarkers(marker), [{ kind: "image", text: marker }]);
+});
+
+test("splitImageMarkers leaves non-empty or incomplete image tags visible", () => {
+  const text =
+    '<image name=[Image] path="/tmp/a.png">caption</image> <image name=[Image] path="/tmp/b.png">';
+  assert.deepEqual(splitImageMarkers(text), [{ kind: "text", text }]);
+});
+
 test("collapseImageMarkers replaces every marker shape with [Image]", () => {
   assert.equal(
-    collapseImageMarkers(`before ${CACHE_MARKER} middle [Image #3] after`),
-    "before [Image] middle [Image] after",
+    collapseImageMarkers(
+      `before ${CACHE_MARKER} middle [Image #3] then ${CODEX_IMAGE_BLOCK} after`,
+    ),
+    "before [Image] middle [Image] then [Image] after",
   );
 });
 
@@ -79,6 +103,7 @@ test("imageMarkerSourcePath keeps interior spaces but trims edge whitespace", ()
 
 test("imageMarkerSourcePath returns null for numbered references and non-markers", () => {
   assert.equal(imageMarkerSourcePath("[Image #1]"), null);
+  assert.equal(imageMarkerSourcePath(CODEX_IMAGE_BLOCK), null);
   assert.equal(imageMarkerSourcePath("[Image: source: ]"), null);
   assert.equal(imageMarkerSourcePath("plain text"), null);
   assert.equal(imageMarkerSourcePath(`prefixed ${CACHE_MARKER}`), null);

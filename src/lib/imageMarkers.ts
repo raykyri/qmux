@@ -1,7 +1,8 @@
 // Pasted images reach transcripts as literal text markers: Claude Code stores the
 // bytes in ~/.claude/image-cache and writes "[Image: source: <path>]" as its own
-// text block, while images referenced inline in a typed prompt appear as
-// "[Image #N]". Both shapes collapse to a muted "[Image]" chip in compact views.
+// text block, images referenced inline in a typed prompt appear as "[Image #N]",
+// and Codex serializes clipboard attachments as an empty <image ...></image>
+// block. All shapes collapse to a muted "[Image]" chip in compact views.
 export interface ImageMarkerSegment {
   kind: "text" | "image";
   text: string;
@@ -9,7 +10,8 @@ export interface ImageMarkerSegment {
 
 export const COLLAPSED_IMAGE_LABEL = "[Image]";
 
-const IMAGE_MARKER_SOURCE = /\[Image: source: [^\]\n]*\]|\[Image #\d+\]/;
+const IMAGE_MARKER_SOURCE =
+  /\[Image: source: [^\]\n]*\]|\[Image #\d+\]|<image\b(?=[^>\r\n]*\bname=(?:"\[Image\]"|'\[Image\]'|\[Image\]))(?=[^>\r\n]*\bpath=(?:"[^"\r\n]+"|'[^'\r\n]+'))[^>\r\n]*>[\t\r\n ]*<\/image>/;
 
 function imageMarkerPattern() {
   return new RegExp(IMAGE_MARKER_SOURCE.source, "g");
