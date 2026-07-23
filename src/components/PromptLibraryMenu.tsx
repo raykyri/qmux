@@ -8,7 +8,12 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { deleteSavedPrompt, listSavedPrompts, saveSavedPrompt } from "../lib/api";
+import {
+  claimNativeTerminalPointerForWebDrag,
+  deleteSavedPrompt,
+  listSavedPrompts,
+  saveSavedPrompt,
+} from "../lib/api";
 import { placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
 import {
   discoverPlaceholders,
@@ -276,6 +281,18 @@ export default function PromptLibraryMenu({
     maxHeight: number;
     maxWidth: number;
   } | null>(null);
+  const deleteDialogOpen = dialog?.kind === "delete";
+
+  useLayoutEffect(() => {
+    if (!deleteDialogOpen) {
+      return;
+    }
+    // Unlike the pane-local editor, delete confirmation is portaled to the
+    // body and covers the terminal stage. App cannot see this component-local
+    // dialog in nativeTerminalInputBlocked, so keep its pointer gesture in the
+    // webview instead of letting Ghostty consume the button release.
+    return claimNativeTerminalPointerForWebDrag();
+  }, [deleteDialogOpen]);
 
   const refresh = useCallback(async () => {
     try {
