@@ -239,7 +239,6 @@
   --research-drop-overlay-fg: #dff8f1;
   --research-drop-overlay-icon: #80d9c6;
   --pane-status-active-dot: #5fb89f;
-  --home-cascade-done-border: rgba(108, 174, 157, 0.45);
   --folder-picker-status-border: #364245;
   --queued-turn-border: #384246;
 
@@ -312,7 +311,6 @@
   --research-drop-overlay-fg: #eeece7;
   --research-drop-overlay-icon: #c7c1b7;
   --pane-status-active-dot: #b3ada3;
-  --home-cascade-done-border: rgba(255, 255, 255, 0.2);
   --folder-picker-status-border: #49423a;
   --queued-turn-border: #48413a;
 

@@ -179,9 +179,11 @@
 
 /* A settled turn (the agent is done or inert) recedes to the calm rail
    background so an inactive terminal never reads as actively working — only
-   tone-active/attention keep the highlighted current-card fill. */
+   tone-active/attention keep the highlighted current-card fill. Its border
+   matches the past turns stacked above it (the calm card outline) so a done
+   card reads as one of the settled turns rather than a distinctly-toned one. */
 .queued-turn.is-current.tone-done {
-  border-color: var(--home-cascade-done-border);
+  border-color: var(--home-cascade-card-border);
   background: transparent;
 }
 
