@@ -488,10 +488,12 @@ header + .turn-blocks {
 /* Pasted images referenced by "[Image: source: <path>]" transcript markers
    render inline in the user bubble; pathless "[Image #N]" references, loads
    still in flight, and failed reads fall back to the muted chip. */
+/* A transcript image renders as a thumbnail, not near-full-width: it's a
+   compact preview that opens the full image in the lightbox on click. */
 .turn-image {
   display: block;
-  max-width: min(480px, 100%);
-  max-height: 360px;
+  max-width: min(200px, 100%);
+  max-height: 150px;
   width: auto;
   height: auto;
   margin: 4px 0;
@@ -500,9 +502,12 @@ header + .turn-blocks {
 }
 
 /* The inline transcript image is wrapped in a bare button so a click opens the
-   lightbox; strip the button chrome and let the <img> inside carry the look. */
+   lightbox; strip the button chrome and let the <img> inside carry the look.
+   fit-content keeps the click target hugging the thumbnail rather than spanning
+   the full message width. */
 .turn-image-button {
   display: block;
+  width: fit-content;
   padding: 0;
   border: 0;
   background: none;
