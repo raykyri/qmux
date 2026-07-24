@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import {
   closeImageLightbox,
@@ -7,26 +7,14 @@ import {
 } from "../lib/imageLightbox";
 
 // Mounted once at the app root. Renders whatever image openImageLightbox last
-// set, full-size over a dimmed backdrop; dismissed by clicking anywhere or
-// pressing Escape. The image is already a loaded data URL, so there is no
-// loading state here — the thumbnail the user clicked shares the same cached
-// bytes.
+// set, full-size over a dimmed backdrop; dismissed by clicking anywhere or the
+// close button. Escape is handled by the app-level Escape dispatcher in App
+// (which reads this component's module store), so there is no keydown listener
+// here — it kept the dispatcher's fixed overlay ordering the whole story. The
+// image is already a loaded data URL, so there is no loading state here — the
+// thumbnail the user clicked shares the same cached bytes.
 export default function ImageLightbox() {
   const state = useSyncExternalStore(subscribeImageLightbox, getImageLightbox, getImageLightbox);
-
-  useEffect(() => {
-    if (!state) {
-      return;
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closeImageLightbox();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [state]);
 
   if (!state) {
     return null;

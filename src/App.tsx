@@ -62,6 +62,7 @@ import { LauncherSelect } from "./components/LauncherSelect";
 import type { LauncherSelectOption } from "./components/LauncherSelect";
 import BrowserOverlay from "./components/BrowserOverlay";
 import ImageLightbox from "./components/ImageLightbox";
+import { closeImageLightbox, getImageLightbox } from "./lib/imageLightbox";
 import ConfirmDialogActionButton from "./components/ConfirmDialogActionButton";
 import { queuedTurnDeliveryLabel } from "./components/QueuedTurnCard";
 import {
@@ -9913,6 +9914,18 @@ function MainApp() {
         return;
       }
       const overlays = escapeOverlayStateRef.current;
+
+      // The image lightbox is the frontmost modal (it floats above every pane
+      // and the browser overlay), so it takes Escape first and exclusively.
+      // Its state lives in a module store rather than App state, so read it
+      // directly here instead of mirroring it into the overlay ref above.
+      if (getImageLightbox() !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        closeImageLightbox();
+        return;
+      }
 
       // The browser overlay claims Escape exclusively, including from
       // component-level listeners registered after this one.
