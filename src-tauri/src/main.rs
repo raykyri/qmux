@@ -1029,6 +1029,17 @@ async fn read_transcript_image(path: String) -> Result<String, String> {
     .map_err(|err| format!("read_transcript_image task failed: {err}"))?
 }
 
+/// Persists a base64-encoded image pasted into a composer/queue and returns its
+/// absolute path, so the prompt can reference it as `[Image: <path>]`.
+#[tauri::command]
+async fn save_pasted_image(data_base64: String, extension: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        image_files::save_pasted_image(&data_base64, &extension)
+    })
+    .await
+    .map_err(|err| format!("save_pasted_image task failed: {err}"))?
+}
+
 /// The tree is committed before its root run launches so a crash mid-launch is
 /// recoverable, but a root that never launched holds nothing durable. Leaving
 /// it behind on a launch failure accumulated dead entries the caller could not
@@ -2313,6 +2324,7 @@ fn main() {
             update_research_document,
             read_markdown_document_file,
             read_transcript_image,
+            save_pasted_image,
             get_research_node_content,
             fork_research_node,
             cancel_research_node,

@@ -14,7 +14,9 @@
 
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
@@ -97,6 +99,63 @@ fn read_transcript_image_within(path: &Path, allowed_root: &Path) -> Result<Stri
     Ok(format!("data:{mime};base64,{}", STANDARD.encode(&bytes)))
 }
 
+/// Persists a base64-encoded image the user pasted into a composer/queue and
+/// returns its absolute path, for referencing in the prompt as `[Image: <path>]`
+/// (which the queue renders as a thumbnail and, once delivered as text, the agent
+/// loads from the path). Written into `~/.claude/image-cache` — the same directory
+/// Claude Code's own pastes live in, and inside the home-confined root that
+/// [`read_transcript_image`] will later read the thumbnail from.
+pub fn save_pasted_image(data_base64: &str, extension: &str) -> Result<String, String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| !home.as_os_str().is_empty())
+        .ok_or_else(|| "cannot determine your home directory to store the image".to_string())?;
+    let cache_dir = home.join(".claude").join("image-cache");
+    save_pasted_image_within(data_base64, extension, &cache_dir)
+}
+
+/// Cache-dir-injectable core of [`save_pasted_image`], kept separate so tests can
+/// point it at a scratch directory.
+fn save_pasted_image_within(
+    data_base64: &str,
+    extension: &str,
+    cache_dir: &Path,
+) -> Result<String, String> {
+    let ext = extension.trim().trim_start_matches('.').to_ascii_lowercase();
+    // Reuse the render allow-list as the write allow-list: only formats the webview
+    // can later display as a thumbnail may be stored.
+    if image_mime_for_extension(&ext).is_none() {
+        return Err("only PNG, JPEG, GIF, WebP, and BMP images can be pasted".to_string());
+    }
+    let bytes = STANDARD
+        .decode(data_base64.trim())
+        .map_err(|err| format!("failed to decode pasted image data: {err}"))?;
+    if bytes.is_empty() {
+        return Err("the pasted image was empty".to_string());
+    }
+    if bytes.len() > MAX_TRANSCRIPT_IMAGE_BYTES {
+        return Err(format!(
+            "images are limited to {} MB",
+            MAX_TRANSCRIPT_IMAGE_BYTES / (1024 * 1024)
+        ));
+    }
+    fs::create_dir_all(cache_dir)
+        .map_err(|err| format!("failed to create the image cache directory: {err}"))?;
+    // A monotonic-clock timestamp plus a process-lifetime counter names the file
+    // uniquely without collision even for two pastes within the same millisecond.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = cache_dir.join(format!("qmux-paste-{nanos}-{seq}.{ext}"));
+    fs::write(&path, &bytes)
+        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    let absolute = fs::canonicalize(&path).unwrap_or(path);
+    Ok(absolute.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,6 +192,31 @@ mod tests {
         fs::write(&jpeg, [0xff, 0xd8]).unwrap();
         let url = read_transcript_image_within(&jpeg, &folder).unwrap();
         assert!(url.starts_with("data:image/jpeg;base64,"), "{url}");
+
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn save_pasted_image_writes_a_readable_file_and_rejects_bad_input() {
+        let folder = temp_folder();
+        let cache = folder.join("image-cache");
+        let bytes: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+        // A leading dot on the extension is tolerated, and the written file reads
+        // back through the confined reader as the same bytes.
+        let path = save_pasted_image_within(&STANDARD.encode(bytes), ".png", &cache).unwrap();
+        assert!(path.ends_with(".png"), "{path}");
+        let url = read_transcript_image_within(Path::new(&path), &folder).unwrap();
+        assert_eq!(
+            url,
+            format!("data:image/png;base64,{}", STANDARD.encode(bytes))
+        );
+
+        let bad_ext = save_pasted_image_within(&STANDARD.encode(bytes), "svg", &cache).unwrap_err();
+        assert!(bad_ext.contains("PNG"), "{bad_ext}");
+
+        let empty = save_pasted_image_within("", "png", &cache).unwrap_err();
+        assert!(empty.contains("empty"), "{empty}");
 
         fs::remove_dir_all(folder).unwrap();
     }

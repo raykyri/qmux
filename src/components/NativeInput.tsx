@@ -17,6 +17,7 @@ import {
   queueWaitAgentTurn,
   removeQueuedAgentTurn,
   reorderQueuedAgentTurn,
+  savePastedImage,
   sendNextQueuedAgentTurn,
   setQueuedTurnPause,
   submitAgentTurn,
@@ -160,6 +161,26 @@ interface NativeInputProps {
   getQueueScroll: (agentId: string) => number | undefined;
   saveQueueScroll: (agentId: string, scrollTop: number) => void;
   onError: (message: string) => void;
+}
+
+// Raster formats the backend image cache accepts, mapped from the clipboard
+// item's MIME type to the file extension the save command stores under. A paste
+// whose type isn't here is rejected before it reaches the backend.
+const PASTED_IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/bmp": "bmp",
+};
+
+function readFileAsDataUrl(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error("failed to read the image"));
+    reader.readAsDataURL(file);
+  });
 }
 
 export default function NativeInput({
@@ -369,6 +390,48 @@ export default function NativeInput({
       });
     });
   }, [agent.id]);
+
+  // Splice text at the caret (or append when the textarea isn't focused) and
+  // restore focus after it. Reads/writes through the latest-refs above so a
+  // pending async insert (a pasted image saving to disk) still lands at the
+  // current caret against the current text.
+  const insertAtCaret = (text: string) => {
+    const textarea = textareaRef.current;
+    const current = valueForInsertRef.current;
+    const start = textarea?.selectionStart ?? current.length;
+    const end = textarea?.selectionEnd ?? current.length;
+    setValueForInsertRef.current(current.slice(0, start) + text + current.slice(end));
+    const caret = start + text.length;
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) {
+        return;
+      }
+      el.focus();
+      el.setSelectionRange(caret, caret);
+    });
+  };
+
+  // Persist an image pasted into the composer and splice a "[Image: <path>]"
+  // marker at the caret. The queue renders that marker as a thumbnail, and it is
+  // delivered to the agent verbatim as text (the agent loads the file from the
+  // path), so no separate image channel to the terminal is needed.
+  const ingestPastedImage = async (file: File) => {
+    const extension = PASTED_IMAGE_EXTENSION_BY_MIME[file.type];
+    if (!extension) {
+      showToast("That image format can't be pasted");
+      return;
+    }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+      const path = await savePastedImage(base64, extension);
+      insertAtCaret(`[Image: ${path}]`);
+      onUserInput(agent.id);
+    } catch (error) {
+      showToast(typeof error === "string" ? error : "Couldn't paste the image");
+    }
+  };
 
   const awaitingPermission = agent.status === "awaitingPermission";
   const paused = agent.paused ?? false;
@@ -1242,7 +1305,7 @@ export default function NativeInput({
             return (
               <QueuedTurnCard
                 key={turn.id}
-                text={renderQueuedTurnText(turn.text)}
+                text={renderQueuedTurnText(turn.text, { imageThumbnails: true })}
                 className={stateClassName}
                 pauseAfter={turn.pauseAfter}
                 deliveryLabel={turn.delivery ? queuedTurnDeliveryLabel(turn.delivery) : null}
@@ -1312,6 +1375,16 @@ export default function NativeInput({
             onUserInput(agent.id);
           }}
           onPaste={(event) => {
+            // A pasted image (screenshot or copied file) arrives as a file with
+            // no usable text; capture it and skip the text-paste path entirely.
+            const imageFile = Array.from(event.clipboardData.files).find((file) =>
+              file.type.startsWith("image/"),
+            );
+            if (imageFile) {
+              event.preventDefault();
+              void ingestPastedImage(imageFile);
+              return;
+            }
             const text = event.clipboardData.getData("text");
             const verdict = inspectPaste(text, pasteProtection);
             if (verdict.action === "accept") {

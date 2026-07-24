@@ -432,6 +432,14 @@ export function readTranscriptImage(path: string) {
   return invoke<string>("read_transcript_image", { path });
 }
 
+/** Persists a base64-encoded image pasted into a composer/queue into the image
+ * cache and returns its absolute path, for referencing in the prompt as
+ * "[Image: <path>]". `extension` is the raster format (png/jpg/jpeg/gif/webp/bmp);
+ * the backend enforces the allowlist and byte cap. */
+export function savePastedImage(dataBase64: string, extension: string) {
+  return invoke<string>("save_pasted_image", { dataBase64, extension });
+}
+
 /** Copies a terminal agent pane's conversation into a Research workspace as
  * a read-only conversation tree. The terminal is untouched — repeating the
  * export creates another independent tree. */

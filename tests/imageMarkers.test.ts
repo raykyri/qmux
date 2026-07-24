@@ -8,6 +8,9 @@ import {
 
 const CACHE_MARKER =
   "[Image: source: /Users/raymond/.claude/image-cache/0da57d2c-6591-467c-8abf-6961554736e0/2.png]";
+// The qmux paste form: an absolute path with no "source:" prefix, delivered to
+// the agent as text and rendered as a thumbnail in the queue.
+const PASTE_MARKER = "[Image: /Users/raymond/.claude/image-cache/qmux-paste-42-0.png]";
 const CODEX_IMAGE_BLOCK =
   '<image name=[Image] path="/var/folders/example/T/codex-clipboard-BvUGfw.png">\n</image>';
 
@@ -107,4 +110,28 @@ test("imageMarkerSourcePath returns null for numbered references and non-markers
   assert.equal(imageMarkerSourcePath("[Image: source: ]"), null);
   assert.equal(imageMarkerSourcePath("plain text"), null);
   assert.equal(imageMarkerSourcePath(`prefixed ${CACHE_MARKER}`), null);
+});
+
+test("splitImageMarkers isolates the qmux paste marker inline", () => {
+  assert.deepEqual(splitImageMarkers(`what is this? ${PASTE_MARKER}`), [
+    { kind: "text", text: "what is this? " },
+    { kind: "image", text: PASTE_MARKER },
+  ]);
+});
+
+test("splitImageMarkers does not treat bracketed prose as a paste marker", () => {
+  // Only a leading-slash absolute path qualifies, so "[Image: figure 2]" stays text.
+  const text = "see [Image: figure 2] below";
+  assert.deepEqual(splitImageMarkers(text), [{ kind: "text", text }]);
+});
+
+test("imageMarkerSourcePath extracts the path from a qmux paste marker", () => {
+  assert.equal(
+    imageMarkerSourcePath(PASTE_MARKER),
+    "/Users/raymond/.claude/image-cache/qmux-paste-42-0.png",
+  );
+});
+
+test("collapseImageMarkers replaces the qmux paste marker too", () => {
+  assert.equal(collapseImageMarkers(`look ${PASTE_MARKER} here`), "look [Image] here");
 });
