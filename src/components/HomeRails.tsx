@@ -1130,7 +1130,7 @@ export default function HomeRails({
         ref={(element) => setCurrentCardRef(workstream.agentId, element)}
         variant="current"
         tone={currentCardTone(workstream.statusTone)}
-        text={renderQueuedTurnText(workstream.latestUserTurn)}
+        text={renderQueuedTurnText(workstream.latestUserTurn, { imageThumbnails: true })}
         receipt={renderCurrentReceipt(workstream)}
         onTextDoubleClick={handleCardTextDoubleClick}
         actions={<RailCardMenu items={[goToPaneItem(workstream)]} />}
@@ -1171,7 +1171,7 @@ export default function HomeRails({
       <QueuedTurnCard
         key={cardKey}
         ref={(element) => setQueuedCardRef(refKey, element)}
-        text={renderQueuedTurnText(turn.text)}
+        text={renderQueuedTurnText(turn.text, { imageThumbnails: true })}
         pauseAfter={turn.pauseAfter}
         deliveryLabel={turn.deliveryLabel ?? null}
         waitLabel={waitLabel}
@@ -1257,7 +1257,7 @@ export default function HomeRails({
         <QueuedTurnCard
           key={draft.id}
           variant="past"
-          text={renderQueuedTurnText(draft.text)}
+          text={renderQueuedTurnText(draft.text, { imageThumbnails: true })}
           onTextDoubleClick={handleCardTextDoubleClick}
           receipt={
             <>
@@ -1279,7 +1279,7 @@ export default function HomeRails({
     return (
       <QueuedTurnCard
         key={draft.id}
-        text={renderQueuedTurnText(draft.text)}
+        text={renderQueuedTurnText(draft.text, { imageThumbnails: true })}
         className={isDraggingCard ? "is-dragging" : ""}
         onPointerDown={(event) =>
           handleCardPointerDown(
@@ -1382,7 +1382,7 @@ export default function HomeRails({
                     <QueuedTurnCard
                       key={turn.id}
                       variant="past"
-                      text={renderQueuedTurnText(turn.text)}
+                      text={renderQueuedTurnText(turn.text, { imageThumbnails: true })}
                       receipt={renderPastReceipt(turn)}
                       onTextDoubleClick={handleCardTextDoubleClick}
                       actions={<RailCardMenu items={[goToPaneItem(workstream)]} />}

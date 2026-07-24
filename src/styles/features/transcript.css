@@ -499,8 +499,78 @@ header + .turn-blocks {
   border-radius: 6px;
 }
 
+/* The inline transcript image is wrapped in a bare button so a click opens the
+   lightbox; strip the button chrome and let the <img> inside carry the look. */
+.turn-image-button {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
+.turn-image-button:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 2px;
+}
+
+/* Small rail-card preview: a compact thumbnail (the shared <img class="turn-image">
+   inside is re-capped here) that opens the same lightbox on click. */
+.turn-image-thumb {
+  display: inline-block;
+  vertical-align: middle;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
+.turn-image-thumb .turn-image {
+  margin: 2px 0;
+  max-width: min(160px, 100%);
+  max-height: 96px;
+}
+
+.turn-image-thumb:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 2px;
+}
+
 .turn-image-chip {
   color: var(--text-activity);
+}
+
+/* Full-size image overlay opened from any thumbnail (transcript or rails).
+   Portaled to <body>, so it floats above every pane and the right sidebar. */
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay, 1000);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgba(0, 0, 0, 0.72);
+  cursor: zoom-out;
+}
+
+.image-lightbox-img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  border-radius: 6px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+
+.image-lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  min-height: var(--control-h-sm);
+  padding: 2px 9px;
+  font-size: var(--fs-base);
 }
 
 .tagged-user-instruction {

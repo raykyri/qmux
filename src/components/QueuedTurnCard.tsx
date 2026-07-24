@@ -8,6 +8,7 @@ import {
 } from "react";
 import { COLLAPSED_IMAGE_LABEL, splitImageMarkers } from "../lib/imageMarkers";
 import type { QueuedTurnDelivery } from "../types";
+import TranscriptImage from "./TranscriptImage";
 
 // Terminal title progress markers tend to be leading glyphs and spacing; strip
 // those only for the queued-turn wait footer so the stored wait target stays raw.
@@ -33,17 +34,28 @@ export function queuedTurnDeliveryLabel(delivery: QueuedTurnDelivery) {
 /** Image paste markers render as a muted "[Image]" chip instead of the raw
  *  image-cache path — shared by the composer queue and the home rails so both
  *  read the same. Pass the stored text; drags and queue commands must keep
- *  using the raw text, never this rendering. */
-export function renderQueuedTurnText(text: string): ReactNode {
+ *  using the raw text, never this rendering.
+ *
+ *  With `imageThumbnails`, source-path markers render as a small clickable
+ *  preview (home rails) instead of the chip; pathless "[Image #N]" refs still
+ *  fall back to the chip. The composer queue leaves it off and keeps chips. */
+export function renderQueuedTurnText(
+  text: string,
+  options?: { imageThumbnails?: boolean },
+): ReactNode {
   const segments = splitImageMarkers(text);
   if (segments.length === 1 && segments[0].kind !== "image") {
     return text;
   }
   return segments.map((segment, index) =>
     segment.kind === "image" ? (
-      <span key={index} className="queued-turn-image-chip">
-        {COLLAPSED_IMAGE_LABEL}
-      </span>
+      options?.imageThumbnails ? (
+        <TranscriptImage key={index} marker={segment.text} variant="thumbnail" />
+      ) : (
+        <span key={index} className="queued-turn-image-chip">
+          {COLLAPSED_IMAGE_LABEL}
+        </span>
+      )
     ) : (
       <Fragment key={index}>{segment.text}</Fragment>
     ),

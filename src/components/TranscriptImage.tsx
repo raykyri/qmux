@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { readTranscriptImage } from "../lib/api";
+import { openImageLightbox } from "../lib/imageLightbox";
 import { COLLAPSED_IMAGE_LABEL, imageMarkerSourcePath } from "../lib/imageMarkers";
 
 // Data URLs keyed by source path, shared across every mounted transcript so a
@@ -34,8 +35,17 @@ function loadTranscriptImage(path: string): Promise<string> {
 /** Renders one "[Image: source: <path>]" transcript marker as the actual
  *  pasted image. Numbered "[Image #N]" references (no path), reads still in
  *  flight, and failed reads all fall back to the muted "[Image]" chip the
- *  compact views use, so the transcript never shows a raw cache path. */
-export default function TranscriptImage({ marker }: { marker: string }) {
+ *  compact views use, so the transcript never shows a raw cache path.
+ *
+ *  "inline" is the full-width transcript image; "thumbnail" is the small
+ *  rail-card preview. Either opens the shared lightbox on click. */
+export default function TranscriptImage({
+  marker,
+  variant = "inline",
+}: {
+  marker: string;
+  variant?: "inline" | "thumbnail";
+}) {
   const path = imageMarkerSourcePath(marker);
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -66,10 +76,28 @@ export default function TranscriptImage({ marker }: { marker: string }) {
 
   if (!path || !dataUrl) {
     return (
-      <span className="turn-image-chip" title={error ?? path ?? undefined}>
+      <span
+        className={variant === "thumbnail" ? "queued-turn-image-chip" : "turn-image-chip"}
+        title={error ?? path ?? undefined}
+      >
         {COLLAPSED_IMAGE_LABEL}
       </span>
     );
   }
-  return <img className="turn-image" src={dataUrl} alt="Pasted image" title={path} />;
+  return (
+    <button
+      type="button"
+      className={variant === "thumbnail" ? "turn-image-thumb" : "turn-image-button"}
+      title={path}
+      aria-label="View pasted image"
+      onClick={(event) => {
+        // Rail cards are drag handles and double-click selects text; keep the
+        // click that opens the lightbox from bubbling into either.
+        event.stopPropagation();
+        openImageLightbox({ src: dataUrl, alt: "Pasted image" });
+      }}
+    >
+      <img className="turn-image" src={dataUrl} alt="Pasted image" />
+    </button>
+  );
 }

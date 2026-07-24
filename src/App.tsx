@@ -61,6 +61,7 @@ import {
 import { LauncherSelect } from "./components/LauncherSelect";
 import type { LauncherSelectOption } from "./components/LauncherSelect";
 import BrowserOverlay from "./components/BrowserOverlay";
+import ImageLightbox from "./components/ImageLightbox";
 import ConfirmDialogActionButton from "./components/ConfirmDialogActionButton";
 import { queuedTurnDeliveryLabel } from "./components/QueuedTurnCard";
 import {
@@ -14012,6 +14013,7 @@ function MainApp() {
           <span>{folderPickerStatus}</span>
         </div>
       ) : null}
+      <ImageLightbox />
     </main>
   );
 }
