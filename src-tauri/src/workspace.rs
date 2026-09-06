@@ -2319,6 +2319,84 @@ pub fn resolve_active_workspace(
     })
 }
 
+/// Host-aware companion used by agent transcript observations. Remote cwd
+/// values cannot be canonicalized on the desktop, so their Git fields are
+/// resolved by one bounded command on the agent's host.
+fn resolve_active_workspace_on_host(
+    host: &Host,
+    cwd: &str,
+    source: ActiveWorkspaceSource,
+) -> Option<ActiveWorkspace> {
+    if host.is_local() {
+        return resolve_active_workspace(cwd, source, false);
+    }
+    if !Path::new(cwd).is_absolute() || cwd.chars().any(char::is_control) {
+        return None;
+    }
+    let output = host
+        .git([
+            "-C",
+            cwd,
+            "rev-parse",
+            "--show-toplevel",
+            "--absolute-git-dir",
+            "--git-common-dir",
+            "--abbrev-ref",
+            "HEAD",
+        ])
+        .output()
+        .ok()?;
+    // OpenSSH reserves 255 for connection/setup failure. Do not turn a
+    // transient transport outage into a durable "plain directory" observation.
+    if output.status.code() == Some(255) {
+        return None;
+    }
+    let Some((git_root, git_dir, common_dir, branch)) = output
+        .status
+        .success()
+        .then_some(output)
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| {
+            let mut lines = stdout.lines();
+            Some((
+                lines.next()?.trim().to_string(),
+                lines.next()?.trim().to_string(),
+                lines.next()?.trim().to_string(),
+                lines.next().map(str::trim).unwrap_or_default().to_string(),
+            ))
+        })
+        .filter(|(root, git_dir, common_dir, _)| {
+            !root.is_empty() && !git_dir.is_empty() && !common_dir.is_empty()
+        })
+    else {
+        return Some(ActiveWorkspace {
+            cwd: cwd.to_string(),
+            git_root: None,
+            branch: None,
+            kind: ActiveWorkspaceKind::Directory,
+            source,
+            managed_by_qmux: false,
+        });
+    };
+    let resolve = |raw: &str| {
+        let path = PathBuf::from(raw);
+        normalize_absolute_path(if path.is_absolute() {
+            path
+        } else {
+            Path::new(cwd).join(path)
+        })
+    };
+    let kind = classify_git_checkout(Some(&resolve(&git_dir)), Some(&resolve(&common_dir)));
+    Some(ActiveWorkspace {
+        cwd: cwd.to_string(),
+        git_root: Some(resolve(&git_root).display().to_string()),
+        branch: (!branch.is_empty() && branch != "HEAD").then_some(branch),
+        kind,
+        source,
+        managed_by_qmux: false,
+    })
+}
+
 fn classify_git_checkout(git_dir: Option<&Path>, common_dir: Option<&Path>) -> ActiveWorkspaceKind {
     match (git_dir, common_dir) {
         (Some(git_dir), Some(common_dir)) if git_dir == common_dir => {
@@ -2327,6 +2405,20 @@ fn classify_git_checkout(git_dir: Option<&Path>, common_dir: Option<&Path>) -> A
         (Some(_), Some(_)) => ActiveWorkspaceKind::LinkedWorktree,
         _ => ActiveWorkspaceKind::GitCheckout,
     }
+}
+
+fn normalize_absolute_path(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 /// Resolves display-only workspace metadata for a shell pane with a single git
@@ -2445,17 +2537,18 @@ pub fn record_agent_active_workspace(
     let Some(current) = state.agent(agent_id)? else {
         return Ok(None);
     };
-    if !agent_host(state, &current)?.is_local() {
-        return Ok(None);
-    }
-
-    let mut workspace = match resolve_active_workspace(cwd, source, false) {
+    let host = agent_host(state, &current)?;
+    let mut workspace = match resolve_active_workspace_on_host(&host, cwd, source) {
         Some(workspace) => workspace,
         None => return Ok(None),
     };
     workspace.managed_by_qmux = current.branch.is_some()
         && workspace.git_root.as_deref().is_some_and(|root| {
-            fs::canonicalize(root).ok() == fs::canonicalize(&current.worktree_dir).ok()
+            if host.is_local() {
+                fs::canonicalize(root).ok() == fs::canonicalize(&current.worktree_dir).ok()
+            } else {
+                root == current.worktree_dir
+            }
         });
     let updated = state.set_agent_active_workspace_for_transcript(
         agent_id,
@@ -3708,7 +3801,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_agent_transcript_cwds_are_ignored() {
+    fn remote_agent_transport_failure_does_not_adopt_a_local_lookalike() {
         let root = temp_workspace("remote-active-command");
         let directory = root.join("local-lookalike");
         fs::create_dir_all(&directory).unwrap();

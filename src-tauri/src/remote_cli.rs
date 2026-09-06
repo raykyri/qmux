@@ -155,6 +155,7 @@ pub fn ensure_cli(host: &Host) -> Result<EnsureCliResult, String> {
         && version == VERSION
         && remote_transcript_stream_supported(host, &expanded)
         && remote_open_file_supported(host, &expanded)
+        && remote_workspace_observation_supported(host, &expanded)
     {
         return Ok(EnsureCliResult {
             path: expanded,
@@ -198,6 +199,12 @@ pub fn ensure_cli(host: &Host) -> Result<EnsureCliResult, String> {
             "bundled qmux-cli is missing remote file opening; rebuild remote-cli artifacts".into(),
         );
     }
+    if !remote_workspace_observation_supported(host, &expanded) {
+        return Err(
+            "bundled qmux-cli is missing remote workspace observation; rebuild remote-cli artifacts"
+                .into(),
+        );
+    }
     if version != VERSION {
         return Err(format!(
             "installed qmux-cli at {expanded} reported {version}, expected {VERSION}"
@@ -218,6 +225,11 @@ fn remote_transcript_stream_supported(host: &Host, path: &str) -> bool {
 
 fn remote_open_file_supported(host: &Host, path: &str) -> bool {
     remote_stdout(host, path, vec!["--remote-open-file-version".into()])
+        .is_ok_and(|output| output.trim() == "1")
+}
+
+fn remote_workspace_observation_supported(host: &Host, path: &str) -> bool {
+    remote_stdout(host, path, vec!["--workspace-observation-version".into()])
         .is_ok_and(|output| output.trim() == "1")
 }
 

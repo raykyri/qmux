@@ -13,6 +13,7 @@ pub mod transcript_stream;
 
 use qmux_proto::{
     BrowserOpenFileHeader, ControlRequest, ControlResponse, MAX_REMOTE_OPEN_FILE_BYTES,
+    WorkspaceObservation, WorkspaceObservationKind,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -112,6 +113,10 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             println!("1");
             Ok(true)
         }
+        "--workspace-observation-version" => {
+            println!("1");
+            Ok(true)
+        }
         "notify" => {
             let event = args
                 .next()
@@ -161,11 +166,13 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             // owns the presented token, so the claimed paneId is advisory only.
             let cwd = env::current_dir()
                 .map_err(|err| format!("failed to read current directory: {err}"))?;
+            let active_workspace = inspect_workspace(&cwd);
             request_silent(
-                "pane.set_cwd",
+                "pane.set_workspace",
                 json!({
                     "paneId": env::var("QMUX_PANE_ID").ok(),
                     "cwd": cwd.display().to_string(),
+                    "activeWorkspace": active_workspace,
                 }),
             )?;
             Ok(true)
@@ -311,6 +318,68 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             Err(syntax_error(format!("unknown qmux command '{command}'")))
         }
         _ => Ok(false),
+    }
+}
+
+/// Inspect the shell's cwd where the shell actually runs. In a remote pane this
+/// is deliberately done by qmux-cli on the remote host, not by the desktop.
+fn inspect_workspace(cwd: &Path) -> WorkspaceObservation {
+    let reported = cwd.display().to_string();
+    let canonical = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let fields = Command::new("git")
+        .arg("-C")
+        .arg(&canonical)
+        .args([
+            "rev-parse",
+            "--show-toplevel",
+            "--absolute-git-dir",
+            "--git-common-dir",
+            "--abbrev-ref",
+            "HEAD",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| {
+            let mut lines = stdout.lines();
+            Some((
+                lines.next()?.trim().to_string(),
+                lines.next()?.trim().to_string(),
+                lines.next()?.trim().to_string(),
+                lines.next().map(str::trim).unwrap_or_default().to_string(),
+            ))
+        })
+        .filter(|(root, git_dir, common_dir, _)| {
+            !root.is_empty() && !git_dir.is_empty() && !common_dir.is_empty()
+        });
+    let Some((git_root, git_dir, common_dir, branch)) = fields else {
+        return WorkspaceObservation {
+            cwd: reported,
+            git_root: None,
+            branch: None,
+            kind: WorkspaceObservationKind::Directory,
+        };
+    };
+    let resolve = |raw: &str| {
+        let path = PathBuf::from(raw);
+        let path = if path.is_absolute() {
+            path
+        } else {
+            canonical.join(path)
+        };
+        std::fs::canonicalize(&path).unwrap_or(path)
+    };
+    let kind = if resolve(&git_dir) == resolve(&common_dir) {
+        WorkspaceObservationKind::MainCheckout
+    } else {
+        WorkspaceObservationKind::LinkedWorktree
+    };
+    WorkspaceObservation {
+        cwd: reported,
+        git_root: Some(resolve(&git_root).display().to_string()),
+        branch: (!branch.is_empty() && branch != "HEAD").then_some(branch),
+        kind,
     }
 }
 
@@ -962,6 +1031,64 @@ mod tests {
         assert_eq!(parse_version_line(&line), Some(VERSION));
         assert_eq!(parse_version_line("qmux-cli 0.3.2\n"), Some("0.3.2"));
         assert_eq!(parse_version_line("not-a-version"), None);
+    }
+
+    #[test]
+    fn workspace_inspection_distinguishes_directories_and_linked_worktrees() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("qmux-cli-workspace-{nonce}"));
+        let repo = root.join("repo");
+        let linked = root.join("linked");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |cwd: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "qmux test"]);
+        git(&repo, &["commit", "--allow-empty", "-m", "init"]);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature/remote",
+                linked.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+
+        let plain = inspect_workspace(&root);
+        assert_eq!(plain.kind, WorkspaceObservationKind::Directory);
+        assert_eq!(plain.git_root, None);
+
+        let main = inspect_workspace(&repo);
+        assert_eq!(main.kind, WorkspaceObservationKind::MainCheckout);
+        assert_eq!(main.branch.as_deref(), Some("main"));
+
+        let worktree = inspect_workspace(&linked);
+        assert_eq!(worktree.kind, WorkspaceObservationKind::LinkedWorktree);
+        assert_eq!(worktree.branch.as_deref(), Some("feature/remote"));
+        assert_eq!(
+            worktree.git_root.as_deref(),
+            std::fs::canonicalize(&linked).unwrap().to_str()
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

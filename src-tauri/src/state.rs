@@ -21,7 +21,8 @@ use crate::scrollback::{bounded_undo_scrollback, read_pane_scrollback, remove_pa
 use crate::thread_graph;
 use crate::transcript::Turn;
 use crate::workspace::{
-    ActiveWorkspace, AgentInfo, AgentStatus, GroupInfo, WorkspaceScope, group_recoverable_dir,
+    ActiveWorkspace, ActiveWorkspaceKind, AgentInfo, AgentStatus, GroupInfo, WorkspaceScope,
+    group_recoverable_dir,
 };
 use portable_pty::{Child, MasterPty};
 use serde::{Deserialize, Serialize};
@@ -145,6 +146,48 @@ impl PaneBackend {
 /// real filesystem path (PATH_MAX is typically 1024–4096) while bounding what an
 /// in-pane process can push into persisted state via the control socket.
 const MAX_PANE_CWD_LEN: usize = 8192;
+
+fn validate_workspace_path(label: &str, path: &str) -> Result<(), String> {
+    if path.len() > MAX_PANE_CWD_LEN || path.chars().any(char::is_control) {
+        return Err(format!("reported {label} is invalid; refusing to persist"));
+    }
+    if !std::path::Path::new(path).is_absolute() {
+        return Err(format!(
+            "reported {label} must be absolute; refusing to persist"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_reported_workspace(cwd: &str, workspace: &ActiveWorkspace) -> Result<(), String> {
+    if workspace.cwd != cwd {
+        return Err("reported workspace cwd does not match pane cwd".to_string());
+    }
+    validate_workspace_path("workspace cwd", &workspace.cwd)?;
+    if let Some(root) = workspace.git_root.as_deref() {
+        validate_workspace_path("Git root", root)?;
+    }
+    if workspace.branch.as_ref().is_some_and(|branch| {
+        branch.len() > 4096 || branch.is_empty() || branch.chars().any(char::is_control)
+    }) {
+        return Err("reported Git branch is invalid; refusing to persist".to_string());
+    }
+    match workspace.kind {
+        ActiveWorkspaceKind::Directory
+            if workspace.git_root.is_some() || workspace.branch.is_some() =>
+        {
+            Err("directory workspace cannot contain Git metadata".to_string())
+        }
+        ActiveWorkspaceKind::GitCheckout
+        | ActiveWorkspaceKind::MainCheckout
+        | ActiveWorkspaceKind::LinkedWorktree
+            if workspace.git_root.is_none() =>
+        {
+            Err("Git workspace is missing its root".to_string())
+        }
+        _ => Ok(()),
+    }
+}
 
 /// Whether a freshly resolved shell workspace describes the same checkout scope
 /// as another pane or agent workspace. Exact cwd matching lets a first successful
@@ -11197,6 +11240,28 @@ impl AppState {
     /// integration on directory changes so a restarted shell reopens where it
     /// left off rather than at its spawn-time cwd. No-op for unknown panes.
     pub fn update_pane_cwd(&self, pane_id: &str, cwd: String) -> Result<(), String> {
+        self.update_pane_workspace_inner(pane_id, cwd, None)
+    }
+
+    /// Applies workspace metadata resolved by qmux-cli on the pane's host.
+    /// Local panes continue to use the desktop's authoritative filesystem/Git
+    /// probe; remote panes cannot be resolved against that filesystem and use
+    /// this authenticated, display-only observation instead.
+    pub fn update_pane_workspace(
+        &self,
+        pane_id: &str,
+        cwd: String,
+        workspace: ActiveWorkspace,
+    ) -> Result<(), String> {
+        self.update_pane_workspace_inner(pane_id, cwd, Some(workspace))
+    }
+
+    fn update_pane_workspace_inner(
+        &self,
+        pane_id: &str,
+        cwd: String,
+        reported_workspace: Option<ActiveWorkspace>,
+    ) -> Result<(), String> {
         // This value arrives over the control socket from in-pane shell
         // integration, so treat it as untrusted: reject control characters
         // (newlines, NULs, escape sequences) and absurd lengths before letting
@@ -11217,8 +11282,23 @@ impl AppState {
         if !candidate.is_absolute() {
             return Err("pane cwd must be an absolute path; refusing to persist".to_string());
         }
-        if !candidate.is_dir() {
+        let is_remote = {
+            let model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model
+                .panes
+                .get(pane_id)
+                .and_then(|pane| model.groups.get(&pane.info.group_id))
+                .is_some_and(GroupInfo::is_remote)
+        };
+        if !is_remote && !candidate.is_dir() {
             return Err("pane cwd is not an existing directory; refusing to persist".to_string());
+        }
+        if let Some(workspace) = reported_workspace.as_ref() {
+            validate_reported_workspace(&cwd, workspace)?;
         }
         let (observation_seq, cwd_changed, is_shell) = {
             let _commit_guard = self
@@ -11253,9 +11333,13 @@ impl AppState {
         // branch can change without the directory changing.
         // Resolve outside both short commit sections: git can invoke hooks or
         // otherwise take time, and must not pin the model or block other panes.
-        let active_workspace = is_shell
-            .then(|| crate::workspace::resolve_pane_workspace(&cwd))
-            .flatten();
+        let active_workspace = if !is_shell {
+            None
+        } else if is_remote {
+            reported_workspace
+        } else {
+            crate::workspace::resolve_pane_workspace(&cwd)
+        };
 
         let _commit_guard = self
             .inner
@@ -18664,6 +18748,83 @@ mod tests {
                 .is_err()
         );
         assert_eq!(state.list_panes().unwrap()[0].cwd, real_dir);
+    }
+
+    #[test]
+    fn remote_workspace_observation_accepts_remote_only_paths() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        let mut group = sample_group_with_id("group-1");
+        group.remote = Some(crate::workspace::RemoteRef {
+            id: "devbox".to_string(),
+            label: "Dev box".to_string(),
+            host: "devbox".to_string(),
+            multiplexer: crate::workspace::RemoteMultiplexer::Tmux,
+            qmux_cli: None,
+            workspace_root: Some("/srv/qmux/workspaces".to_string()),
+        });
+        state.insert_group_after(group, None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+
+        let cwd = "/srv/code/project/feature".to_string();
+        state
+            .update_pane_workspace(
+                "pane-1",
+                cwd.clone(),
+                ActiveWorkspace {
+                    cwd: cwd.clone(),
+                    git_root: Some("/srv/code/project/feature".to_string()),
+                    branch: Some("feature/remote".to_string()),
+                    kind: ActiveWorkspaceKind::LinkedWorktree,
+                    source: crate::workspace::ActiveWorkspaceSource::Qmux,
+                    managed_by_qmux: false,
+                },
+            )
+            .unwrap();
+
+        let pane = state.list_panes().unwrap().remove(0);
+        assert_eq!(pane.cwd, cwd);
+        assert_eq!(
+            pane.active_workspace
+                .as_ref()
+                .and_then(|workspace| workspace.branch.as_deref()),
+            Some("feature/remote")
+        );
+        assert_eq!(
+            pane.active_workspace.map(|workspace| workspace.kind),
+            Some(ActiveWorkspaceKind::LinkedWorktree)
+        );
+    }
+
+    #[test]
+    fn remote_workspace_observation_rejects_mismatched_or_relative_metadata() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace));
+        let mut group = sample_group_with_id("group-1");
+        group.remote = Some(crate::workspace::RemoteRef {
+            id: "devbox".to_string(),
+            label: "Dev box".to_string(),
+            host: "devbox".to_string(),
+            multiplexer: crate::workspace::RemoteMultiplexer::Tmux,
+            qmux_cli: None,
+            workspace_root: None,
+        });
+        state.insert_group_after(group, None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+
+        let invalid = ActiveWorkspace {
+            cwd: "/srv/other".to_string(),
+            git_root: Some("relative/root".to_string()),
+            branch: Some("main".to_string()),
+            kind: ActiveWorkspaceKind::MainCheckout,
+            source: crate::workspace::ActiveWorkspaceSource::Qmux,
+            managed_by_qmux: false,
+        };
+        assert!(
+            state
+                .update_pane_workspace("pane-1", "/srv/code/project".to_string(), invalid)
+                .is_err()
+        );
     }
 
     #[test]

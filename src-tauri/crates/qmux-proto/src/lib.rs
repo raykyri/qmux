@@ -48,6 +48,32 @@ pub struct BrowserOpenFileHeader {
     pub size: u64,
 }
 
+/// Git checkout classification produced beside a shell prompt on the machine
+/// that owns the shell. Keeping this on the wire avoids resolving a remote path
+/// against the desktop's filesystem.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceObservationKind {
+    Directory,
+    GitCheckout,
+    MainCheckout,
+    LinkedWorktree,
+}
+
+/// Display-only shell workspace metadata. The authenticated pane remains the
+/// authority for which pane is updated; these paths never grant lifecycle or
+/// deletion ownership.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceObservation {
+    pub cwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    pub kind: WorkspaceObservationKind,
+}
+
 /// Extensions the embedded browser handles as a top-level local preview. This
 /// is shared by the remote CLI's early validation and the desktop's authoritative
 /// MIME check so a file cannot pass one endpoint and fail only after transfer.
@@ -155,5 +181,18 @@ mod tests {
         assert!(is_safe_browser_preview_name("report.HTML"));
         assert!(!is_safe_browser_preview_name("../report.html"));
         assert!(!is_safe_browser_preview_name("archive.zip"));
+    }
+
+    #[test]
+    fn workspace_observation_uses_the_frontend_wire_shape() {
+        let value = serde_json::to_value(WorkspaceObservation {
+            cwd: "/srv/code/project".to_string(),
+            git_root: Some("/srv/code/project".to_string()),
+            branch: Some("feature/remote".to_string()),
+            kind: WorkspaceObservationKind::LinkedWorktree,
+        })
+        .unwrap();
+        assert_eq!(value["gitRoot"], "/srv/code/project");
+        assert_eq!(value["kind"], "linkedWorktree");
     }
 }

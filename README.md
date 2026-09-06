@@ -519,7 +519,8 @@ streaming after reconnects or app restarts; a transcript connection failure
 shows a notice while the terminal remains usable. Managed Linux `qmux-cli`
 installs are upgraded automatically when required remote capabilities are
 missing. Custom CLI installations must support `--transcript-stream-version`
-(currently `3`) and `--remote-open-file-version` (currently `1`).
+(currently `3`), `--remote-open-file-version` (currently `1`), and
+`--workspace-observation-version` (currently `1`).
 The stream transfers UTF-8 chunks of at most 128 KiB, allowing image-bearing
 records larger than a transport frame to be reassembled locally. Historical
 records loaded on connection or reconnect update the transcript without

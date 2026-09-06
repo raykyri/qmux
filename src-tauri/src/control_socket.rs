@@ -10,7 +10,10 @@ use crate::state::{AppState, PaneKind, canonical_loopback_artifact_url};
 use crate::workspace::{
     LaunchOrigin, recover_shell_agent_from_session_start, validate_launch_workspace,
 };
-use qmux_proto::{BrowserOpenFileHeader, ControlRequest, ControlResponse, PublicControlRequest};
+use qmux_proto::{
+    BrowserOpenFileHeader, ControlRequest, ControlResponse, PublicControlRequest,
+    WorkspaceObservation, WorkspaceObservationKind,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fs;
@@ -968,6 +971,39 @@ fn handle_request_with_peer(
             state.update_pane_cwd(&authed_pane, payload.cwd)?;
             Ok(json!({ "updated": true }))
         }
+        "pane.set_workspace" => {
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct SetWorkspacePayload {
+                cwd: String,
+                active_workspace: WorkspaceObservation,
+            }
+            let payload = serde_json::from_value::<SetWorkspacePayload>(request.payload)
+                .map_err(|err| format!("invalid pane.set_workspace payload: {err}"))?;
+            let workspace = crate::workspace::ActiveWorkspace {
+                cwd: payload.active_workspace.cwd,
+                git_root: payload.active_workspace.git_root,
+                branch: payload.active_workspace.branch,
+                kind: match payload.active_workspace.kind {
+                    WorkspaceObservationKind::Directory => {
+                        crate::workspace::ActiveWorkspaceKind::Directory
+                    }
+                    WorkspaceObservationKind::GitCheckout => {
+                        crate::workspace::ActiveWorkspaceKind::GitCheckout
+                    }
+                    WorkspaceObservationKind::MainCheckout => {
+                        crate::workspace::ActiveWorkspaceKind::MainCheckout
+                    }
+                    WorkspaceObservationKind::LinkedWorktree => {
+                        crate::workspace::ActiveWorkspaceKind::LinkedWorktree
+                    }
+                },
+                source: crate::workspace::ActiveWorkspaceSource::Qmux,
+                managed_by_qmux: false,
+            };
+            state.update_pane_workspace(&authed_pane, payload.cwd, workspace)?;
+            Ok(json!({ "updated": true }))
+        }
         "agent.prepare_shell_launch" => {
             let launch = serde_json::from_value::<PrepareShellAgentLaunchRequest>(request.payload)
                 .map_err(|err| format!("invalid agent.prepare_shell_launch payload: {err}"))?;
@@ -1337,9 +1373,10 @@ fn ensure_remote_command_allowed(
         "ping" | "notification.send" => true,
         // Shell integration may report cwd or prepare a supervised agent only
         // while no agent currently owns the pane.
-        "pane.set_cwd" | "agent.prepare_shell_launch" | "claude.prepare_shell_launch" => {
-            is_shell && !has_agent
-        }
+        "pane.set_cwd"
+        | "pane.set_workspace"
+        | "agent.prepare_shell_launch"
+        | "claude.prepare_shell_launch" => is_shell && !has_agent,
         // SessionStart itself is allowed to recover a lost shell-agent binding.
         "hook.notify" => true,
         // A remote shell or agent may stage one bounded preview file. The remaining
