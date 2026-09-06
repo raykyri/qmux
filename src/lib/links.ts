@@ -78,20 +78,19 @@ export function safeHref(href: unknown): string | undefined {
   } catch {
     return undefined;
   }
-  // Reject resolutions that only "look" like https because an absolute Unix path
-  // was joined onto the dummy base (handled above) — keep this as a belt-and-
-  // braces check for any path-shaped input absoluteLocalFilePath missed.
-  if (
-    url.hostname === "qmux.invalid" &&
-    absoluteLocalFilePath(url.pathname) !== undefined
-  ) {
-    return `${QMUX_FILE_HREF_PREFIX}${url.pathname}`;
+  // Never expose the synthetic parsing origin as a real destination. Preserve
+  // path-shaped inputs that absoluteLocalFilePath may have missed as local file
+  // links, but reject every other relative destination as non-navigable.
+  if (url.hostname === "qmux.invalid") {
+    return absoluteLocalFilePath(url.pathname) !== undefined
+      ? `${QMUX_FILE_HREF_PREFIX}${url.pathname}`
+      : undefined;
   }
-  // Return the resolved absolute URL, not the raw href: a relative ("/path") or
-  // protocol-relative ("//host") href passes the protocol check once resolved
-  // against the base, but handing the raw string downstream would let it resolve
-  // unpredictably. Normalizing here means openLink always receives a fully
-  // qualified http(s)/mailto URL (or a qmux-file: local path).
+  // Return the resolved absolute URL, not the raw href: a protocol-relative
+  // ("//host") href passes the protocol check once resolved against the base,
+  // but handing the raw string downstream would let it resolve unpredictably.
+  // Normalizing here means openLink always receives a fully qualified
+  // http(s)/mailto URL (or a qmux-file: local path).
   return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:"
     ? url.href
     : undefined;

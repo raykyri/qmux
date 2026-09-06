@@ -54,6 +54,14 @@ test("transcript file links omit source positions and sentence periods from the 
   assert.doesNotMatch(withPeriod, /href="[^"]*example\.html\./u);
 });
 
+test("relative transcript links cannot expose the dummy parsing origin", () => {
+  const html = render("[docs](/docs/intro) [guide](guide/intro)");
+  assert.doesNotMatch(html, /qmux\.invalid/u);
+  assert.doesNotMatch(html, /<a\b/u);
+  assert.match(html, />docs<\/span>/u);
+  assert.match(html, />guide<\/span>/u);
+});
+
 test("Devin ref tags render as file and line-number links", () => {
   const snippet =
     '<ref_snippet file="/Users/raymond/Code/multitool/.claude/worktrees/foks-experiment/foks-ui/src/screens/write-workflows.tsx" lines="760-843" />';

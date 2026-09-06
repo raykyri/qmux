@@ -115,13 +115,14 @@ test("local path cleanup does not alter web URL ports or punctuation", () => {
   );
 });
 
-test("safeHref does not treat ordinary site-relative paths as files", () => {
+test("safeHref rejects relative links that only resolve against the dummy base", () => {
   // /docs/intro has no file extension and no known FS root — leave it alone.
   // Resolving against the dummy base would make https://qmux.invalid/docs/intro,
-  // which is still not a navigable real URL we want to surface; safeHref keeps
-  // that behavior for non-file absolute paths (https on the dummy host).
-  const docs = safeHref("/docs/intro");
-  assert.equal(docs, "https://qmux.invalid/docs/intro");
+  // which is not a real destination and must never reach the native browser.
+  // The same applies to document-relative and fragment-only destinations.
+  assert.equal(safeHref("/docs/intro"), undefined);
+  assert.equal(safeHref("guide/intro"), undefined);
+  assert.equal(safeHref("#details"), undefined);
   assert.equal(absoluteLocalFilePath("/docs/intro"), undefined);
 });
 
