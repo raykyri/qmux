@@ -2274,6 +2274,203 @@ pub fn create_shell_worktree(
     Ok(dir)
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryWorktree {
+    pub path: String,
+    pub head: String,
+    pub branch: Option<String>,
+    pub is_main: bool,
+    pub locked: bool,
+    pub prunable: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryBranch {
+    pub name: String,
+    pub full_ref: String,
+    pub head: String,
+    pub upstream: Option<String>,
+    pub remote: bool,
+    pub checked_out_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryInventory {
+    pub repository_root: String,
+    pub worktrees: Vec<RepositoryWorktree>,
+    pub branches: Vec<RepositoryBranch>,
+}
+
+fn git_output(host: &Host, args: &[&str], context: &str) -> Result<Vec<u8>, String> {
+    let output = host
+        .git(args.iter().copied())
+        .output()
+        .map_err(|err| format!("failed to {context}: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to {context}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    if output.stdout.len() > 4 * 1024 * 1024 {
+        return Err(format!("failed to {context}: git output exceeded 4 MiB"));
+    }
+    Ok(output.stdout)
+}
+
+fn parse_worktree_inventory(output: &[u8], main: &str) -> Result<Vec<RepositoryWorktree>, String> {
+    let mut worktrees = Vec::new();
+    let mut current: Option<RepositoryWorktree> = None;
+    for raw in output.split(|byte| *byte == 0) {
+        let field = String::from_utf8(raw.to_vec())
+            .map_err(|_| "git returned a non-UTF-8 worktree path".to_string())?;
+        if field.is_empty() {
+            if let Some(worktree) = current.take() {
+                worktrees.push(worktree);
+            }
+            continue;
+        }
+        if let Some(path) = field.strip_prefix("worktree ") {
+            if let Some(worktree) = current.take() {
+                worktrees.push(worktree);
+            }
+            current = Some(RepositoryWorktree {
+                path: path.to_string(),
+                head: String::new(),
+                branch: None,
+                is_main: path == main,
+                locked: false,
+                prunable: false,
+            });
+        } else if let Some(worktree) = current.as_mut() {
+            if let Some(head) = field.strip_prefix("HEAD ") {
+                worktree.head = head.to_string();
+            } else if let Some(branch) = field.strip_prefix("branch refs/heads/") {
+                worktree.branch = Some(branch.to_string());
+            } else if field == "locked" || field.starts_with("locked ") {
+                worktree.locked = true;
+            } else if field == "prunable" || field.starts_with("prunable ") {
+                worktree.prunable = true;
+            }
+        }
+    }
+    if let Some(worktree) = current {
+        worktrees.push(worktree);
+    }
+    Ok(worktrees)
+}
+
+pub fn repository_inventory(host: &Host, seed_cwd: &str) -> Result<RepositoryInventory, String> {
+    let main = git_main_checkout(host, seed_cwd)?;
+    let main = main
+        .to_str()
+        .ok_or_else(|| "repository path is not valid UTF-8".to_string())?
+        .to_string();
+    let worktree_output = git_output(
+        host,
+        &["-C", seed_cwd, "worktree", "list", "--porcelain", "-z"],
+        "list repository worktrees",
+    )?;
+    let worktrees = parse_worktree_inventory(&worktree_output, &main)?;
+    let branch_output = git_output(
+        host,
+        &[
+            "-C",
+            seed_cwd,
+            "for-each-ref",
+            "--format=%(refname)%09%(objectname)%09%(upstream)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+        "list repository branches",
+    )?;
+    let branch_output = String::from_utf8(branch_output)
+        .map_err(|_| "git returned non-UTF-8 branch metadata".to_string())?;
+    let checked_out = worktrees
+        .iter()
+        .filter_map(|worktree| {
+            worktree
+                .branch
+                .as_ref()
+                .map(|branch| (branch.as_str(), worktree.path.as_str()))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut branches = branch_output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            let full_ref = fields.next()?;
+            let head = fields.next()?;
+            let upstream = fields.next().filter(|value| !value.is_empty());
+            let (name, remote) = if let Some(name) = full_ref.strip_prefix("refs/heads/") {
+                (name, false)
+            } else if let Some(name) = full_ref.strip_prefix("refs/remotes/") {
+                if name.ends_with("/HEAD") {
+                    return None;
+                }
+                (name, true)
+            } else {
+                return None;
+            };
+            Some(RepositoryBranch {
+                name: name.to_string(),
+                full_ref: full_ref.to_string(),
+                head: head.to_string(),
+                upstream: upstream.map(str::to_string),
+                remote,
+                checked_out_path: (!remote)
+                    .then(|| checked_out.get(name).copied().map(str::to_string))
+                    .flatten(),
+            })
+        })
+        .collect::<Vec<_>>();
+    branches.sort_by(|left, right| (left.remote, &left.name).cmp(&(right.remote, &right.name)));
+    Ok(RepositoryInventory {
+        repository_root: main,
+        worktrees,
+        branches,
+    })
+}
+
+pub fn checkout_repository_branch(
+    state: &AppState,
+    host: &Host,
+    group: &GroupInfo,
+    seed_cwd: &str,
+    full_ref: &str,
+    requested_name: &str,
+) -> Result<PathBuf, String> {
+    let _guard = AGENT_WORKSPACE_CREATION_LOCK
+        .lock()
+        .map_err(|_| "agent workspace creation lock poisoned".to_string())?;
+    let inventory = repository_inventory(host, seed_cwd)?;
+    let branch = inventory
+        .branches
+        .iter()
+        .find(|branch| branch.full_ref == full_ref)
+        .ok_or_else(|| "that branch no longer exists; refresh and try again".to_string())?;
+    if let Some(path) = branch.checked_out_path.as_ref() {
+        return Ok(PathBuf::from(path));
+    }
+    let name = validate_worktree_name(requested_name)?;
+    let dir = allocate_named_worktree_dir(state, host, &inventory.repository_root, group, name)?;
+    let mut args = vec!["-C", inventory.repository_root.as_str(), "worktree", "add"];
+    if branch.remote {
+        args.extend(["-b", name, "--track"]);
+    }
+    args.extend([
+        "--",
+        dir.to_str().ok_or("worktree path is not valid UTF-8")?,
+        full_ref,
+    ]);
+    git_output(host, &args, "create branch worktree")?;
+    Ok(dir)
+}
+
 /// Resolves a local command cwd into display-only workspace metadata. A cwd
 /// outside Git is still useful to show, while Git's own plumbing determines
 /// whether a checkout is the repository's primary tree or a linked worktree.
@@ -3449,6 +3646,114 @@ mod tests {
         )
         .unwrap_err();
         assert!(invalid_name.contains("letters, numbers"), "{invalid_name}");
+
+        fs::remove_dir_all(workspace).ok();
+    }
+
+    #[test]
+    fn repository_inventory_lists_and_opens_existing_and_remote_branches() {
+        let workspace = temp_workspace("repository-inventory");
+        let repo = workspace.join("repo");
+        let managed = workspace.join("managed/group");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&managed).unwrap();
+        let git = |cwd: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .output()
+                .expect("git runs");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "qmux test"]);
+        git(&repo, &["commit", "--allow-empty", "-m", "init"]);
+        git(&repo, &["branch", "feature/available"]);
+        git(&repo, &["remote", "add", "origin", "."]);
+        git(&repo, &["update-ref", "refs/remotes/origin/review", "HEAD"]);
+
+        let inventory = repository_inventory(&Host::Local, repo.to_str().unwrap()).unwrap();
+        assert_eq!(inventory.worktrees.len(), 1);
+        assert!(inventory.worktrees[0].is_main);
+        assert_eq!(inventory.worktrees[0].branch.as_deref(), Some("main"));
+        assert!(inventory.branches.iter().any(|branch| {
+            branch.full_ref == "refs/heads/main"
+                && branch.checked_out_path.as_deref() == fs::canonicalize(&repo).unwrap().to_str()
+        }));
+        assert!(
+            inventory.branches.iter().any(|branch| {
+                branch.full_ref == "refs/heads/feature/available" && !branch.remote
+            })
+        );
+        assert!(
+            inventory
+                .branches
+                .iter()
+                .any(|branch| { branch.full_ref == "refs/remotes/origin/review" && branch.remote })
+        );
+
+        let state = test_state_with_workspace(workspace.join("state"));
+        persistence::save_preferences(
+            &state.config().workspace_root,
+            &persistence::AppPreferences {
+                worktree_location: Some(WorktreeLocation::LocalQmux),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let group = allocation_group(&repo, &managed);
+        let local = checkout_repository_branch(
+            &state,
+            &Host::Local,
+            &group,
+            repo.to_str().unwrap(),
+            "refs/heads/feature/available",
+            "available",
+        )
+        .unwrap();
+        assert_eq!(
+            local.join(".git").is_file(),
+            true,
+            "linked checkout should have a .git file"
+        );
+        let remote = checkout_repository_branch(
+            &state,
+            &Host::Local,
+            &group,
+            repo.to_str().unwrap(),
+            "refs/remotes/origin/review",
+            "review",
+        )
+        .unwrap();
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&remote)
+            .args(["branch", "--show-current"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "review");
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&remote)
+            .args([
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "origin/review"
+        );
 
         fs::remove_dir_all(workspace).ok();
     }

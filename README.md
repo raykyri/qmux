@@ -459,6 +459,14 @@ shells, and supported agents all run there; the qmux UI and terminal renderer
 stay local. Binding the machine to the group keeps an agent on the same host as
 the code it edits.
 
+Shell tabs report their remote cwd, branch, and checkout kind in the same tab
+metadata used for local terminals. From a Git-backed tab's context menu,
+**Branches and worktrees…** lists the repository's existing checkouts plus
+local and remote-tracking branches. Opening an existing checkout or creating a
+branch worktree runs Git on that group's host and opens the result as another
+terminal in the group. Inventory and Git operations reuse the configured SSH
+connection; the terminal itself continues to use the existing SSH/tmux path.
+
 Add machines in **Settings → Remotes**. qmux stores those UI-managed entries in
 `<workspaceRoot>/.qmux/preferences.json`; they appear in the Terminal settings
 menu immediately, without an app restart. The settings row can also test

@@ -1396,6 +1396,102 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   overflow-wrap: anywhere;
 }
 
+.repository-browser-dialog {
+  width: min(720px, 100%);
+  max-height: min(760px, calc(100vh - 36px));
+}
+
+.repository-browser-header,
+.repository-browser-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.repository-browser-header {
+  justify-content: space-between;
+}
+
+.repository-browser-header p {
+  max-width: 580px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repository-browser-content {
+  display: grid;
+  min-height: 0;
+  gap: 14px;
+  overflow: auto;
+}
+
+.repository-browser-content section,
+.repository-browser-list,
+.repository-browser-row-copy {
+  display: flex;
+  flex-direction: column;
+}
+
+.repository-browser-content section,
+.repository-browser-list {
+  gap: 6px;
+}
+
+.repository-browser-content h3 {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+
+.repository-browser-row {
+  min-height: 48px;
+  padding: 7px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+}
+
+.repository-browser-row-copy {
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.repository-browser-row-copy strong,
+.repository-browser-row-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repository-browser-row-copy strong {
+  color: var(--text-strong);
+  font-size: var(--fs-base);
+}
+
+.repository-browser-row-copy span {
+  color: var(--text-secondary);
+  font-size: calc(12px + var(--turn-font-delta, 0px));
+}
+
+.repository-browser-name {
+  width: 150px;
+  min-height: var(--control-h-md);
+  padding: 0 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--panel-bg);
+  color: var(--text-strong);
+}
+
+.repository-browser-loading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .confirm-dialog-actions {
   display: flex;
   flex-wrap: wrap;

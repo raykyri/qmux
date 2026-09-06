@@ -63,6 +63,7 @@ import type {
   RuntimeConfig,
   RemoteChoice,
   RemoteProbeResult,
+  RepositoryInventory,
   SavedRemote,
   SpawnAgentRequest,
   SubmitAgentTurnMode,
@@ -837,6 +838,54 @@ export function openPaneWorktree(
 
 export function suggestPaneWorktreeName(paneId: string) {
   return invoke<string>("suggest_pane_worktree_name", { paneId });
+}
+
+export function paneRepositoryInventory(paneId: string) {
+  return invoke<RepositoryInventory>("pane_repository_inventory", { paneId });
+}
+
+export async function openRepositoryWorktree(
+  paneId: string,
+  path: string,
+  initialSize?: InitialPaneSize | null,
+) {
+  const started = performance.now();
+  const pane = await invoke<PaneInfo>("open_repository_worktree", {
+    paneId,
+    path,
+    initialSize: initialSize ?? null,
+  });
+  if (pane.remoteSession) {
+    trackRemoteStartup(pane.id, started);
+    recordRemoteStartup(pane.id, "reserved");
+    const observed = reconcileRemoteReservation(pane).remoteConnection;
+    if (observed?.state === "connected") recordRemoteStartup(pane.id, "ready");
+    if (observed?.state === "failed") forgetRemoteStartup(pane.id);
+  }
+  return pane;
+}
+
+export async function openRepositoryBranch(
+  paneId: string,
+  fullRef: string,
+  worktreeName: string,
+  initialSize?: InitialPaneSize | null,
+) {
+  const started = performance.now();
+  const pane = await invoke<PaneInfo>("open_repository_branch", {
+    paneId,
+    fullRef,
+    worktreeName,
+    initialSize: initialSize ?? null,
+  });
+  if (pane.remoteSession) {
+    trackRemoteStartup(pane.id, started);
+    recordRemoteStartup(pane.id, "reserved");
+    const observed = reconcileRemoteReservation(pane).remoteConnection;
+    if (observed?.state === "connected") recordRemoteStartup(pane.id, "ready");
+    if (observed?.state === "failed") forgetRemoteStartup(pane.id);
+  }
+  return pane;
 }
 
 export function getUseLoginShell() {

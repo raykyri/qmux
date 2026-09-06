@@ -625,6 +625,9 @@ import {
   spawnAgent,
   spawnShell,
   openPaneWorktree,
+  openRepositoryBranch,
+  openRepositoryWorktree,
+  paneRepositoryInventory,
   suggestPaneWorktreeName,
   sendNextQueuedAgentTurn,
   setQueuedTurnPause,
@@ -664,6 +667,8 @@ import type {
   RuntimeConfig,
   RemoteChoice,
   RemoteProbeResult,
+  RepositoryBranch,
+  RepositoryInventory,
   SavedRemote,
   SavedPrompt,
   ShellAgentJobInfo,
@@ -681,6 +686,21 @@ const LEFT_SIDEBAR_DEFAULT_WIDTH = 268;
 type WorktreeCreateAction =
   | { kind: "open" }
   | { kind: "fork"; prompt?: string; anchor?: MessageAnchor };
+
+type RepositoryBrowserState = {
+  pane: PaneInfo;
+  inventory: RepositoryInventory | null;
+  error: string | null;
+  opening: string | null;
+  names: Record<string, string>;
+};
+
+function repositoryWorktreeName(branch: RepositoryBranch): string {
+  const parts = branch.name.split("/");
+  const leaf = parts[parts.length - 1] || "branch";
+  const normalized = leaf.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return (normalized || "branch").slice(0, 240);
+}
 
 function remoteSettingsDraft(remote: RemoteChoice): RemoteSettingsDraft {
   return {
@@ -3102,6 +3122,7 @@ function MainApp() {
     creating: boolean;
     error: string | null;
   } | null>(null);
+  const [repositoryBrowser, setRepositoryBrowser] = useState<RepositoryBrowserState | null>(null);
   const worktreeDialogResolveRef = useRef<((created: boolean) => void) | null>(null);
   const worktreeNameInputRef = useRef<HTMLInputElement | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
@@ -6180,6 +6201,7 @@ function MainApp() {
       publicationTarget ||
       commandPaletteOpen ||
       conversationHistoryOpen ||
+      repositoryBrowser ||
       worktreeCreateDialog ||
       closeDialog ||
       exitDialog ||
@@ -9357,6 +9379,7 @@ function MainApp() {
     conversationHistoryOpen ||
     Boolean(
       closeDialog ||
+        repositoryBrowser ||
         worktreeCreateDialog ||
         exitDialog ||
         exportResearchPane ||
@@ -10878,6 +10901,101 @@ function MainApp() {
     requestAnimationFrame(() => {
       terminalPaneRefs.current.get(created.id)?.focus();
     });
+  }
+
+  async function showRepositoryBrowser(pane: PaneInfo) {
+    setPaneContextMenu(null);
+    setError(null);
+    setRepositoryBrowser({ pane, inventory: null, error: null, opening: null, names: {} });
+    try {
+      const inventory = await paneRepositoryInventory(pane.id);
+      const names = Object.fromEntries(
+        inventory.branches.map((branch) => [branch.fullRef, repositoryWorktreeName(branch)]),
+      );
+      setRepositoryBrowser((current) =>
+        current?.pane.id === pane.id ? { ...current, inventory, names } : current,
+      );
+    } catch (err) {
+      const message = unknownErrorMessage(err);
+      setRepositoryBrowser((current) =>
+        current?.pane.id === pane.id ? { ...current, error: message } : current,
+      );
+    }
+  }
+
+  function focusRepositoryPane(groupId: string, path: string): boolean {
+    const existing = panesRef.current.find(
+      (pane) =>
+        pane.groupId === groupId &&
+        (pane.activeWorkspace?.gitRoot === path || pane.cwd === path),
+    );
+    if (!existing) return false;
+    setRepositoryBrowser(null);
+    setActivePaneId(existing.id);
+    setLastActiveGroupId(existing.groupId);
+    requestAnimationFrame(() => terminalPaneRefs.current.get(existing.id)?.focus());
+    return true;
+  }
+
+  async function adoptRepositoryPane(source: PaneInfo, created: PaneInfo) {
+    const orderedPanes = placePaneAfterOptimistically(created, source.id);
+    setPanesPreservingRecoveredDismissals(orderedPanes);
+    setRepositoryBrowser(null);
+    setActivePaneId(created.id);
+    setLastActiveGroupId(created.groupId);
+    try {
+      await refreshGroups();
+    } catch (err) {
+      setError(unknownErrorMessage(err));
+    }
+    requestAnimationFrame(() => terminalPaneRefs.current.get(created.id)?.focus());
+  }
+
+  async function openInventoryWorktree(path: string) {
+    const browser = repositoryBrowser;
+    if (!browser || browser.opening || focusRepositoryPane(browser.pane.groupId, path)) return;
+    setRepositoryBrowser({ ...browser, opening: path, error: null });
+    try {
+      const pane = await openRepositoryWorktree(
+        browser.pane.id,
+        path,
+        estimateInitialPaneSize(false),
+      );
+      await adoptRepositoryPane(browser.pane, pane);
+    } catch (err) {
+      setRepositoryBrowser((current) =>
+        current?.pane.id === browser.pane.id
+          ? { ...current, opening: null, error: unknownErrorMessage(err) }
+          : current,
+      );
+    }
+  }
+
+  async function openInventoryBranch(branch: RepositoryBranch) {
+    const browser = repositoryBrowser;
+    if (!browser || browser.opening) return;
+    if (branch.checkedOutPath) {
+      await openInventoryWorktree(branch.checkedOutPath);
+      return;
+    }
+    const name = browser.names[branch.fullRef]?.trim();
+    if (!name) return;
+    setRepositoryBrowser({ ...browser, opening: branch.fullRef, error: null });
+    try {
+      const pane = await openRepositoryBranch(
+        browser.pane.id,
+        branch.fullRef,
+        name,
+        estimateInitialPaneSize(false),
+      );
+      await adoptRepositoryPane(browser.pane, pane);
+    } catch (err) {
+      setRepositoryBrowser((current) =>
+        current?.pane.id === browser.pane.id
+          ? { ...current, opening: null, error: unknownErrorMessage(err) }
+          : current,
+      );
+    }
   }
 
   async function restoreClosedPane() {
@@ -13331,6 +13449,7 @@ function MainApp() {
     remoteDeleteConfirm,
     remoteSettingsSaving,
     worktreeCreateDialog,
+    repositoryBrowser,
     closeDialog,
     exitDialog,
     renamePaneId,
@@ -13350,6 +13469,7 @@ function MainApp() {
       remoteDeleteConfirm,
       remoteSettingsSaving,
       worktreeCreateDialog,
+      repositoryBrowser,
       closeDialog,
       exitDialog,
       renamePaneId,
@@ -13440,7 +13560,10 @@ function MainApp() {
         overlays.paneContextMenu || overlays.groupMenu || overlays.settingsMenu,
       );
       const dialogsOpen = Boolean(
-        overlays.worktreeCreateDialog || overlays.closeDialog || overlays.exitDialog,
+        overlays.repositoryBrowser ||
+          overlays.worktreeCreateDialog ||
+          overlays.closeDialog ||
+          overlays.exitDialog,
       );
       let stopPropagation = false;
       if (menusOpen) {
@@ -13455,6 +13578,9 @@ function MainApp() {
         // Don't dismiss the worktree dialog while its close/delete is running.
         if (!overlays.resolvingClose) {
           setCloseDialog(null);
+        }
+        if (!overlays.repositoryBrowser?.opening) {
+          setRepositoryBrowser(null);
         }
         if (!overlays.worktreeCreateDialog?.creating) {
           setWorktreeCreateDialog(null);
@@ -16583,6 +16709,25 @@ function MainApp() {
               disabled={!contextMenuWorktreeAction.enabled}
               title={
                 contextMenuWorktreeAction.enabled
+                  ? "List this repository's branches and worktrees"
+                  : contextMenuWorktreeAction.reason
+              }
+              onClick={() => {
+                if (contextMenuWorktreeAction.enabled) {
+                  void showRepositoryBrowser(contextMenuPane);
+                }
+              }}
+            >
+              <GitBranch size={13} aria-hidden="true" />
+              <span>Branches and worktrees…</span>
+            </button>
+            <button
+              className="control-button"
+              type="button"
+              role="menuitem"
+              disabled={!contextMenuWorktreeAction.enabled}
+              title={
+                contextMenuWorktreeAction.enabled
                   ? "Create a git worktree from this tab's checkout and open a shell there"
                   : contextMenuWorktreeAction.reason
               }
@@ -18061,6 +18206,136 @@ function MainApp() {
                   />
                 </div>
 
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {repositoryBrowser ? (
+        <div
+          className="confirm-dialog-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !repositoryBrowser.opening) {
+              setRepositoryBrowser(null);
+            }
+          }}
+        >
+          <div
+            className="confirm-dialog repository-browser-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="repository-browser-title"
+          >
+            <div className="repository-browser-header">
+              <div>
+                <h2 id="repository-browser-title">Branches and worktrees</h2>
+                {repositoryBrowser.inventory ? (
+                  <p title={repositoryBrowser.inventory.repositoryRoot}>
+                    {formatPaneDir(repositoryBrowser.inventory.repositoryRoot)}
+                  </p>
+                ) : null}
+              </div>
+              <button
+                className="control-button"
+                type="button"
+                disabled={Boolean(repositoryBrowser.opening)}
+                onClick={() => setRepositoryBrowser(null)}
+                aria-label="Close branches and worktrees"
+              >
+                <X size={14} aria-hidden="true" />
+              </button>
+            </div>
+            {!repositoryBrowser.inventory && !repositoryBrowser.error ? (
+              <p className="repository-browser-loading">
+                <LoaderCircle
+                  className="confirm-dialog-action-spinner"
+                  size={14}
+                  aria-hidden="true"
+                />{" "}
+                Loading repository…
+              </p>
+            ) : null}
+            {repositoryBrowser.error ? (
+              <p className="confirm-dialog-error" role="alert">
+                {repositoryBrowser.error}
+              </p>
+            ) : null}
+            {repositoryBrowser.inventory ? (
+              <div className="repository-browser-content">
+                <section>
+                  <h3>Worktrees</h3>
+                  <div className="repository-browser-list">
+                    {repositoryBrowser.inventory.worktrees.map((worktree) => (
+                      <div className="repository-browser-row" key={worktree.path}>
+                        <div className="repository-browser-row-copy">
+                          <strong>{worktree.branch ?? "Detached HEAD"}</strong>
+                          <span title={worktree.path}>{formatPaneDir(worktree.path)}</span>
+                        </div>
+                        <button
+                          className="control-button"
+                          type="button"
+                          disabled={Boolean(repositoryBrowser.opening) || worktree.prunable}
+                          onClick={() => void openInventoryWorktree(worktree.path)}
+                        >
+                          {repositoryBrowser.opening === worktree.path ? "Opening…" : "Open"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+                <section>
+                  <h3>Branches</h3>
+                  <div className="repository-browser-list">
+                    {repositoryBrowser.inventory.branches.map((branch) => (
+                      <div className="repository-browser-row" key={branch.fullRef}>
+                        <div className="repository-browser-row-copy">
+                          <strong>{branch.name}</strong>
+                          <span>
+                            {branch.remote
+                              ? "Remote branch"
+                              : branch.checkedOutPath
+                                ? `Checked out at ${formatPaneDir(branch.checkedOutPath)}`
+                                : branch.upstream
+                                  ? `Tracks ${branch.upstream.replace(/^refs\/remotes\//, "")}`
+                                  : "Local branch"}
+                          </span>
+                        </div>
+                        {!branch.checkedOutPath ? (
+                          <input
+                            className="repository-browser-name"
+                            aria-label={`Worktree name for ${branch.name}`}
+                            value={repositoryBrowser.names[branch.fullRef] ?? ""}
+                            disabled={Boolean(repositoryBrowser.opening)}
+                            maxLength={240}
+                            spellCheck={false}
+                            onChange={(event) => {
+                              const name = event.currentTarget.value;
+                              setRepositoryBrowser((current) =>
+                                current
+                                  ? { ...current, names: { ...current.names, [branch.fullRef]: name } }
+                                  : current,
+                              );
+                            }}
+                          />
+                        ) : null}
+                        <button
+                          className="control-button"
+                          type="button"
+                          disabled={
+                            Boolean(repositoryBrowser.opening) ||
+                            (!branch.checkedOutPath &&
+                              !repositoryBrowser.names[branch.fullRef]?.trim())
+                          }
+                          onClick={() => void openInventoryBranch(branch)}
+                        >
+                          {repositoryBrowser.opening === branch.fullRef ? "Opening…" : "Open"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </section>
               </div>
             ) : null}
           </div>
