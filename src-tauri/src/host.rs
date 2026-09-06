@@ -332,6 +332,14 @@ exec "${{cli#QMUX_CLI=}}" ping
             // shell quoting below, so it remains part of the terminfo program.
             "xterm-256color:Sync=\\E[?2026%?%p1%{1}%-%tl%eh%\\;".to_string(),
             ";".to_string(),
+            // This dedicated server is only a durability layer. Do not hold a
+            // lone Escape while looking for a longer function/meta sequence;
+            // that delay is especially noticeable over a remote connection.
+            "set-option".to_string(),
+            "-s".to_string(),
+            "escape-time".to_string(),
+            "0".to_string(),
+            ";".to_string(),
             // tmux is a durability layer for qmux, not a second interactive
             // multiplexer. Disabling both prefixes lets every control byte
             // reach the pane, while hiding the status line keeps the managed
@@ -625,6 +633,15 @@ exec "${{cli#QMUX_CLI=}}" ping
             // control, no window size, and anything checking `isatty` takes its
             // non-interactive branch.
             argv.push("-t".to_string());
+            // Modern OpenSSH delays interactive packets to obscure keystroke
+            // timing (20 ms intervals by default). A managed terminal values
+            // immediate delivery, and its encrypted SSH transport still
+            // protects the input contents. Ventura's older client predates
+            // this option, so tell it to ignore the setting rather than fail.
+            argv.push("-o".to_string());
+            argv.push("IgnoreUnknown=ObscureKeystrokeTiming".to_string());
+            argv.push("-o".to_string());
+            argv.push("ObscureKeystrokeTiming=no".to_string());
         }
         argv.push("-o".to_string());
         argv.push(format!("ConnectTimeout={CONNECT_TIMEOUT_SECONDS}"));
@@ -1135,6 +1152,10 @@ printf '{"ok":true,"data":{"status":"ok"}}\n'
         assert!(argv.iter().any(|arg| arg == "ControlMaster=auto"));
         assert!(argv.iter().any(|arg| arg == "ControlPersist=60"));
         assert!(argv.iter().any(|arg| arg == "ControlPath=~/.ssh/qmux-%C"));
+        assert!(
+            !argv.iter().any(|arg| arg == "ObscureKeystrokeTiming=no"),
+            "batch commands do not carry interactive keystroke traffic"
+        );
         assert!(!argv.contains(&"-t".to_string()), "batch needs no tty");
         assert!(
             !argv.iter().any(|arg| arg == "StreamLocalBindUnlink=yes"),
@@ -1159,6 +1180,16 @@ printf '{"ok":true,"data":{"status":"ok"}}\n'
             Interaction::Interactive,
         );
         assert!(argv.contains(&"-t".to_string()));
+        assert!(
+            argv.windows(4).any(|options| options
+                == [
+                    "-o",
+                    "IgnoreUnknown=ObscureKeystrokeTiming",
+                    "-o",
+                    "ObscureKeystrokeTiming=no"
+                ]),
+            "the compatibility guard must precede the newer SSH option"
+        );
         assert!(
             !argv.windows(2).any(|pair| pair == ["-o", "BatchMode=yes"]),
             "a pane may legitimately prompt for a passphrase"
@@ -1371,6 +1402,13 @@ printf '{"ok":true,"data":{"status":"ok"}}\n'
         }
         let output = Command::new("tmux")
             .args(tmux_server_args(&identity))
+            .args(["show-options", "-s", "-v", "escape-time"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+        let output = Command::new("tmux")
+            .args(tmux_server_args(&identity))
             .args(["show-options", "-s", "-v", "terminal-overrides"])
             .output()
             .unwrap();
@@ -1454,6 +1492,7 @@ printf '{"ok":true,"data":{"status":"ok"}}\n'
         assert!(
             configure.contains("'set-option' '-t' '=qmux-pane-7-deadbeef:' 'status' 'off' ';'")
         );
+        assert!(configure.contains("'set-option' '-s' 'escape-time' '0' ';'"));
         assert!(configure.contains("'set-option' '-t' '=qmux-pane-7-deadbeef:' 'mouse' 'on' ';'"));
         assert!(
             configure.contains(
@@ -1465,6 +1504,12 @@ printf '{"ok":true,"data":{"status":"ok"}}\n'
         assert!(attach.contains("'attach-session' '-t' '=qmux-pane-7-deadbeef'"));
         assert!(!attach.contains("new-session"));
         assert!(commands.attach_argv.contains(&"-t".to_string()));
+        assert!(
+            commands
+                .attach_argv
+                .windows(2)
+                .any(|pair| { pair == ["-o", "ObscureKeystrokeTiming=no"] })
+        );
         assert!(
             commands.attach_argv.windows(2).any(|pair| {
                 pair == ["-R", "/tmp/qmux-pane-7-deadbeef.sock:/local/run/qmux.sock"]
