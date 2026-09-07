@@ -109,5 +109,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 # Wry 0.55.1 lets a Rust panic escape its Objective-C WKURLSchemeHandler
 # callbacks, which turns a recoverable custom-protocol failure into SIGABRT.
 # Keep the locked version local until the boundary hardening is upstream.
+# See vendor/VENDOR-WRY.md for the upstream base commit, the list of local
+# modifications, and the verification script (scripts/verify-vendor-wry.sh).
 [patch.crates-io]
 wry = { path = "vendor/wry" }
