@@ -113,6 +113,7 @@ export interface UseQmuxEventsHandlers {
     url: string,
     sandbox?: boolean,
     artifactId?: string | null,
+    content?: string | null,
   ) => void;
   // Picks the next active pane when a pane closes, honoring split membership and
   // collapsed groups. Supplied by App so the pane.removed path selects consistently with
@@ -497,11 +498,13 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
         const url = event.payload.url;
         if (typeof url === "string") {
           const artifactId = event.payload.artifactId;
+          const content = event.payload.content;
           openBrowserOverlay(
             event.paneId,
             url,
             event.payload.sandbox === true,
             typeof artifactId === "string" ? artifactId : null,
+            typeof content === "string" ? content : null,
           );
         }
       }

@@ -113,4 +113,8 @@ export type BrowserOverlayState = {
   mode: BrowserOverlayMode;
   size?: BrowserOverlaySize | null;
   fullWidth?: boolean;
+  /** Token-free srcdoc content for sandboxed previews. When present, the iframe
+   * uses srcdoc instead of src so location.href is about:srcdoc (no pane token).
+   * Null when the content type falls back to the file-server URL. */
+  content?: string | null;
 };

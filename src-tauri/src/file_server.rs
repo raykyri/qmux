@@ -698,6 +698,127 @@ fn markdown_page_csp(port: u16) -> String {
     )
 }
 
+/// CSP for `srcdoc`-embedded HTML previews. Unlike [`file_content_csp`], this omits the
+/// file-server origin because `about:srcdoc` has no HTTP origin — subresources are
+/// limited to `data:`/`blob:` URIs that are already embedded in the content. This is
+/// the token-free equivalent: the framed document cannot reach the file server at all,
+/// so no capability token is needed or exposable.
+fn srcdoc_file_content_csp() -> String {
+    "default-src 'none'; \
+     script-src 'unsafe-inline'; \
+     style-src 'unsafe-inline'; \
+     img-src data: blob:; \
+     font-src data:; \
+     media-src blob:; \
+     connect-src 'none'; \
+     object-src 'none'; \
+     base-uri 'none'; \
+     form-action 'none'"
+        .to_string()
+}
+
+/// CSP for `srcdoc`-embedded rendered Markdown. Same as [`srcdoc_file_content_csp`]
+/// but only the scroll-bridge script hash is allowed (no `unsafe-inline`), matching
+/// [`markdown_page_csp`].
+fn srcdoc_markdown_csp() -> String {
+    let script_hash = STANDARD.encode(Sha256::digest(HTML_PREVIEW_SCROLL_SCRIPT.as_bytes()));
+    format!(
+        "default-src 'none'; \
+         script-src 'sha256-{script_hash}'; \
+         style-src 'unsafe-inline'; \
+         img-src data: blob:; \
+         font-src data:; \
+         media-src blob:; \
+         connect-src 'none'; \
+         object-src 'none'; \
+         base-uri 'none'; \
+         form-action 'none'"
+    )
+}
+
+/// Injects a `<meta http-equiv="Content-Security-Policy">` tag before the untrusted
+/// HTML document. For `srcdoc` content there are no HTTP headers, so CSP must be
+/// applied via `<meta>`. Prefixing it prevents hostile markup from placing executable
+/// content before the policy takes effect.
+fn inject_csp_meta(html: &str, csp: &str) -> String {
+    let meta = format!("<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">");
+    format!("{meta}{html}")
+}
+
+/// Renders a file as a self-contained HTML string suitable for `srcdoc` embedding in
+/// the browser overlay iframe. This is the token-free alternative to serving via a
+/// file-server URL: the content is delivered directly through Tauri IPC, so the framed
+/// document's `location.href` is `about:srcdoc` and contains no per-pane capability
+/// token.
+///
+/// Returns `Ok(None)` for content types that cannot be meaningfully rendered as
+/// `srcdoc` (e.g., raw binary images, PDFs). The caller should fall back to the
+/// file-server URL for those — non-HTML content cannot execute JavaScript to read
+/// `location.href`, so the token exfiltration risk does not apply.
+pub fn render_sandboxed_preview(
+    canonical: &Path,
+    codex_inline_vis: bool,
+) -> Result<Option<String>, String> {
+    let content_type = mime_type(canonical);
+    if !codex_inline_vis
+        && !is_markdown(canonical)
+        && !content_type.starts_with("text/html")
+        && !content_type.starts_with("image/svg")
+    {
+        return Ok(None);
+    }
+    let file =
+        File::open(canonical).map_err(|err| format!("failed to open preview file: {err}"))?;
+    let meta = file
+        .metadata()
+        .map_err(|err| format!("failed to read file metadata: {err}"))?;
+    let total = meta.len();
+    if total > MAX_INLINE_BYTES {
+        return Err("file is too large for inline preview".to_string());
+    }
+    let source =
+        read_slice(file, 0, total).map_err(|err| format!("failed to read preview file: {err}"))?;
+    let source_str = String::from_utf8_lossy(&source);
+
+    let html = if codex_inline_vis {
+        if total > MAX_CODEX_INLINE_VIS_BYTES {
+            return Err("codex inline visualization is too large".to_string());
+        }
+        if !canonical
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+        {
+            return Err("codex inline visualization must be an HTML file".to_string());
+        }
+        let page = render_codex_inline_visualization_page(canonical, &source_str, None);
+        inject_csp_meta(&page, &srcdoc_file_content_csp())
+    } else if is_markdown(canonical) {
+        let page = render_markdown_page(canonical, &source_str, None);
+        inject_csp_meta(&page, &srcdoc_markdown_csp())
+    } else if content_type.starts_with("text/html") {
+        let scroll_bridge = html_preview_scroll_bridge();
+        let page = format!("{source_str}\n{scroll_bridge}");
+        inject_csp_meta(&page, &srcdoc_file_content_csp())
+    } else if content_type.starts_with("image/svg") {
+        // Wrap SVG in a minimal HTML document so the CSP meta tag applies. SVG
+        // scripts execute in this context, but location.href is about:srcdoc (no
+        // token) and connect-src 'none' blocks network exfiltration.
+        let page = format!(
+            "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n\
+             <body style=\"margin:0;display:grid;place-items:center;min-height:100vh\">\n\
+             {source_str}\n</body>\n</html>\n"
+        );
+        inject_csp_meta(&page, &srcdoc_file_content_csp())
+    } else {
+        // Non-HTML content (images, PDFs, etc.) cannot execute JavaScript and
+        // therefore cannot exfiltrate the token from location.href. Fall back to
+        // the file-server URL.
+        return Ok(None);
+    };
+    Ok(Some(html))
+}
+
 fn write_response(stream: &mut TcpStream, response: Response) -> std::io::Result<()> {
     let mut head = format!("HTTP/1.1 {} {}\r\n", response.status, response.reason);
     for (key, value) in &response.headers {
@@ -1122,6 +1243,14 @@ mod tests {
         // The general file-content CSP, by contrast, still permits (contained) inline
         // script for self-hosted reports.
         assert!(file_content_csp(12345).contains("script-src 'unsafe-inline'"));
+    }
+
+    #[test]
+    fn srcdoc_csp_precedes_hostile_document_content() {
+        let source = "<script>window.location='https://example.com'</script><head></head>";
+        let page = inject_csp_meta(source, &srcdoc_file_content_csp());
+        assert!(page.starts_with("<meta http-equiv=\"Content-Security-Policy\""));
+        assert!(page.find("Content-Security-Policy").unwrap() < page.find("<script>").unwrap());
     }
 
     #[test]
