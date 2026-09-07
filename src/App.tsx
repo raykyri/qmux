@@ -5401,7 +5401,7 @@ function MainApp() {
   // `sandbox` is set for token-bearing file-server URLs so the iframe loads them in an
   // opaque origin (see BrowserOverlay); plain http(s) URLs are not sandboxed.
   const openBrowserOverlay = useCallback(
-    (paneId: string, url: string, sandbox = false, artifactId: string | null = null) => {
+    (paneId: string, url: string, sandbox = false, artifactId: string | null = null, content: string | null = null) => {
       // Force the sandbox on for any token-bearing file-server URL regardless of the
       // caller's flag: only the backend browser.open event passes sandbox=true, so typed
       // navigation and link opens would otherwise load a file-server URL as a trusted
@@ -5420,6 +5420,7 @@ function MainApp() {
           mode: effectiveSandbox ? "webkit" : (current[paneId]?.mode ?? "webkit"),
           size: current[paneId]?.size ?? null,
           fullWidth: current[paneId]?.fullWidth ?? false,
+          content: effectiveSandbox ? content : null,
         },
       }));
     },
@@ -5486,6 +5487,7 @@ function MainApp() {
           mode: prev?.mode ?? "webkit",
           size: prev?.size ?? null,
           fullWidth: prev?.fullWidth ?? false,
+          content: prev?.content ?? null,
         },
       };
     });
@@ -19252,6 +19254,7 @@ function MainApp() {
           sandbox={activeBrowserOverlay.sandbox}
           mode={activeBrowserOverlay.mode}
           bodyFontId={settings.bodyFontId}
+          content={activeBrowserOverlay.content}
           size={activeBrowserOverlay.size}
           fullWidth={activeBrowserOverlay.fullWidth ?? false}
           toggleShortcutLabel={activePaneHasTurnPaneHeader ? null : EXPAND_TOGGLE_SHORTCUT_LABEL}

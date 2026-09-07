@@ -1255,11 +1255,20 @@ fn handle_request_with_peer(
                 payload.target.trim(),
                 payload.cwd.as_deref(),
             )?;
+            let content = if resolved.sandbox {
+                resolved.path.as_ref().and_then(|path| {
+                    crate::file_server::render_sandboxed_preview(path, false)
+                        .ok()
+                        .flatten()
+                })
+            } else {
+                None
+            };
             state.emit(QmuxEvent::new(
                 "browser.open",
                 Some(authed_pane.clone()),
                 None,
-                json!({ "url": resolved.url, "sandbox": resolved.sandbox }),
+                json!({ "url": resolved.url, "sandbox": resolved.sandbox, "content": content }),
             ));
             // Panes with an attached agent also collect the target into the
             // workspace artifact tray. This deliberately covers both callers a
@@ -1323,11 +1332,14 @@ fn handle_browser_open_file<R: Read>(
         }
     };
     let url = crate::file_server::file_url(port, &token, &canonical);
+    let content = crate::file_server::render_sandboxed_preview(&canonical, false)
+        .ok()
+        .flatten();
     state.emit(QmuxEvent::new(
         "browser.open",
         Some(authed_pane.clone()),
         None,
-        json!({ "url": url, "sandbox": true }),
+        json!({ "url": url, "sandbox": true, "content": content }),
     ));
     if state.agent_by_pane(&authed_pane)?.is_some()
         && let Err(err) = state.record_artifact(

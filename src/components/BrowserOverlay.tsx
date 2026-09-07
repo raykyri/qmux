@@ -107,6 +107,9 @@ interface BrowserOverlayProps {
   // this isolated frame use the same body font as the application. Arbitrary
   // localhost pages remain untouched.
   bodyFontId: string;
+  // Token-free srcdoc content for sandboxed previews. When present, the iframe
+  // uses srcdoc instead of src so location.href is about:srcdoc (no pane token).
+  content?: string | null;
   size?: BrowserOverlaySize | null;
   fullWidth: boolean;
   toggleShortcutLabel?: string | null;
@@ -141,6 +144,7 @@ export default function BrowserOverlay({
   sandbox,
   mode,
   bodyFontId,
+  content,
   size,
   fullWidth,
   toggleShortcutLabel,
@@ -188,8 +192,17 @@ export default function BrowserOverlay({
   const humanBrowser = mode === "webkit" && !sandbox && url !== null;
   const displayedUrl = automated ? (automationSnapshot?.url ?? url) : url;
   const mirrorImage = mirrorFrame ?? automationSnapshot?.imageDataUrl ?? null;
+  // Token-free srcdoc: when the backend provides rendered content, embed it directly
+  // via srcdoc so the iframe's location.href is about:srcdoc (no pane token). The
+  // file-server URL is still stored as `url` for scroll-restore keying and the
+  // non-HTML fallback path.
+  const useSrcdoc = sandbox && typeof content === "string" && content.length > 0;
   const frameUrl = (() => {
     if (!url || !sandbox) {
+      return url;
+    }
+    // srcdoc content is already rendered — no body-font query param needed.
+    if (useSrcdoc) {
       return url;
     }
     try {
@@ -1152,10 +1165,13 @@ export default function BrowserOverlay({
             key={`${frameUrl}::${reloadNonce}`}
             ref={frameRef}
             className={`browser-overlay-frame${sandbox ? " is-file-content" : ""}`}
-            src={frameUrl}
+            src={useSrcdoc ? undefined : frameUrl}
+            srcDoc={useSrcdoc ? content! : undefined}
             title="Browser overlay"
             // allow-scripts (so scripted reports still render) without
             // allow-same-origin (opaque origin → can't read the token-gated server).
+            // With srcdoc, location.href is about:srcdoc — no pane token is exposed
+            // to the framed document at all.
             sandbox={sandbox ? "allow-scripts" : undefined}
             referrerPolicy="no-referrer"
             onLoad={() => {
