@@ -39,6 +39,10 @@
   pointer-events: auto;
 }
 
+.remote-connection-spinner {
+  animation: spinner-spin 1s linear infinite;
+}
+
 .remote-connection-state {
   font-size: 13px;
   font-weight: 600;

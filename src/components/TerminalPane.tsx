@@ -1,4 +1,5 @@
 import { remoteConnectionLabel } from "../lib/remoteConnection";
+import { LoaderCircle } from "lucide-react";
 import RemoteConnectionDetailsText from "./RemoteConnectionDetailsText";
 import {
   forwardRef,
@@ -116,6 +117,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const remoteUnavailable = Boolean(
     pane.remoteSession && pane.remoteConnection?.state !== "connected",
   );
+  const connectionLabel = remoteConnectionLabel(pane.remoteConnection);
+  const showConnectionSpinner = connectionLabel === "Connecting" || connectionLabel === "Checking connection";
   const terminalInputBlocked = inputBlocked || remoteUnavailable;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const lastVisibleRectRef = useRef<NativeTerminalRect | null>(null);
@@ -484,14 +487,20 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     >
       <div ref={hostRef} className="terminal-host" />
       {remoteUnavailable ? (
-        <div className="remote-connection-overlay" role="status" aria-live="polite">
-          <span className="remote-connection-state">
-            {remoteConnectionLabel(pane.remoteConnection)}
-          </span>
-          <RemoteConnectionDetailsText className="remote-connection-detail" connection={pane.remoteConnection} active={visible} />
-          <button type="button" className="control-button remote-connection-close" onClick={onCloseRemote}>
-            Close
-          </button>
+        <div className="remote-connection-overlay" role="status" aria-live="polite" aria-label={showConnectionSpinner ? connectionLabel : undefined}>
+          {showConnectionSpinner ? (
+            <LoaderCircle className="remote-connection-spinner" size={24} aria-hidden="true" />
+          ) : (
+            <>
+              <span className="remote-connection-state">
+                {connectionLabel}
+              </span>
+              <RemoteConnectionDetailsText className="remote-connection-detail" connection={pane.remoteConnection} active={visible} />
+              <button type="button" className="control-button remote-connection-close" onClick={onCloseRemote}>
+                Close
+              </button>
+            </>
+          )}
         </div>
       ) : null}
       {confirmDialog}

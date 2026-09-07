@@ -874,6 +874,7 @@ fn handle_line(state: &AppState, line: &str) -> Result<Value, String> {
     handle_line_with_peer(state, line, false)
 }
 
+#[cfg(test)]
 fn handle_line_with_peer(
     state: &AppState,
     line: &str,
