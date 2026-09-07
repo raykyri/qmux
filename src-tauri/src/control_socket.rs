@@ -975,6 +975,9 @@ fn handle_request_with_peer(
             #[derive(Debug, Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
             struct SetWorkspacePayload {
+                #[allow(dead_code)]
+                #[serde(default)]
+                pane_id: Option<String>,
                 cwd: String,
                 active_workspace: WorkspaceObservation,
             }
@@ -1001,6 +1004,8 @@ fn handle_request_with_peer(
                 source: crate::workspace::ActiveWorkspaceSource::Qmux,
                 managed_by_qmux: false,
             };
+            // Bind the workspace update to the authenticated pane regardless of any claimed
+            // paneId, mirroring pane.set_cwd and hook.notify.
             state.update_pane_workspace(&authed_pane, payload.cwd, workspace)?;
             Ok(json!({ "updated": true }))
         }
@@ -2089,6 +2094,47 @@ mod tests {
             err.contains("not authorized for that pane"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn set_workspace_ignores_claimed_pane_id_but_rejects_other_unknown_fields() {
+        let state = test_state();
+        insert_remote_shell(&state, "pane-1");
+        let token = state.pane_remote_token("pane-1").unwrap();
+        let payload = json!({
+            "paneId": "pane-2",
+            "cwd": "/srv/next",
+            "activeWorkspace": {
+                "cwd": "/srv/next",
+                "gitRoot": "/srv/next",
+                "branch": "main",
+                "kind": "gitCheckout",
+            },
+        });
+
+        let data = handle_line(
+            &state,
+            &request_line(&token, "pane.set_workspace", payload.clone()),
+        )
+        .unwrap();
+        assert_eq!(data, json!({ "updated": true }));
+        let pane = state
+            .list_panes()
+            .unwrap()
+            .into_iter()
+            .find(|pane| pane.id == "pane-1")
+            .unwrap();
+        assert_eq!(pane.cwd, "/srv/next");
+        assert_eq!(
+            pane.active_workspace.unwrap().git_root.as_deref(),
+            Some("/srv/next")
+        );
+
+        let mut invalid = payload;
+        invalid["unexpected"] = json!(true);
+        let err =
+            handle_line(&state, &request_line(&token, "pane.set_workspace", invalid)).unwrap_err();
+        assert!(err.contains("unknown field"), "unexpected error: {err}");
     }
 
     #[test]
