@@ -2289,13 +2289,19 @@ mod tests {
         assert!(
             metadata
                 .iter()
-                .filter(|adapter| !matches!(adapter.id.as_str(), "claude" | "codex"))
+                .filter(|adapter| !matches!(
+                    adapter.id.as_str(),
+                    "claude" | "codex" | "devin" | "antigravity"
+                ))
                 .all(|adapter| !adapter.supports_remote)
         );
         assert!(
             metadata
                 .iter()
-                .filter(|adapter| matches!(adapter.id.as_str(), "claude" | "codex"))
+                .filter(|adapter| matches!(
+                    adapter.id.as_str(),
+                    "claude" | "codex" | "devin" | "antigravity"
+                ))
                 .all(|adapter| adapter.supports_remote)
         );
         assert!(
@@ -2424,7 +2430,10 @@ mod tests {
         assert!(
             metadata
                 .iter()
-                .filter(|adapter| matches!(adapter.id.as_str(), "claude" | "codex"))
+                .filter(|adapter| matches!(
+                    adapter.id.as_str(),
+                    "claude" | "codex" | "devin" | "antigravity"
+                ))
                 .all(|adapter| adapter.readiness == AdapterReadiness::Error
                     && adapter
                         .message
@@ -2434,7 +2443,10 @@ mod tests {
         assert!(
             metadata
                 .iter()
-                .filter(|adapter| !matches!(adapter.id.as_str(), "claude" | "codex"))
+                .filter(|adapter| !matches!(
+                    adapter.id.as_str(),
+                    "claude" | "codex" | "devin" | "antigravity"
+                ))
                 .all(|adapter| adapter.readiness == AdapterReadiness::Error
                     && adapter
                         .message
