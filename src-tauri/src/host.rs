@@ -332,6 +332,16 @@ exec "${{cli#QMUX_CLI=}}" ping
             // shell quoting below, so it remains part of the terminfo program.
             "xterm-256color:Sync=\\E[?2026%?%p1%{1}%-%tl%eh%\\;".to_string(),
             ";".to_string(),
+            "set-option".to_string(),
+            "-s".to_string(),
+            "terminal-overrides[101]".to_string(),
+            "xterm-256color:Ms=\\E]52;%p1%s;%p2%s\\a".to_string(),
+            ";".to_string(),
+            "set-option".to_string(),
+            "-s".to_string(),
+            "set-clipboard".to_string(),
+            "on".to_string(),
+            ";".to_string(),
             // This dedicated server is only a durability layer. Do not hold a
             // lone Escape while looking for a longer function/meta sequence;
             // that delay is especially noticeable over a remote connection.
@@ -1409,6 +1419,13 @@ printf '{"ok":true,"data":{"status":"ok"}}\n'
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
         let output = Command::new("tmux")
             .args(tmux_server_args(&identity))
+            .args(["show-options", "-s", "-v", "set-clipboard"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "on");
+        let output = Command::new("tmux")
+            .args(tmux_server_args(&identity))
             .args(["show-options", "-s", "-v", "terminal-overrides"])
             .output()
             .unwrap();
@@ -1426,6 +1443,11 @@ printf '{"ok":true,"data":{"status":"ok"}}\n'
             overrides
                 .lines()
                 .any(|line| line == "xterm-256color:Sync=\\E[?2026%?%p1%{1}%-%tl%eh%;")
+        );
+        assert!(
+            overrides
+                .lines()
+                .any(|line| line == "xterm-256color:Ms=\\E]52;%p1%s;%p2%s\\a")
         );
         for default in default_overrides.lines() {
             assert!(
@@ -1493,6 +1515,10 @@ printf '{"ok":true,"data":{"status":"ok"}}\n'
             configure.contains("'set-option' '-t' '=qmux-pane-7-deadbeef:' 'status' 'off' ';'")
         );
         assert!(configure.contains("'set-option' '-s' 'escape-time' '0' ';'"));
+        assert!(configure.contains("'set-option' '-s' 'set-clipboard' 'on' ';'"));
+        assert!(configure.contains(
+            "'set-option' '-s' 'terminal-overrides[101]' 'xterm-256color:Ms=\\E]52;%p1%s;%p2%s\\a' ';'"
+        ));
         assert!(configure.contains("'set-option' '-t' '=qmux-pane-7-deadbeef:' 'mouse' 'on' ';'"));
         assert!(
             configure.contains(
