@@ -7,6 +7,7 @@ use super::{
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
+use crate::host::{Host, RemoteCommand};
 use crate::pty::{
     CommandPlan, InitialPaneSize, PaneMeta, agent_pane_envs, plan_to_spec, recoverable_dir,
     spawn_pty,
@@ -50,10 +51,24 @@ impl AntigravityAdapter {
         Ok(binary.display().to_string())
     }
 
-    fn spawn_pane(&self, state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {
-        let binary = self.ensure_binary()?;
-        ensure_antigravity_integration()?;
+    fn host_for_group(&self, state: &AppState, group_id: &str) -> Result<Host, String> {
+        let group = state.group(group_id)?;
+        Ok(crate::host::for_group(
+            group.as_ref().and_then(|group| group.remote.as_ref()),
+        ))
+    }
 
+    fn binary_for_host(&self, host: &Host) -> Result<String, String> {
+        if host.is_local() {
+            self.ensure_binary()
+        } else if self.binary.trim().is_empty() {
+            Err("Antigravity adapter binary cannot be empty for a remote launch".to_string())
+        } else {
+            Ok(self.binary.clone())
+        }
+    }
+
+    fn spawn_pane(&self, state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {
         let agent = prepare_agent_workspace_with_parent(
             state,
             PrepareAgentWorkspaceRequest {
@@ -71,7 +86,10 @@ impl AntigravityAdapter {
             .cwd
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(&agent.worktree_dir));
-        if !cwd.is_dir() {
+        let host = self.host_for_group(state, &agent.group_id)?;
+        let binary = self.binary_for_host(&host)?;
+        ensure_antigravity_integration_for_host(&host)?;
+        if host.is_local() && !cwd.is_dir() {
             let _ = mark_agent_failed(state, &agent.id);
             return Err(format!(
                 "Antigravity working directory {} does not exist",
@@ -130,14 +148,19 @@ impl AntigravityAdapter {
         pane: &PaneInfo,
         agent: &AgentInfo,
     ) -> Result<PaneInfo, String> {
-        let binary = self.ensure_binary()?;
-        ensure_antigravity_integration()?;
-        let cwd = recoverable_dir(&agent.worktree_dir).ok_or_else(|| {
-            format!(
-                "agent worktree {} no longer exists; relaunch manually",
-                agent.worktree_dir
-            )
-        })?;
+        let host = self.host_for_group(state, &agent.group_id)?;
+        let binary = self.binary_for_host(&host)?;
+        ensure_antigravity_integration_for_host(&host)?;
+        let cwd = if host.is_local() {
+            recoverable_dir(&agent.worktree_dir).ok_or_else(|| {
+                format!(
+                    "agent worktree {} no longer exists; relaunch manually",
+                    agent.worktree_dir
+                )
+            })?
+        } else {
+            PathBuf::from(&agent.worktree_dir)
+        };
 
         let (args, resumed) = build_antigravity_resume_args(
             &cwd,
@@ -205,15 +228,18 @@ impl AntigravityAdapter {
         state: &AppState,
         request: PrepareShellAgentLaunchRequest,
     ) -> Result<PreparedShellAgentLaunch, String> {
-        let binary = self.ensure_binary()?;
-        ensure_antigravity_integration()?;
-
         if !state.pane_exists(&request.pane_id)? {
             return Err(format!("pane {} was not found", request.pane_id));
         }
 
+        let pane_group_id = state
+            .pane_group_id(&request.pane_id)?
+            .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
+        let host = self.host_for_group(state, &pane_group_id)?;
+        let binary = self.binary_for_host(&host)?;
+        ensure_antigravity_integration_for_host(&host)?;
         let shell_cwd = PathBuf::from(&request.cwd);
-        if !shell_cwd.is_dir() {
+        if host.is_local() && !shell_cwd.is_dir() {
             return Err(format!(
                 "Antigravity working directory {} does not exist",
                 shell_cwd.display()
@@ -221,9 +247,6 @@ impl AntigravityAdapter {
         }
 
         let cwd_str = shell_cwd.display().to_string();
-        let pane_group_id = state
-            .pane_group_id(&request.pane_id)?
-            .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
         let resume_session_id = antigravity_resume_session_id(&request.args).map(str::to_string);
         let fork_point = None::<String>;
 
@@ -271,7 +294,9 @@ impl AntigravityAdapter {
         let agent = apply_shell_cli_model(state, agent, &request.args)?;
 
         // If resume session id is provided, bind transcript path immediately
-        if let Some(session_id) = resume_session_id.as_deref() {
+        if host.is_local()
+            && let Some(session_id) = resume_session_id.as_deref()
+        {
             if let Ok(home) = antigravity_home() {
                 let transcript_path = transcript_path_for_session(&home, session_id);
                 if transcript_path.is_file() {
@@ -290,6 +315,13 @@ impl AntigravityAdapter {
             }
         }
 
+        let agent = if host.is_local() {
+            agent
+        } else {
+            state
+                .mutate_agent(&agent.id, |agent| agent.transcript_path = None)?
+                .ok_or_else(|| "prepared remote Antigravity agent disappeared".to_string())?
+        };
         let agent = attach_antigravity_agent_pane(
             state,
             &agent.id,
@@ -301,6 +333,26 @@ impl AntigravityAdapter {
         if let Some(session_id) = resume_session_id {
             envs.push(("QMUX_ROOT_SESSION_ID".to_string(), session_id));
         }
+        let launch_envs = if host.is_local() {
+            envs
+        } else {
+            let identity = state
+                .list_panes()?
+                .into_iter()
+                .find(|pane| pane.id == request.pane_id)
+                .and_then(|pane| pane.remote_session)
+                .ok_or_else(|| {
+                    format!(
+                        "remote pane {} is missing its tmux session identity",
+                        request.pane_id
+                    )
+                })?;
+            host.tmux_pane_envs(
+                &identity,
+                &state.pane_remote_token(&request.pane_id)?,
+                &envs,
+            )?
+        };
 
         let agent_id = agent.id.clone();
         let launch_cwd = shell_cwd.display().to_string();
@@ -316,7 +368,7 @@ impl AntigravityAdapter {
             binary,
             cwd: launch_cwd,
             args: request.args,
-            envs: envs
+            envs: launch_envs
                 .into_iter()
                 .map(|(key, value)| LaunchEnv { key, value })
                 .collect(),
@@ -357,11 +409,22 @@ impl AntigravityAdapter {
             .and_then(|session_id| valid_antigravity_session_id(&session_id).map(str::to_string));
         let reported_transcript_path = super::string_field(&notification.payload, "transcriptPath")
             .or_else(|| super::string_field(&notification.payload, "transcript_path"));
-        let resolved_transcript_path = antigravity_notification_transcript_path(
-            current.transcript_path.as_deref(),
-            reported_transcript_path.as_deref(),
-            session_id.as_deref(),
-        );
+        let remote = current.pane_id.as_deref().is_some_and(|pane_id| {
+            state
+                .list_panes()
+                .ok()
+                .and_then(|panes| panes.into_iter().find(|pane| pane.id == pane_id))
+                .is_some_and(|pane| pane.remote_session.is_some())
+        });
+        let resolved_transcript_path = (!remote)
+            .then(|| {
+                antigravity_notification_transcript_path(
+                    current.transcript_path.as_deref(),
+                    reported_transcript_path.as_deref(),
+                    session_id.as_deref(),
+                )
+            })
+            .flatten();
 
         let is_stop = notification.event.as_str() == "Stop";
         let fully_idle_stop = is_stop
@@ -491,6 +554,10 @@ impl AgentAdapter for AntigravityAdapter {
 
     fn configured_binary(&self) -> &str {
         &self.binary
+    }
+
+    fn supports_remote(&self) -> bool {
+        true
     }
 
     fn launch(&self, state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {
@@ -1008,6 +1075,108 @@ fn merge_hooks_json(existing: &str, shim_path: &Path) -> Result<String, String> 
     Ok(formatted)
 }
 
+fn ensure_antigravity_integration_for_host(host: &Host) -> Result<(), String> {
+    if host.is_local() {
+        return ensure_antigravity_integration();
+    }
+    let home = remote_antigravity_home(host)?;
+    let shim_path = home.join("qmux").join("qmux-antigravity-hook");
+    let hooks_path = PathBuf::from(host.expand_home("~/.gemini/config/hooks.json")?);
+    let existing = remote_read_optional_file(host, &hooks_path)?;
+    let updated = merge_hooks_json(&existing, &shim_path).map_err(|err| {
+        format!(
+            "failed to update {} on {}: {err}",
+            hooks_path.display(),
+            host.label()
+        )
+    })?;
+    remote_write_file(host, &shim_path, 0o755, antigravity_hook_shim().as_bytes())?;
+    if existing != updated {
+        remote_write_file(host, &hooks_path, 0o600, updated.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn remote_antigravity_home(host: &Host) -> Result<PathBuf, String> {
+    let command = host.command(RemoteCommand {
+        program: "sh",
+        args: vec![
+            "-c".to_string(),
+            "printf '%s' \"${ANTIGRAVITY_APP_DATA_DIR:-${ANTIGRAVITY_HOME:-$HOME/.gemini/antigravity-cli}}\"".to_string(),
+            "qmux-antigravity-home".to_string(),
+        ],
+        ..Default::default()
+    });
+    let output = crate::pty::remote_command_output(
+        command,
+        None,
+        &format!("resolve Antigravity config on {}", host.label()),
+    )?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to resolve Antigravity config on {}",
+            host.label()
+        ));
+    }
+    let path = String::from_utf8(output.stdout)
+        .map_err(|_| "remote Antigravity config path is not UTF-8".to_string())?;
+    if !path.starts_with('/') {
+        return Err("remote Antigravity config path is not absolute".to_string());
+    }
+    Ok(PathBuf::from(path))
+}
+
+fn remote_read_optional_file(host: &Host, path: &Path) -> Result<String, String> {
+    let command = host.command(RemoteCommand {
+        program: "sh",
+        args: vec![
+            "-c".to_string(),
+            "set -eu; path=$1; if [ -f \"$path\" ] && [ ! -L \"$path\" ]; then cat -- \"$path\"; elif [ -e \"$path\" ] || [ -L \"$path\" ]; then exit 65; fi".to_string(),
+            "qmux-read-file".to_string(),
+            path.display().to_string(),
+        ],
+        ..Default::default()
+    });
+    let output = crate::pty::remote_command_output(
+        command,
+        None,
+        &format!("read {} on {}", path.display(), host.label()),
+    )?;
+    if !output.status.success() {
+        return Err(format!("refusing unsafe remote file {}", path.display()));
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|_| format!("remote file {} is not UTF-8", path.display()))
+}
+
+fn remote_write_file(host: &Host, path: &Path, mode: u32, contents: &[u8]) -> Result<(), String> {
+    let command = host.command(RemoteCommand {
+        program: "sh",
+        args: vec![
+            "-c".to_string(),
+            "set -eu; path=$1; mode=$2; parent=${path%/*}; umask 077; mkdir -p -- \"$parent\"; [ -d \"$parent\" ] && [ ! -L \"$parent\" ] || exit 65; tmp=$parent/.qmux-write.$$; trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; cat > \"$tmp\"; chmod \"$mode\" \"$tmp\"; mv -f -- \"$tmp\" \"$path\"; trap - EXIT HUP INT TERM".to_string(),
+            "qmux-write-file".to_string(),
+            path.display().to_string(),
+            format!("{mode:o}"),
+        ],
+        ..Default::default()
+    });
+    let output = crate::pty::remote_command_output(
+        command,
+        Some(contents.to_vec()),
+        &format!("write {} on {}", path.display(), host.label()),
+    )?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "failed to write {} on {}",
+            path.display(),
+            host.label()
+        ))
+    }
+}
+
 pub(crate) fn ensure_antigravity_integration() -> Result<(), String> {
     let home = antigravity_home()?;
     let qmux_dir = home.join("qmux");
@@ -1173,6 +1342,8 @@ mod tests {
 
     #[test]
     fn launch_and_resume_args_follow_agy_cli_contract() {
+        let adapter = AntigravityAdapter::new(&test_config());
+        assert!(AgentAdapter::supports_remote(&adapter));
         assert_eq!(
             build_antigravity_args(Path::new("/tmp"), Some("gemini-test"), Some(" fix it ")),
             vec!["--model", "gemini-test", "--prompt-interactive", "fix it"]

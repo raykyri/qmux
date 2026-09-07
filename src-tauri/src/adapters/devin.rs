@@ -7,9 +7,10 @@ use super::{
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
+use crate::host::{Host, RemoteCommand};
 use crate::pty::{
-    CommandPlan, InitialPaneSize, PaneMeta, SupportFile, agent_pane_envs, plan_to_spec,
-    recoverable_dir, spawn_pty,
+    CommandPlan, InitialPaneSize, PaneMeta, SupportFile, agent_pane_envs,
+    materialize_in_pane_support_files, plan_to_spec, recoverable_dir, spawn_pty,
 };
 use crate::state::{AppState, PaneInfo, PaneKind};
 use crate::transcript::{Turn, TurnBlock, rfc3339_to_epoch_ms, start_transcript_tail};
@@ -62,8 +63,8 @@ const DEVIN_HOOK_EVENTS: &[&str] = &[
 /// Conversation history is `--export`ed to a qmux-owned ATIF JSON file and
 /// parsed as a whole document for the sidebar timeline.
 ///
-/// There is no CLI fork flag (`/fork` is TUI-only). Remote launches stay off:
-/// hook config and the data dir have not been checked on a remote host.
+/// There is no CLI fork flag (`/fork` is TUI-only). Remote launches copy the
+/// remote user's config into pane-scoped support storage and mirror ATIF exports.
 #[derive(Clone, Debug)]
 pub struct DevinAdapter {
     binary: String,
@@ -85,6 +86,23 @@ impl DevinAdapter {
         })?;
         Ok(binary.display().to_string())
     }
+
+    fn host_for_group(&self, state: &AppState, group_id: &str) -> Result<Host, String> {
+        let group = state.group(group_id)?;
+        Ok(crate::host::for_group(
+            group.as_ref().and_then(|group| group.remote.as_ref()),
+        ))
+    }
+
+    fn binary_for_host(&self, host: &Host) -> Result<String, String> {
+        if host.is_local() {
+            self.ensure_binary()
+        } else if self.binary.trim().is_empty() {
+            Err("Devin adapter binary cannot be empty for a remote launch".to_string())
+        } else {
+            Ok(self.binary.clone())
+        }
+    }
 }
 
 impl AgentAdapter for DevinAdapter {
@@ -98,6 +116,10 @@ impl AgentAdapter for DevinAdapter {
 
     fn configured_binary(&self) -> &str {
         &self.binary
+    }
+
+    fn supports_remote(&self) -> bool {
+        true
     }
 
     fn launch(&self, state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {
@@ -210,7 +232,6 @@ impl AgentAdapter for DevinAdapter {
 
 impl DevinAdapter {
     fn spawn_pane(&self, state: &AppState, request: SpawnAgentRequest) -> Result<PaneInfo, String> {
-        let binary = self.ensure_binary()?;
         let options = DevinLaunchOptions::from_value(request.options)?;
         let model = options
             .model
@@ -246,7 +267,9 @@ impl DevinAdapter {
             .cwd
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(&agent.worktree_dir));
-        if !cwd.is_dir() {
+        let host = self.host_for_group(state, &agent.group_id)?;
+        let binary = self.binary_for_host(&host)?;
+        if host.is_local() && !cwd.is_dir() {
             let _ = mark_agent_failed(state, &agent.id);
             return Err(format!(
                 "Devin working directory {} does not exist",
@@ -256,14 +279,15 @@ impl DevinAdapter {
 
         let has_initial_prompt = prompt_has_initial_text(&request.prompt);
         let pane_id = state.next_id("pane");
-        let (config_path, hook_config) = match hook_config_support_file(state.config(), &pane_id) {
-            Ok(planned) => planned,
-            Err(err) => {
-                let _ = mark_agent_failed(state, &agent.id);
-                return Err(err);
-            }
-        };
-        let export_path = match bind_devin_export(state, &agent.id) {
+        let (config_path, hook_config) =
+            match hook_config_support_file_for_host(state.config(), &pane_id, &host) {
+                Ok(planned) => planned,
+                Err(err) => {
+                    let _ = mark_agent_failed(state, &agent.id);
+                    return Err(err);
+                }
+            };
+        let export_path = match prepare_devin_export(state, &host, &agent.id) {
             Ok(path) => path,
             Err(err) => {
                 let _ = mark_agent_failed(state, &agent.id);
@@ -279,7 +303,11 @@ impl DevinAdapter {
                 &request.prompt,
             ),
         );
-        let envs = devin_pane_envs(state, &pane_id, &agent.id)?;
+        let mut envs = devin_pane_envs(state, &pane_id, &agent.id)?;
+        envs.push((
+            "QMUX_TRANSCRIPT_PATH".to_string(),
+            export_path.display().to_string(),
+        ));
         attach_devin_agent_pane(state, &agent.id, pane_id.clone(), has_initial_prompt)?;
         let spawn_result = plan_to_spec(
             state,
@@ -318,22 +346,32 @@ impl DevinAdapter {
         pane: &PaneInfo,
         agent: &AgentInfo,
     ) -> Result<PaneInfo, String> {
-        let binary = self.ensure_binary()?;
-        let cwd = recoverable_dir(&agent.worktree_dir).ok_or_else(|| {
-            format!(
-                "agent worktree {} no longer exists; relaunch manually",
-                agent.worktree_dir
-            )
-        })?;
-        let (config_path, hook_config) = hook_config_support_file(state.config(), &pane.id)?;
-        let export_path = bind_devin_export(state, &agent.id)?;
+        let host = self.host_for_group(state, &agent.group_id)?;
+        let binary = self.binary_for_host(&host)?;
+        let cwd = if host.is_local() {
+            recoverable_dir(&agent.worktree_dir).ok_or_else(|| {
+                format!(
+                    "agent worktree {} no longer exists; relaunch manually",
+                    agent.worktree_dir
+                )
+            })?
+        } else {
+            PathBuf::from(&agent.worktree_dir)
+        };
+        let (config_path, hook_config) =
+            hook_config_support_file_for_host(state.config(), &pane.id, &host)?;
+        let export_path = prepare_devin_export(state, &host, &agent.id)?;
         let (args, resumed) = build_devin_resume_args(
             agent.model.as_deref(),
             agent.approval_mode.as_deref(),
             agent.session_id.as_deref(),
         );
         let args = prepend_devin_managed_flags(&config_path, &export_path, args);
-        let envs = devin_pane_envs(state, &pane.id, &agent.id)?;
+        let mut envs = devin_pane_envs(state, &pane.id, &agent.id)?;
+        envs.push((
+            "QMUX_TRANSCRIPT_PATH".to_string(),
+            export_path.display().to_string(),
+        ));
         let spec = plan_to_spec(
             state,
             PaneMeta {
@@ -378,13 +416,17 @@ impl DevinAdapter {
         state: &AppState,
         request: PrepareShellAgentLaunchRequest,
     ) -> Result<PreparedShellAgentLaunch, String> {
-        let binary = self.ensure_binary()?;
         validate_devin_supervised_args(&request.args)?;
         if !state.pane_exists(&request.pane_id)? {
             return Err(format!("pane {} was not found", request.pane_id));
         }
+        let pane_group_id = state
+            .pane_group_id(&request.pane_id)?
+            .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
+        let host = self.host_for_group(state, &pane_group_id)?;
+        let binary = self.binary_for_host(&host)?;
         let shell_cwd = PathBuf::from(&request.cwd);
-        if !shell_cwd.is_dir() {
+        if host.is_local() && !shell_cwd.is_dir() {
             return Err(format!(
                 "Devin working directory {} does not exist",
                 shell_cwd.display()
@@ -392,9 +434,6 @@ impl DevinAdapter {
         }
 
         let cwd_str = shell_cwd.display().to_string();
-        let pane_group_id = state
-            .pane_group_id(&request.pane_id)?
-            .ok_or_else(|| format!("pane {} was not found", request.pane_id))?;
         let resume_session_id = devin_resume_session_id(&request.args).map(str::to_string);
         let shell_model = shell_cli_model(&request.args);
         let agent = match prepared_shell_agent(
@@ -442,27 +481,81 @@ impl DevinAdapter {
                 agent.approval_mode = Some(mode);
             })?;
         }
-        // The in-shell launch is exec'd by the CLI supervisor as soon as this
-        // response returns — there is no PTY-spawn step in between to
-        // materialize support files, so write the hook config eagerly here.
-        let config_path = match hook_config_support_file(state.config(), &request.pane_id).and_then(
-            |(config_path, hook_config)| {
-                crate::pty::materialize_support_files(&[hook_config])?;
-                Ok(config_path)
-            },
-        ) {
-            Ok(config_path) => config_path,
-            Err(err) => {
-                let _ = mark_agent_failed(state, &agent.id);
-                return Err(err);
-            }
+        let agent = if host.is_local() {
+            agent
+        } else {
+            state
+                .mutate_agent(&agent.id, |agent| agent.transcript_path = None)?
+                .ok_or_else(|| "prepared remote Devin agent disappeared".to_string())?
         };
-        let export_path = match bind_devin_export(state, &agent.id) {
-            Ok(path) => path,
-            Err(err) => {
-                let _ = mark_agent_failed(state, &agent.id);
-                return Err(err);
-            }
+        let mut envs = devin_pane_envs(state, &request.pane_id, &agent.id)?;
+        let export_path = prepare_devin_export(state, &host, &agent.id)?;
+        envs.push((
+            "QMUX_TRANSCRIPT_PATH".to_string(),
+            export_path.display().to_string(),
+        ));
+        let remote_identity = if host.is_local() {
+            None
+        } else {
+            Some(
+                state
+                    .list_panes()?
+                    .into_iter()
+                    .find(|pane| pane.id == request.pane_id)
+                    .and_then(|pane| pane.remote_session)
+                    .ok_or_else(|| {
+                        format!(
+                            "remote pane {} is missing its tmux session identity",
+                            request.pane_id
+                        )
+                    })?,
+            )
+        };
+        let support_scope = remote_identity
+            .as_ref()
+            .map(|identity| identity.tmux_session.as_str())
+            .unwrap_or(request.pane_id.as_str());
+        let (config_path, export_path, provisioned_envs) =
+            match hook_config_support_file_for_host(state.config(), &request.pane_id, &host)
+                .and_then(|(config_path, hook_config)| {
+                    let mut support_plan = CommandPlan {
+                        program: binary.clone(),
+                        args: vec![
+                            config_path.display().to_string(),
+                            export_path.display().to_string(),
+                        ],
+                        cwd: shell_cwd.clone(),
+                        envs: envs.clone(),
+                        support_files: vec![hook_config],
+                        support_file_fallback: None,
+                    };
+                    materialize_in_pane_support_files(
+                        &host,
+                        &request.pane_id,
+                        support_scope,
+                        &mut support_plan,
+                    )?;
+                    let provisioned_envs = support_plan.envs;
+                    let mut paths = support_plan.args.into_iter().map(PathBuf::from);
+                    Ok((
+                        paths.next().ok_or("Devin config path was lost")?,
+                        paths.next().ok_or("Devin export path was lost")?,
+                        provisioned_envs,
+                    ))
+                }) {
+                Ok(paths) => paths,
+                Err(err) => {
+                    let _ = mark_agent_failed(state, &agent.id);
+                    return Err(err);
+                }
+            };
+        let launch_envs = match remote_identity.as_ref() {
+            Some(identity) => host.tmux_pane_envs(
+                identity,
+                &state.pane_remote_token(&request.pane_id)?,
+                &provisioned_envs,
+            )?,
+            None => provisioned_envs,
         };
         let agent = attach_devin_agent_pane(
             state,
@@ -470,8 +563,6 @@ impl DevinAdapter {
             request.pane_id.clone(),
             args_contain_prompt(&request.args),
         )?;
-
-        let envs = devin_pane_envs(state, &request.pane_id, &agent.id)?;
         let agent_id = agent.id.clone();
         state.emit(QmuxEvent::new(
             "agent.spawned",
@@ -484,7 +575,7 @@ impl DevinAdapter {
             binary,
             cwd: cwd_str,
             args: prepend_devin_managed_flags(&config_path, &export_path, request.args),
-            envs: envs
+            envs: launch_envs
                 .into_iter()
                 .map(|(key, value)| LaunchEnv { key, value })
                 .collect(),
@@ -680,6 +771,14 @@ fn devin_export_path(config: &QmuxConfig, agent_id: &str) -> Result<PathBuf, Str
         .join(format!("{agent_id}.json")))
 }
 
+fn prepare_devin_export(state: &AppState, host: &Host, agent_id: &str) -> Result<PathBuf, String> {
+    if host.is_local() {
+        bind_devin_export(state, agent_id)
+    } else {
+        devin_export_path(state.config(), agent_id)
+    }
+}
+
 fn bind_devin_export(state: &AppState, agent_id: &str) -> Result<PathBuf, String> {
     let path = devin_export_path(state.config(), agent_id)?;
     if let Some(parent) = path.parent() {
@@ -873,6 +972,35 @@ fn load_user_devin_config() -> Result<Value, String> {
     load_devin_config_document(&path)
 }
 
+fn load_user_devin_config_for_host(host: &Host) -> Result<Value, String> {
+    if host.is_local() {
+        return load_user_devin_config();
+    }
+    let command = host.command(RemoteCommand {
+        program: "sh",
+        args: vec![
+            "-c".to_string(),
+            "set -eu; path=${XDG_CONFIG_HOME:-$HOME/.config}/devin/config.json; if [ -f \"$path\" ] && [ ! -L \"$path\" ]; then cat -- \"$path\"; elif [ -e \"$path\" ] || [ -L \"$path\" ]; then exit 65; fi".to_string(),
+            "qmux-read-devin-config".to_string(),
+        ],
+        ..Default::default()
+    });
+    let output = crate::pty::remote_command_output(
+        command,
+        None,
+        &format!("read Devin config on {}", host.label()),
+    )?;
+    if !output.status.success() {
+        return Err(format!("failed to read Devin config on {}", host.label()));
+    }
+    if output.stdout.is_empty() {
+        Ok(default_devin_config_document())
+    } else {
+        serde_json::from_slice(&output.stdout)
+            .map_err(|err| format!("failed to parse Devin config on {}: {err}", host.label()))
+    }
+}
+
 fn load_devin_config_document(path: &Path) -> Result<Value, String> {
     match fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str(&raw)
@@ -929,11 +1057,12 @@ fn hook_settings_nonce() -> Result<String, String> {
 
 /// Plans the per-spawn Devin `--config` file: a copy of the user's config with
 /// qmux hooks injected. Declarative — nothing is written here.
-fn hook_config_support_file(
+fn hook_config_support_file_for_host(
     config: &QmuxConfig,
     pane_id: &str,
+    host: &Host,
 ) -> Result<(PathBuf, SupportFile), String> {
-    hook_config_support_file_from(config, pane_id, load_user_devin_config()?)
+    hook_config_support_file_from(config, pane_id, load_user_devin_config_for_host(host)?)
 }
 
 fn hook_config_support_file_from(
@@ -954,7 +1083,8 @@ fn hook_config_support_file_from(
         return Err("Devin config must be a JSON object".to_string());
     }
 
-    let hooks_dir = config.workspace_root.join(".qmux").join("hooks");
+    let support_root = config.workspace_root.join(".qmux");
+    let hooks_dir = support_root.join("hooks");
     let qmux_cli = crate::launch_path::qmux_cli_path()
         .map_err(|err| format!("failed to resolve qmux executable for Devin hooks: {err}"))?;
     apply_devin_hooks(&mut document, &qmux_cli);
@@ -963,7 +1093,7 @@ fn hook_config_support_file_from(
 
     let config_path = hooks_dir.join(format!("devin-{pane_id}-{}.json", hook_settings_nonce()?));
     let support_file = SupportFile {
-        root: hooks_dir,
+        root: support_root,
         path: config_path.clone(),
         contents: raw,
         mode: 0o600,
@@ -1679,6 +1809,8 @@ mod tests {
 
     #[test]
     fn export_path_is_scoped_to_the_agent() {
+        let adapter = DevinAdapter::new(&test_config());
+        assert!(AgentAdapter::supports_remote(&adapter));
         let path = devin_export_path(&test_config(), "agent-1").unwrap();
         assert_eq!(
             path,

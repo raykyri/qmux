@@ -108,7 +108,7 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             Ok(true)
         }
         "--transcript-stream-version" => {
-            println!("3");
+            println!("4");
             Ok(true)
         }
         "--remote-open-file-version" => {
@@ -127,7 +127,11 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             std::io::stdin()
                 .read_to_string(&mut stdin)
                 .map_err(|err| format!("failed to read stdin: {err}"))?;
-            let payload = parse_payload(&stdin);
+            let mut payload = parse_payload(&stdin);
+            add_transcript_path(
+                &mut payload,
+                env::var("QMUX_TRANSCRIPT_PATH").ok().as_deref(),
+            );
             request_silent(
                 "hook.notify",
                 json!({
@@ -1002,9 +1006,31 @@ fn parse_payload(input: &str) -> Value {
     }
 }
 
+fn add_transcript_path(payload: &mut Value, path: Option<&str>) {
+    if let Some(path) = path.filter(|path| path.len() <= 8192)
+        && let Some(payload) = payload.as_object_mut()
+        && !payload.contains_key("transcript_path")
+        && !payload.contains_key("transcriptPath")
+    {
+        payload.insert("transcript_path".to_string(), json!(path));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hook_payload_adds_a_bounded_transcript_hint_without_overriding_native_metadata() {
+        let mut payload = json!({"session_id":"session"});
+        add_transcript_path(&mut payload, Some("/remote/transcript.json"));
+        assert_eq!(payload["transcript_path"], "/remote/transcript.json");
+        add_transcript_path(&mut payload, Some("/other"));
+        assert_eq!(payload["transcript_path"], "/remote/transcript.json");
+        let mut scalar = Value::Null;
+        add_transcript_path(&mut scalar, Some("/remote/transcript.json"));
+        assert!(scalar.is_null());
+    }
 
     #[test]
     fn mcp_usage_hint_is_at_most_two_lines_and_names_the_server_command() {

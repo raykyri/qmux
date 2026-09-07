@@ -220,7 +220,7 @@ pub fn ensure_cli(host: &Host) -> Result<EnsureCliResult, String> {
 
 fn remote_transcript_stream_supported(host: &Host, path: &str) -> bool {
     remote_stdout(host, path, vec!["--transcript-stream-version".into()])
-        .is_ok_and(|output| output.trim() == "3")
+        .is_ok_and(|output| output.trim() == "4")
 }
 
 fn remote_open_file_supported(host: &Host, path: &str) -> bool {

@@ -56,9 +56,14 @@ fn session_directory(root: &Path, binding: &Binding) -> PathBuf {
     root.join(encoded(&binding.remote_id))
         .join(encoded(&binding.session))
 }
-fn mirror(dir: &Path, checkpoint: &Checkpoint, session: &str) -> PathBuf {
+fn mirror(dir: &Path, checkpoint: &Checkpoint, binding: &Binding) -> PathBuf {
+    let extension = if binding.adapter == "devin" {
+        "json"
+    } else {
+        "jsonl"
+    };
     dir.join(checkpoint.generation.to_string())
-        .join(format!("{session}.jsonl"))
+        .join(format!("{}.{extension}", binding.session))
 }
 fn save_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
     let temp = path.with_extension("tmp");
@@ -112,7 +117,10 @@ pub fn observe(state: &AppState, pane: &str, payload: &Value) {
         let Some(agent) = state.agent_by_pane(pane)? else {
             return Ok(());
         };
-        if !matches!(agent.adapter.as_str(), "claude" | "codex") {
+        if !matches!(
+            agent.adapter.as_str(),
+            "claude" | "codex" | "devin" | "antigravity"
+        ) {
             return Ok(());
         }
         let Some(session) = agent.session_id.clone() else {
@@ -240,7 +248,7 @@ fn notice(state: &AppState, binding: &Binding, message: Option<&str>) {
     ));
 }
 
-fn recover(dir: &Path, session: &str) -> Result<Checkpoint, String> {
+fn recover(dir: &Path, binding: &Binding) -> Result<Checkpoint, String> {
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let path = dir.join("checkpoint.json");
     let checkpoint: Checkpoint = match fs::read(&path) {
@@ -252,7 +260,7 @@ fn recover(dir: &Path, session: &str) -> Result<Checkpoint, String> {
         let file = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(mirror(dir, &checkpoint, session))
+            .open(mirror(dir, &checkpoint, binding))
             .map_err(|e| e.to_string())?;
         if file.metadata().map_err(|e| e.to_string())?.len() < checkpoint.cursor.offset {
             return Err("local transcript mirror is shorter than its checkpoint".into());
@@ -266,11 +274,11 @@ fn recover(dir: &Path, session: &str) -> Result<Checkpoint, String> {
 
 fn accept(
     dir: &Path,
-    session: &str,
+    binding: &Binding,
     checkpoint: &mut Checkpoint,
     frame: Frame,
 ) -> Result<PathBuf, String> {
-    if frame.session != session
+    if frame.session != binding.session
         || frame.data.len() > MAX_CHUNK
         || frame.start.checked_add(frame.data.len() as u64) != Some(frame.cursor.offset)
         || frame.cursor.anchor.len() != frame.cursor.offset.min(256) as usize
@@ -288,7 +296,7 @@ fn accept(
         generation: checkpoint.generation + u64::from(frame.reset),
         source: frame.path,
     };
-    let path = mirror(dir, &next, session);
+    let path = mirror(dir, &next, binding);
     if !frame.data.is_empty() || frame.reset {
         fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
         let mut file = OpenOptions::new()
@@ -366,7 +374,7 @@ fn stream(
     historical_end.store(u64::MAX, Ordering::SeqCst);
     let host = live_host(state, binding).ok_or("remote session ended")?;
     let dir = session_directory(root, binding);
-    let mut checkpoint = recover(&dir, &binding.session)?;
+    let mut checkpoint = recover(&dir, binding)?;
     let mut child = host
         .command(RemoteCommand {
             program: cli,
@@ -433,7 +441,7 @@ fn stream(
             }
             // Publish the boundary before making historical bytes visible to the tail.
             historical_end.store(frame.historical_end, Ordering::SeqCst);
-            let path = accept(&dir, &binding.session, &mut checkpoint, frame)?;
+            let path = accept(&dir, binding, &mut checkpoint, frame)?;
             let path = path.to_string_lossy().into_owned();
             let agent = state.agent(&binding.agent)?.ok_or("agent disappeared")?;
             let changed = agent.transcript_path.as_deref() != Some(path.as_str());
@@ -480,6 +488,19 @@ fn stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_binding(adapter: &str, session: &str) -> Binding {
+        Binding {
+            agent: "agent".into(),
+            pane: "pane".into(),
+            adapter: adapter.into(),
+            session: session.into(),
+            remote_id: "remote".into(),
+            remote_host: "host".into(),
+            hint: String::new(),
+        }
+    }
+
     #[test]
     fn remote_metadata_is_persisted_and_stale_sessions_cannot_rebind() {
         let root = std::env::temp_dir().join(format!("qmux-mirror-binding-{}", std::process::id()));
@@ -587,6 +608,8 @@ mod tests {
     fn message_line(adapter: &str, message: &str) -> String {
         let value = if adapter == "claude" {
             json!({"type":"user", "uuid":message, "sessionId":"session", "message":{"role":"user", "content":message}})
+        } else if adapter == "antigravity" {
+            json!({"step_index":0, "source":"USER_EXPLICIT", "type":"USER_INPUT", "status":"DONE", "content":message})
         } else {
             json!({"type":"response_item", "payload":{"type":"message", "role":"user", "content":[{"type":"input_text", "text":message}]}})
         };
@@ -599,6 +622,79 @@ mod tests {
     #[test]
     fn codex_mirror_reaches_turn_pipeline_and_resets_cleanly() {
         check_mirrored_pipeline("codex");
+    }
+    #[test]
+    fn antigravity_mirror_reaches_turn_pipeline_and_resets_cleanly() {
+        check_mirrored_pipeline("antigravity");
+    }
+    #[test]
+    fn devin_document_mirror_reaches_the_turn_pipeline() {
+        let root =
+            std::env::temp_dir().join(format!("qmux-mirror-pipeline-devin-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let state = AppState::new(
+            serde_json::from_value(json!({
+                "workspaceRoot": root, "socketPath": root.join("unused.sock")
+            }))
+            .unwrap(),
+        );
+        state
+            .insert_agent(
+                serde_json::from_value(json!({
+                    "id":"devin-agent", "groupId":"g", "adapter":"devin",
+                    "worktreeDir":"/remote/project", "paneId":"p", "sessionId":"session",
+                    "status":"running", "createdAt":1
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let dir = root.join("mirror");
+        let binding = test_binding("devin", "session");
+        let mut checkpoint = Checkpoint::default();
+        let data = json!({
+            "session_id":"session",
+            "steps":[{"step_id":1,"source":"user","message":"hello"}]
+        })
+        .to_string();
+        let frame = Frame {
+            session: "session".into(),
+            path: "/remote/devin.json".into(),
+            start: 0,
+            reset: true,
+            historical_end: data.len() as u64,
+            cursor: Cursor {
+                offset: data.len() as u64,
+                identity: "inode".into(),
+                anchor: data.as_bytes()[data.len().saturating_sub(256)..].to_vec(),
+            },
+            data,
+        };
+        let path = accept(&dir, &binding, &mut checkpoint, frame).unwrap();
+        assert_eq!(path.extension().and_then(|ext| ext.to_str()), Some("json"));
+        state
+            .mutate_agent("devin-agent", |agent| {
+                agent.transcript_path = Some(path.to_string_lossy().into())
+            })
+            .unwrap();
+        crate::transcript::start_transcript_tail(
+            state.clone(),
+            "devin-agent".into(),
+            path.to_string_lossy().into(),
+            "devin".into(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let turns = state.list_turns(Some("devin-agent")).unwrap();
+            if turns.len() == 1 {
+                assert!(serde_json::to_string(&turns).unwrap().contains("hello"));
+                break;
+            }
+            assert!(Instant::now() < deadline, "Devin mirror produced no turn");
+            thread::sleep(Duration::from_millis(20));
+        }
+        state
+            .mutate_agent("devin-agent", |agent| agent.transcript_path = None)
+            .unwrap();
     }
 
     fn check_mirrored_pipeline(adapter: &str) {
@@ -623,6 +719,7 @@ mod tests {
         let dir = root.join("mirror");
         fs::create_dir_all(&dir).unwrap();
         let mut checkpoint = Checkpoint::default();
+        let binding = test_binding(adapter, "session");
         for (message, expected_count) in [("hello", 1), ("second", 2)] {
             let line = message_line(adapter, message);
             OpenOptions::new()
@@ -635,7 +732,7 @@ mod tests {
             let frame =
                 qmux_cli::transcript_stream::read_frame(&source, "session", &checkpoint.cursor)
                     .unwrap();
-            let path = accept(&dir, "session", &mut checkpoint, frame).unwrap();
+            let path = accept(&dir, &binding, &mut checkpoint, frame).unwrap();
             state
                 .mutate_agent("remote-test-agent", |agent| {
                     agent.transcript_path = Some(path.to_string_lossy().into())
@@ -664,7 +761,7 @@ mod tests {
         fs::write(&source, message_line(adapter, "replacement")).unwrap();
         let frame = qmux_cli::transcript_stream::read_frame(&source, "session", &checkpoint.cursor)
             .unwrap();
-        let path = accept(&dir, "session", &mut checkpoint, frame).unwrap();
+        let path = accept(&dir, &binding, &mut checkpoint, frame).unwrap();
         state
             .mutate_agent("remote-test-agent", |agent| {
                 agent.transcript_path = Some(path.to_string_lossy().into())
@@ -804,10 +901,11 @@ mod tests {
         let contents = record + &message_line("claude", "following message");
         fs::write(&source, &contents).unwrap();
         let mut cp = Checkpoint::default();
+        let binding = test_binding("claude", "session");
         let first =
             qmux_cli::transcript_stream::read_frame(&source, "session", &cp.cursor).unwrap();
         assert!(!first.data.ends_with('\n'));
-        let path = accept(&dir, "session", &mut cp, first).unwrap();
+        let path = accept(&dir, &binding, &mut cp, first).unwrap();
         // Mid-record progress is durable, and an interrupted write is discarded.
         OpenOptions::new()
             .append(true)
@@ -815,12 +913,12 @@ mod tests {
             .unwrap()
             .write_all(b"uncommitted")
             .unwrap();
-        cp = recover(&dir, "session").unwrap();
+        cp = recover(&dir, &binding).unwrap();
         while cp.cursor.offset < contents.len() as u64 {
             let frame =
                 qmux_cli::transcript_stream::read_frame(&source, "session", &cp.cursor).unwrap();
             assert!(!frame.data.is_empty());
-            assert_eq!(accept(&dir, "session", &mut cp, frame).unwrap(), path);
+            assert_eq!(accept(&dir, &binding, &mut cp, frame).unwrap(), path);
         }
         assert_eq!(fs::read_to_string(&path).unwrap(), contents);
         let state = AppState::new(
@@ -872,6 +970,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("qmux-mirror-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let mut cp = Checkpoint::default();
+        let binding = test_binding("claude", "s");
         let data = "{\"a\":1}\n";
         let make = |reset, start| Frame {
             session: "s".into(),
@@ -886,18 +985,19 @@ mod tests {
             },
             data: data.into(),
         };
-        let path = accept(&dir, "s", &mut cp, make(true, 0)).unwrap();
+        let path = accept(&dir, &binding, &mut cp, make(true, 0)).unwrap();
         OpenOptions::new()
             .append(true)
             .open(&path)
             .unwrap()
             .write_all(b"uncommitted")
             .unwrap();
-        let mut recovered = recover(&dir, "s").unwrap();
+        let mut recovered = recover(&dir, &binding).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), data);
-        assert!(accept(&dir, "s", &mut recovered, make(false, 0)).is_err());
-        assert!(accept(&dir, "other", &mut recovered, make(true, 0)).is_err());
-        let next = accept(&dir, "s", &mut recovered, make(true, 0)).unwrap();
+        assert!(accept(&dir, &binding, &mut recovered, make(false, 0)).is_err());
+        let other_binding = test_binding("claude", "other");
+        assert!(accept(&dir, &other_binding, &mut recovered, make(true, 0)).is_err());
+        let next = accept(&dir, &binding, &mut recovered, make(true, 0)).unwrap();
         assert_ne!(path, next); // A rewrite restarts parsing, even at equal length.
         fs::remove_dir_all(dir).unwrap();
     }
