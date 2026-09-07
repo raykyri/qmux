@@ -23,8 +23,10 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+const INITIAL_REMOTE_REPORT_TIMEOUT: Duration = Duration::from_secs(5);
+const INITIAL_REMOTE_REPORT_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const MCP_USAGE_HINT: &str = "Add `qmux mcp` as a stdio MCP server in your agent CLI.\nRun it inside a qmux agent pane so it inherits the authenticated environment.";
 const SYNTAX_ERROR_PREFIX: &str = "\u{1d}qmux-syntax:";
 
@@ -114,7 +116,7 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             Ok(true)
         }
         "--workspace-observation-version" => {
-            println!("1");
+            println!("2");
             Ok(true)
         }
         "notify" => {
@@ -164,17 +166,23 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             // Reports the shell pane's current directory so a restart can reopen it
             // where the user left off. The server binds the update to the pane that
             // owns the presented token, so the claimed paneId is advisory only.
+            let initial = match args.next().as_deref() {
+                None => false,
+                Some("--initial") if args.next().is_none() => true,
+                _ => return Err(syntax_error("usage: qmux cwd [--initial]".to_string())),
+            };
             let cwd = env::current_dir()
                 .map_err(|err| format!("failed to read current directory: {err}"))?;
-            let active_workspace = inspect_workspace(&cwd);
-            request_silent(
-                "pane.set_workspace",
-                json!({
-                    "paneId": env::var("QMUX_PANE_ID").ok(),
-                    "cwd": cwd.display().to_string(),
-                    "activeWorkspace": active_workspace,
-                }),
-            )?;
+            let payload = json!({
+                "paneId": env::var("QMUX_PANE_ID").ok(),
+                "cwd": cwd.display().to_string(),
+                "activeWorkspace": inspect_workspace(&cwd),
+            });
+            if initial && env::var("QMUX_REMOTE").ok().as_deref() == Some("1") {
+                retry_initial_remote_report(|| request_silent("pane.set_workspace", payload.clone()))?;
+            } else {
+                request_silent("pane.set_workspace", payload)?;
+            }
             Ok(true)
         }
         "pane-write" => {
@@ -318,6 +326,23 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             Err(syntax_error(format!("unknown qmux command '{command}'")))
         }
         _ => Ok(false),
+    }
+}
+
+fn retry_initial_remote_report(
+    mut report: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    let deadline = Instant::now() + INITIAL_REMOTE_REPORT_TIMEOUT;
+    loop {
+        match report() {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error.starts_with("failed to connect to ") && Instant::now() < deadline =>
+            {
+                std::thread::sleep(INITIAL_REMOTE_REPORT_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -1031,6 +1056,31 @@ mod tests {
         assert_eq!(parse_version_line(&line), Some(VERSION));
         assert_eq!(parse_version_line("qmux-cli 0.3.2\n"), Some("0.3.2"));
         assert_eq!(parse_version_line("not-a-version"), None);
+    }
+
+    #[test]
+    fn initial_remote_workspace_report_retries_until_forward_is_ready() {
+        let attempts = std::cell::Cell::new(0);
+        retry_initial_remote_report(|| {
+            attempts.set(attempts.get() + 1);
+            (attempts.get() >= 3)
+                .then_some(())
+                .ok_or_else(|| "failed to connect to forwarded socket".to_string())
+        })
+        .unwrap();
+        assert_eq!(attempts.get(), 3);
+    }
+
+    #[test]
+    fn initial_remote_workspace_report_does_not_retry_server_errors() {
+        let attempts = std::cell::Cell::new(0);
+        let error = retry_initial_remote_report(|| {
+            attempts.set(attempts.get() + 1);
+            Err("pane token was rejected".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(error, "pane token was rejected");
+        assert_eq!(attempts.get(), 1);
     }
 
     #[test]

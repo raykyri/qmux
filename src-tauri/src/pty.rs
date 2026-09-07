@@ -1373,8 +1373,10 @@ fi
 {qmux_function}
 {agent_functions}
 if [ -n "${{QMUX_PANE_ID:-}}" ]; then
+  __qmux_initial_cwd_report=1
   __qmux_report_cwd() {{
-    {cli} cwd >/dev/null 2>&1
+    {cli} cwd ${{__qmux_initial_cwd_report:+--initial}} >/dev/null 2>&1
+    unset __qmux_initial_cwd_report
   }}
   autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd __qmux_report_cwd
 fi
@@ -1417,8 +1419,10 @@ fi"#
 {qmux_function}
 {agent_functions}
 if [ -n "${{QMUX_PANE_ID:-}}" ]; then
+  __qmux_initial_cwd_report=1
   __qmux_report_cwd() {{
-    {cli} cwd >/dev/null 2>&1
+    {cli} cwd ${{__qmux_initial_cwd_report:+--initial}} >/dev/null 2>&1
+    unset __qmux_initial_cwd_report
   }}
   case "$PROMPT_COMMAND" in
     *__qmux_report_cwd*) ;;
@@ -6947,6 +6951,8 @@ mod tests {
             assert!(script.contains("'/Applications/qmux app/qmux' \"$@\""));
             // Shell integration reports cwd changes so restarts reopen the last dir.
             assert!(script.contains("'/Applications/qmux app/qmux' cwd"));
+            assert!(script.contains("${__qmux_initial_cwd_report:+--initial}"));
+            assert!(script.contains("unset __qmux_initial_cwd_report"));
             assert!(script.contains("__qmux_report_cwd"));
             // Every prompt reports, even when PWD is unchanged, so an in-place
             // `git switch` refreshes the branch shown on the tab.

@@ -230,7 +230,7 @@ fn remote_open_file_supported(host: &Host, path: &str) -> bool {
 
 fn remote_workspace_observation_supported(host: &Host, path: &str) -> bool {
     remote_stdout(host, path, vec!["--workspace-observation-version".into()])
-        .is_ok_and(|output| output.trim() == "1")
+        .is_ok_and(|output| output.trim() == "2")
 }
 
 fn remote_cli_version(host: &Host, path: &str) -> Option<String> {
