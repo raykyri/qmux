@@ -2,9 +2,6 @@ import { recordRemoteStartup, reconcileRemoteReservation } from "./lib/remoteSta
 import RemoteConnectionDetailsText from "./components/RemoteConnectionDetailsText";
 import {
   remoteConnectionLabel,
-  remoteConnectionDetails,
-  remoteGroupStatus,
-  remoteHooksNeedAttention,
   remotePaneCloseButtonVisible,
   shouldCloseRemotePaneOnControlD,
 } from "./lib/remoteConnection";
@@ -15059,11 +15056,6 @@ function MainApp() {
             <span className={`pane-tab-title${paneTitleIsUserSet ? " is-user-set" : ""}`}>
               {paneDisplayTitle}
             </span>
-            {pane.remoteSession && (pane.remoteConnection?.state !== "connected" || remoteHooksNeedAttention(pane.remoteConnection)) ? (
-              <span className="pane-tab-gitmeta" title={remoteConnectionDetails(pane.remoteConnection)} onMouseEnter={event => { event.currentTarget.title = remoteConnectionDetails(pane.remoteConnection); }}>
-                {remoteConnectionLabel(pane.remoteConnection)}
-              </span>
-            ) : null}
             {settings.codeMode && settings.showTabDirectories && paneDir && !hidePaneDir ? (
               <span className="pane-tab-path" title={paneDir}>
                 {formatPaneDir(paneDir)}
@@ -16034,7 +16026,6 @@ function MainApp() {
           {sidebarMode === "terminal" ? terminalGroups.map((group, groupIndex) => {
             const groupPanes = panes.filter((pane) => pane.groupId === group.id);
             const hasGroupPanes = groupPanes.length > 0;
-            const connectionStatus = group.remote ? remoteGroupStatus(groupPanes) : null;
             const isActiveGroup = activePane?.groupId === group.id;
             const isCollapsedGroup = group.collapsed;
             const groupDisplayName = group.remote
@@ -16117,15 +16108,6 @@ function MainApp() {
                         </span>
                       ) : null}
                     </span>
-                    {connectionStatus ? (
-                      <span
-                        className="pane-tab-gitmeta pane-group-connection-status"
-                        title={connectionStatus.detail}
-                        onMouseEnter={event => { event.currentTarget.title = remoteGroupStatus(groupPanes)?.detail ?? ""; }}
-                      >
-                        {connectionStatus.label}
-                      </span>
-                    ) : null}
                   </span>
                   <span className="pane-group-aux">
                     <button
