@@ -1,4 +1,7 @@
-import { remoteConnectionLabel } from "../lib/remoteConnection";
+import {
+  remoteConnectionLabel,
+  remotePaneCloseButtonVisible,
+} from "../lib/remoteConnection";
 import { LoaderCircle } from "lucide-react";
 import RemoteConnectionDetailsText from "./RemoteConnectionDetailsText";
 import {
@@ -118,7 +121,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     pane.remoteSession && pane.remoteConnection?.state !== "connected",
   );
   const connectionLabel = remoteConnectionLabel(pane.remoteConnection);
-  const showConnectionSpinner = connectionLabel === "Connecting" || connectionLabel === "Checking connection";
+  const showRemoteCloseButton = remotePaneCloseButtonVisible(pane);
   const terminalInputBlocked = inputBlocked || remoteUnavailable;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const lastVisibleRectRef = useRef<NativeTerminalRect | null>(null);
@@ -487,8 +490,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     >
       <div ref={hostRef} className="terminal-host" />
       {remoteUnavailable ? (
-        <div className="remote-connection-overlay" role="status" aria-live="polite" aria-label={showConnectionSpinner ? connectionLabel : undefined}>
-          {showConnectionSpinner ? (
+        <div className="remote-connection-overlay" role="status" aria-live="polite" aria-label={!showRemoteCloseButton ? connectionLabel : undefined}>
+          {!showRemoteCloseButton ? (
             <LoaderCircle className="remote-connection-spinner" size={24} aria-hidden="true" />
           ) : (
             <>

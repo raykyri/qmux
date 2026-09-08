@@ -1,6 +1,13 @@
 import { recordRemoteStartup, reconcileRemoteReservation } from "./lib/remoteStartup";
 import RemoteConnectionDetailsText from "./components/RemoteConnectionDetailsText";
-import { remoteConnectionLabel, remoteConnectionDetails, remoteGroupStatus, remoteHooksNeedAttention } from "./lib/remoteConnection";
+import {
+  remoteConnectionLabel,
+  remoteConnectionDetails,
+  remoteGroupStatus,
+  remoteHooksNeedAttention,
+  remotePaneCloseButtonVisible,
+  shouldCloseRemotePaneOnControlD,
+} from "./lib/remoteConnection";
 import { reconnectPane } from "./lib/api";
 import {
   Fragment,
@@ -1836,6 +1843,7 @@ function MainApp() {
   // re-registering it on every state change.
   const activePaneRef = useRef<PaneInfo | undefined>(undefined);
   const requestClosePaneRef = useRef<(pane: PaneInfo, options?: { confirmAlways?: boolean }) => void>(() => {});
+  const closeUnavailableRemotePaneRef = useRef<(pane: PaneInfo) => void>(() => {});
   const splitPaneBelowRef = useRef<(pane: PaneInfo) => void | Promise<void>>(() => {});
   const splitPaneRightRef = useRef<(pane: PaneInfo) => void | Promise<void>>(() => {});
   const canToggleActiveTranscriptExpandedRef = useRef(false);
@@ -12379,6 +12387,9 @@ function MainApp() {
       return false;
     }
   }
+  closeUnavailableRemotePaneRef.current = (pane) => {
+    void closePane(pane);
+  };
 
   async function removeClosedGroup(groupClose: CloseGroupContinuation) {
     setError(null);
@@ -14266,6 +14277,14 @@ function MainApp() {
         case "restoreClosedPane":
           void restoreClosedPane();
           return;
+        case "closeUnavailableRemotePane": {
+          const pane =
+            activeSurfaceRef.current === "pane" ? activePaneRef.current : undefined;
+          if (pane && remotePaneCloseButtonVisible(pane)) {
+            closeUnavailableRemotePaneRef.current(pane);
+          }
+          return;
+        }
         case "closePane": {
           const pane =
             activeSurfaceRef.current === "pane" ? activePaneRef.current : undefined;
@@ -14314,6 +14333,31 @@ function MainApp() {
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isShowHideShortcutCaptureTarget(event.target) || event.defaultPrevented) {
+        return;
+      }
+      const pane = activeSurfaceRef.current === "pane" ? activePaneRef.current : undefined;
+      if (
+        pane &&
+        shouldCloseRemotePaneOnControlD(
+          {
+            key: event.key,
+            ctrlKey: event.ctrlKey,
+            metaKey: event.metaKey,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            repeat: event.repeat,
+            editableTarget: isEditableTarget(event.target),
+            paneTarget:
+              isTerminalTarget(event.target) ||
+              event.target === document.body ||
+              event.target === document.documentElement,
+          },
+          pane,
+        )
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeUnavailableRemotePaneRef.current(pane);
         return;
       }
       const command = resolveAppShortcut({

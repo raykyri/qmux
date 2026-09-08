@@ -26,6 +26,7 @@ export type AppShortcutCommand =
   | { type: "splitPaneRight" }
   | { type: "restoreClosedPane" }
   | { type: "closePane" }
+  | { type: "closeUnavailableRemotePane" }
   | { type: "newGroup" }
   | { type: "newPane" };
 
@@ -194,6 +195,7 @@ export function contextualizeAppShortcut(
 export function appShortcutTargetsActivePane(command: AppShortcutCommand): boolean {
   return (
     command.type === "closePane" ||
+    command.type === "closeUnavailableRemotePane" ||
     command.type === "splitPaneBelow" ||
     command.type === "splitPaneRight" ||
     command.type === "toggleTranscriptOrBrowser" ||
@@ -256,6 +258,7 @@ function appShortcutLabel(command: AppShortcutCommand): string {
     case "restoreClosedPane":
       return "restore a closed tab";
     case "closePane":
+    case "closeUnavailableRemotePane":
       return "close the tab";
     case "newGroup":
       return "create a group";
@@ -361,6 +364,7 @@ export function parseAppShortcutCommand(
     case "splitPaneRight":
     case "restoreClosedPane":
     case "closePane":
+    case "closeUnavailableRemotePane":
     case "newGroup":
     case "newPane":
       return { type: command };

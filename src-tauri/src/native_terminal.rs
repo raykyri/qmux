@@ -1617,6 +1617,17 @@ pub extern "C" fn qmux_native_terminal_did_request_browser_escape() -> i32 {
     i32::from(emitted)
 }
 
+fn is_remote_close_shortcut(
+    key: &str,
+    shift: i32,
+    control: i32,
+    option: i32,
+    command: i32,
+    repeat: i32,
+) -> bool {
+    key == "d" && shift == 0 && control == 1 && option == 0 && command == 0 && repeat == 0
+}
+
 /// A possible application shortcut typed while a native pane owned the
 /// keyboard. Only exact qmux commands are consumed; every unrecognized chord
 /// returns to AppKit/Ghostty unchanged.
@@ -1651,6 +1662,36 @@ pub extern "C" fn qmux_native_terminal_did_receive_shortcut(
     // consumed into nothing.
     if !events_listener_ready() {
         return 0;
+    }
+    if is_remote_close_shortcut(&key, shift, control, option, command, repeat) {
+        let mut emitted = false;
+        with_app_state(|state| {
+            let closeable = state.list_panes().ok().and_then(|panes| {
+                panes.into_iter().find(|pane| {
+                    pane.id == pane_id
+                        && pane.remote_session.is_some()
+                        && pane.remote_connection.as_ref().is_none_or(|connection| {
+                            connection.state != crate::state::RemoteConnectionState::Connected
+                        })
+                })
+            });
+            if closeable.is_some() {
+                state.emit(QmuxEvent::new(
+                    "terminal.shortcut",
+                    Some(pane_id.clone()),
+                    None,
+                    serde_json::json!({
+                        "command": "closeUnavailableRemotePane",
+                        "tabIndex": null,
+                        "repeat": false,
+                    }),
+                ));
+                emitted = true;
+            }
+        });
+        if emitted {
+            return 1;
+        }
     }
     let Some(shortcut) =
         classify_app_shortcut(&key, shift == 1, control == 1, option == 1, command == 1)
@@ -1885,6 +1926,33 @@ pub fn native_terminal_read_viewport_text(pane_id: String) -> Result<String, Str
 #[tauri::command]
 pub fn native_terminal_annotation_selection_snapshot(pane_id: String) -> Result<String, String> {
     imp::annotation_selection_snapshot(&pane_id)
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::is_remote_close_shortcut;
+
+    #[test]
+    fn only_plain_nonrepeating_control_d_is_the_remote_close_chord() {
+        assert!(is_remote_close_shortcut("d", 0, 1, 0, 0, 0));
+        for modifiers in [
+            (1, 1, 0, 0, 0),
+            (0, 0, 0, 0, 0),
+            (0, 1, 1, 0, 0),
+            (0, 1, 0, 1, 0),
+            (0, 1, 0, 0, 1),
+        ] {
+            assert!(!is_remote_close_shortcut(
+                "d",
+                modifiers.0,
+                modifiers.1,
+                modifiers.2,
+                modifiers.3,
+                modifiers.4,
+            ));
+        }
+        assert!(!is_remote_close_shortcut("x", 0, 1, 0, 0, 0));
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
