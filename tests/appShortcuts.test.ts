@@ -284,6 +284,9 @@ test("parses semantic commands from native payloads", () => {
   assert.deepEqual(parseAppShortcutCommand("splitPaneRight", null), {
     type: "splitPaneRight",
   });
+  assert.deepEqual(parseAppShortcutCommand("closeUnavailableRemotePane", null), {
+    type: "closeUnavailableRemotePane",
+  });
   assert.equal(parseAppShortcutCommand("launcherOrCycleAdapter", null), null);
   assert.equal(parseAppShortcutCommand("focusTab", -1), null);
   assert.equal(parseAppShortcutCommand("notACommand", null), null);
@@ -325,6 +328,7 @@ test("only pane-targeted commands are withheld from an unknown origin pane", () 
   // These act on whatever pane is active, so a chord whose origin pane React
   // no longer knows must not run them against an unintended pane.
   assert.equal(appShortcutTargetsActivePane({ type: "closePane" }), true);
+  assert.equal(appShortcutTargetsActivePane({ type: "closeUnavailableRemotePane" }), true);
   assert.equal(appShortcutTargetsActivePane({ type: "splitPaneBelow" }), true);
   assert.equal(appShortcutTargetsActivePane({ type: "splitPaneRight" }), true);
   assert.equal(

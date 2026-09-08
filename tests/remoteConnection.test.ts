@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseRemoteConnection, remoteConnectionLabel, remoteConnectionDetails, remoteGroupStatus, remoteHooksNeedAttention, remoteConnectionPresentation } from "../src/lib/remoteConnection";
+import { parseRemoteConnection, remoteConnectionLabel, remoteConnectionDetails, remoteGroupStatus, remoteHooksNeedAttention, remoteConnectionPresentation, remotePaneCloseButtonVisible, shouldCloseRemotePaneOnControlD } from "../src/lib/remoteConnection";
 import type { PaneInfo } from "../src/types";
 
 test("events retain recovery metadata and reject invalid states and timestamps", () => {
@@ -23,6 +23,44 @@ test("unreachable and ended sessions never promise that work is still running", 
     message: "The remote session has ended. It will not be recreated automatically." }),
     /Attempt|session has ended|recreated automatically|status is unknown/);
   assert.doesNotMatch(remoteConnectionDetails(ended), /still running/);
+});
+
+test("control-d closes only a remote pane whose close button is visible", () => {
+  const pane = (state: "connecting" | "checking" | "connected" | "reconnecting" | "disconnected" | "failed") => ({
+    remoteSession: { remoteId: "remote" },
+    remoteConnection: { state },
+  }) as PaneInfo;
+  assert.equal(remotePaneCloseButtonVisible(pane("failed")), true);
+  assert.equal(remotePaneCloseButtonVisible(pane("disconnected")), true);
+  assert.equal(remotePaneCloseButtonVisible(pane("connecting")), false);
+  assert.equal(remotePaneCloseButtonVisible(pane("checking")), false);
+  assert.equal(remotePaneCloseButtonVisible(pane("connected")), false);
+
+  const chord = {
+    key: "d",
+    ctrlKey: true,
+    metaKey: false,
+    altKey: false,
+    shiftKey: false,
+    repeat: false,
+    editableTarget: false,
+    paneTarget: true,
+  };
+  assert.equal(shouldCloseRemotePaneOnControlD(chord, pane("failed")), true);
+  for (const update of [
+    { ctrlKey: false },
+    { metaKey: true },
+    { altKey: true },
+    { shiftKey: true },
+    { repeat: true },
+    { editableTarget: true },
+    { paneTarget: false },
+    { key: "x" },
+  ]) {
+    assert.equal(shouldCloseRemotePaneOnControlD({ ...chord, ...update }, pane("failed")), false);
+  }
+  assert.equal(shouldCloseRemotePaneOnControlD(chord, pane("connecting")), false);
+  assert.equal(shouldCloseRemotePaneOnControlD(chord, {} as PaneInfo), false);
 });
 
 test("group status reflects mixed health and contains no remote label or separator", () => {

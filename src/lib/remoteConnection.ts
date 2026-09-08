@@ -137,6 +137,36 @@ export function remoteConnectionLabel(connection?: RemoteConnectionInfo | null):
   return remoteConnectionPresentation(connection).title;
 }
 
+export function remotePaneCloseButtonVisible(pane?: PaneInfo | null): boolean {
+  if (!pane?.remoteSession || pane.remoteConnection?.state === "connected") return false;
+  const label = remoteConnectionLabel(pane.remoteConnection);
+  return label !== "Connecting" && label !== "Checking connection";
+}
+
+export function shouldCloseRemotePaneOnControlD(
+  input: {
+    key: string;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    altKey: boolean;
+    shiftKey: boolean;
+    repeat: boolean;
+    editableTarget: boolean;
+    paneTarget: boolean;
+  },
+  pane?: PaneInfo | null,
+): boolean {
+  return remotePaneCloseButtonVisible(pane)
+    && input.key.toLowerCase() === "d"
+    && input.ctrlKey
+    && !input.metaKey
+    && !input.altKey
+    && !input.shiftKey
+    && !input.repeat
+    && !input.editableTarget
+    && input.paneTarget;
+}
+
 export function remoteConnectionDetails(connection?: RemoteConnectionInfo | null, now = Date.now()): string {
   const view = remoteConnectionPresentation(connection, now);
   return [...view.lines, ...(view.lastConnection ? [view.lastConnection] : [])].join("\n");
