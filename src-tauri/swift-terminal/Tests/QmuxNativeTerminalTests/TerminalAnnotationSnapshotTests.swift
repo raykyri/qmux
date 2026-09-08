@@ -16,7 +16,7 @@ struct TerminalAnnotationSnapshotTests {
         cellHeightPixels: 32
     )
 
-    @Test
+    @Test @MainActor
     func `modified gestures cannot claim a linear contained selection`() {
         #expect(QmuxTerminalView.annotationGestureCanProveLinearSelection([]))
         for modifier in [

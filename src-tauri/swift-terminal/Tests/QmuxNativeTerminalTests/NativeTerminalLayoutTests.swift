@@ -3,6 +3,7 @@ import Foundation
 import XCTest
 @testable import QmuxNativeTerminal
 
+@MainActor
 final class NativeTerminalLayoutTests: XCTestCase {
     func testClearScreenChordIsOnlyBareCommandK() throws {
         func event(
@@ -38,7 +39,7 @@ final class NativeTerminalLayoutTests: XCTestCase {
     }
 
     func testStaleSettingsCannotReplaceNewerTheme() async throws {
-        try await MainActor.run {
+        do {
             let pane = NativeTerminalPane(
                 paneID: "native-settings-revision-test-pane",
                 workingDirectory: nil,
@@ -61,7 +62,7 @@ final class NativeTerminalLayoutTests: XCTestCase {
     }
 
     func testUnchangedTabRevealDoesNotEmitResizeOrMoveViewport() async throws {
-        try await MainActor.run {
+        do {
             try await Self.withPane { paneID, frame in
                 let session = try XCTUnwrap(
                     TerminalSessionRegistry.shared.session(for: paneID)
@@ -95,8 +96,41 @@ final class NativeTerminalLayoutTests: XCTestCase {
         }
     }
 
+    func testSplitResizePreservesScrolledViewport() async throws {
+        do {
+            try await Self.withPane { paneID, frame in
+                let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
+                session.receive((0..<120).map { String(format: "line-%03d", $0) }.joined(separator: "\r\n"))
+                await Self.waitForPtyResizeFlush()
+                XCTAssertTrue(NativeTerminalHost.shared.performAction(id: paneID, action: "scroll_to_top"))
+                await Self.waitForPtyResizeFlush()
+                let before = try XCTUnwrap(session.readViewportText())
+                XCTAssertTrue(before.hasPrefix("line-000"), before)
+                let smaller = CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height / 2)
+                XCTAssertTrue(Self.setLayout(paneID: paneID, frame: smaller, visible: true))
+                await Self.waitForPtyResizeFlush()
+                XCTAssertTrue(try XCTUnwrap(session.readViewportText()).hasPrefix("line-000"))
+            }
+        }
+    }
+
+    func testSplitResizeKeepsShortShellOutputVisible() async throws {
+        do {
+            try await Self.withPane { paneID, frame in
+                let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
+                session.receive("first line\r\nsecond line\r\nprompt> ")
+                let smaller = CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height / 2)
+                XCTAssertTrue(Self.setLayout(paneID: paneID, frame: smaller, visible: true))
+                await Self.waitForPtyResizeFlush()
+                let text = try XCTUnwrap(session.readViewportText())
+                XCTAssertTrue(text.contains("first line"), text)
+                XCTAssertTrue(text.contains("prompt>"), text)
+            }
+        }
+    }
+
     func testRealFrameChangeStillEmitsResize() async throws {
-        try await MainActor.run {
+        do {
             try await Self.withPane { paneID, frame in
                 NativeTerminalCallbackRecorder.shared.reset()
                 let widerFrame = CGRect(
@@ -128,7 +162,7 @@ final class NativeTerminalLayoutTests: XCTestCase {
     }
 
     func testRapidFrameChangesCoalesceToOnePtyResize() async throws {
-        try await MainActor.run {
+        do {
             try await Self.withPane { paneID, frame in
                 NativeTerminalCallbackRecorder.shared.reset()
                 let mid = CGRect(
@@ -158,7 +192,7 @@ final class NativeTerminalLayoutTests: XCTestCase {
     }
 
     func testRemovedPaneDoesNotFlushPtyResize() async throws {
-        try await MainActor.run {
+        do {
             try await Self.withPane { paneID, frame in
                 NativeTerminalCallbackRecorder.shared.reset()
                 let taller = CGRect(
@@ -176,12 +210,12 @@ final class NativeTerminalLayoutTests: XCTestCase {
     }
 
     func testKeyboardFocusReturnsAfterGeometryDragBlockerClears() async throws {
-        try await MainActor.run {
+        do {
             let paneID = "native-resize-focus-test-pane"
             let frame = CGRect(x: 24, y: 18, width: 720, height: 360)
             NativeTerminalHost.shared.shutdown()
             NativeTerminalCallbackRecorder.shared.reset()
-            layoutRevisionCounter = 0
+            Self.layoutRevisionCounter = 0
             let root = NSView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800))
             let window = NSWindow(
                 contentRect: root.bounds,
@@ -247,7 +281,7 @@ final class NativeTerminalLayoutTests: XCTestCase {
     }
 
     func testStaleLayoutRevisionDoesNotOverwriteNewerFrame() async throws {
-        try await MainActor.run {
+        do {
             try await Self.withPane { paneID, frame in
                 let wider = CGRect(
                     x: frame.minX,
@@ -307,7 +341,7 @@ final class NativeTerminalLayoutTests: XCTestCase {
     }
 
     func testWebViewReloadClearsOldDocumentLayoutRevisions() async throws {
-        try await MainActor.run {
+        do {
             try await Self.withPane { paneID, frame in
                 let wider = CGRect(
                     x: frame.minX,
@@ -369,6 +403,8 @@ final class NativeTerminalLayoutTests: XCTestCase {
         NativeTerminalCallbackRecorder.shared.reset()
         layoutRevisionCounter = 0
         let root = NSView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800))
+        let window = NSWindow(contentRect: root.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = root
         XCTAssertTrue(NativeTerminalHost.shared.attach(to: root))
         NativeTerminalHost.shared.seedSettings(Self.settings)
         XCTAssertTrue(
@@ -384,7 +420,7 @@ final class NativeTerminalLayoutTests: XCTestCase {
         defer {
             NativeTerminalHost.shared.shutdown()
             NativeTerminalCallbackRecorder.shared.reset()
-            withExtendedLifetime(root) {}
+            withExtendedLifetime((root, window)) {}
         }
         try await body(paneID, frame)
     }
