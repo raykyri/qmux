@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   captureTranscriptScrollPosition,
+  transcriptUserMessageIndex,
   createTranscriptScrollCaptureSlot,
   shouldPersistTranscriptScroll,
   transcriptPointerDownSignalsScrollIntent,
@@ -111,4 +112,24 @@ test("restore waits for both elapsed time and stable frames, with a bounded fall
   assert.equal(transcriptRestoreHasSettled(120, 1, 120, 400, 2), false);
   assert.equal(transcriptRestoreHasSettled(120, 2, 120, 400, 2), true);
   assert.equal(transcriptRestoreHasSettled(400, 0, 120, 400, 2), true);
+});
+
+test("message navigation starts relative to the viewport and stops at either end", () => {
+  const positions = [10, 200, 600];
+  assert.equal(transcriptUserMessageIndex(positions, 300, -1, -1), 1);
+  assert.equal(transcriptUserMessageIndex(positions, 300, -1, 1), 2);
+  assert.equal(transcriptUserMessageIndex(positions, 200, -1, -1), 0);
+  assert.equal(transcriptUserMessageIndex(positions, 200, -1, 1), 2);
+  assert.equal(transcriptUserMessageIndex(positions, 0, -1, -1), 0);
+  assert.equal(transcriptUserMessageIndex(positions, 900, -1, 1), 2);
+  assert.equal(transcriptUserMessageIndex([], 0, -1, 1), -1);
+});
+
+test("message cursor moves both ways even when the bottom clamps scroll position", () => {
+  const positions = [10, 200, 600, 650];
+  assert.equal(transcriptUserMessageIndex(positions, 400, 2, 1), 3);
+  assert.equal(transcriptUserMessageIndex(positions, 400, 3, -1), 2);
+  assert.equal(transcriptUserMessageIndex(positions, 400, 3, 1), 3);
+  assert.equal(transcriptUserMessageIndex(positions, 10, 0, -1), 0);
+  assert.equal(transcriptUserMessageIndex([10], 0, 0, 1), 0);
 });

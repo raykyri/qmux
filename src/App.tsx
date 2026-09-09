@@ -2658,6 +2658,7 @@ function MainApp() {
   // keeps WebKit as the key target (Cmd+C copies the selection instead of
   // running Ghostty's copy on the terminal).
   const [webSelectionActive, setWebSelectionActive] = useState(false);
+  const [webTranscriptFocused, setWebTranscriptFocused] = useState(false);
   // Orders user-input events against page-focus gains so a focus event can be
   // classified as user-driven (a click or key since the page last became
   // focused) versus WebKit re-emitting focus on its remembered element after
@@ -6244,7 +6245,7 @@ function MainApp() {
     activePaneVisible: Boolean(activePane && visibleTerminalPaneIdSet.has(activePane.id)),
     activePaneReadOnly,
     inputBlocked: nativeTerminalInputBlocked,
-    webEditableFocused,
+    webEditableFocused: webEditableFocused || webTranscriptFocused,
     webSelectionActive,
   });
   useLayoutEffect(() => {
@@ -11045,6 +11046,11 @@ function MainApp() {
   }
 
   function focusPaneTab(paneId: string) {
+    if (document.activeElement instanceof HTMLElement &&
+        document.activeElement.closest(".turn-timeline")) {
+      document.activeElement.blur();
+      setWebTranscriptFocused(false);
+    }
     const treeId = researchNodeByPaneIdRef.current.get(paneId)?.treeId;
     const researchExposureChanged = Boolean(
       treeId &&
@@ -13201,7 +13207,11 @@ function MainApp() {
         return;
       }
       requestAnimationFrame(() => {
-        if (isEditableTarget(document.activeElement)) {
+        if (
+          isEditableTarget(document.activeElement) ||
+          (document.activeElement instanceof Element &&
+            document.activeElement.closest(".turn-timeline"))
+        ) {
           return;
         }
         // A live DOM selection means the user is selecting (or has selected)
@@ -13416,6 +13426,37 @@ function MainApp() {
   const mountedTurnPaneCellsKey = visibleRightBarSurfaces
     .map((surface) => surface.pane.id)
     .join("\n");
+  // A clicked transcript is a keyboard destination, just like the composer.
+  // Resample on removal/layout changes because WebKit may omit focusout.
+  useEffect(() => {
+    let frame: number | null = null;
+    const sample = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = null;
+      setWebTranscriptFocused(
+        document.hasFocus() &&
+          document.activeElement instanceof Element &&
+          Boolean(document.activeElement.closest(".turn-timeline")),
+      );
+    };
+    const schedule = () => {
+      if (frame === null) frame = requestAnimationFrame(sample);
+    };
+    window.addEventListener("focusin", sample);
+    window.addEventListener("focusout", schedule);
+    window.addEventListener("blur", sample);
+    window.addEventListener("focus", sample);
+    window.addEventListener("pointerdown", schedule, true);
+    sample();
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      window.removeEventListener("focusin", sample);
+      window.removeEventListener("focusout", schedule);
+      window.removeEventListener("blur", sample);
+      window.removeEventListener("focus", sample);
+      window.removeEventListener("pointerdown", schedule, true);
+    };
+  }, [mountedTurnPaneCellsKey, activeSurface]);
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       const restored = document.activeElement;
@@ -18978,7 +19019,7 @@ function MainApp() {
               // only the panes on screen instead of every mounted tab.
               webEditableFocused={
                 visibleTerminalPaneIdSet.has(pane.id) &&
-                (webEditableFocused || webSelectionActive)
+                (webEditableFocused || webSelectionActive || webTranscriptFocused)
               }
               requestAttach={requestPaneAttach}
               onCloseRemote={() => void closePane(pane)}

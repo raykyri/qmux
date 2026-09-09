@@ -127,3 +127,22 @@ export function createTranscriptScrollCaptureSlot(): TranscriptScrollCaptureSlot
     },
   };
 }
+
+/** Keep an explicit cursor so clamping near the bottom cannot repeat a message.
+ * After manual scrolling, start with the nearest message in the chosen direction. */
+export function transcriptUserMessageIndex(
+  positions: number[], scrollTop: number, current: number, direction: -1 | 1,
+): number {
+  if (positions.length === 0) return -1;
+  if (current >= 0 && current < positions.length) {
+    return Math.max(0, Math.min(positions.length - 1, current + direction));
+  }
+  if (direction === 1) {
+    const next = positions.findIndex(top => top > scrollTop + 2);
+    return next < 0 ? positions.length - 1 : next;
+  }
+  for (let index = positions.length - 1; index >= 0; index--) {
+    if (positions[index] < scrollTop - 2) return index;
+  }
+  return 0;
+}

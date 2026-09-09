@@ -24,6 +24,7 @@ import type {
   TranscriptOption,
 } from "../types";
 import {
+  isEditableTarget,
   placePanePopover,
   turnPaneRectFrom,
 } from "../lib/appHelpers";
@@ -40,6 +41,7 @@ import { taggedUserInstructionDetails } from "../lib/taggedInstructions";
 import { formatEstimatedTokenCount } from "../lib/tokenEstimate";
 import {
   captureTranscriptScrollPosition,
+  transcriptUserMessageIndex,
   shouldPersistTranscriptScroll,
   transcriptPointerDownSignalsScrollIntent,
   transcriptRestoreHasSettled,
@@ -272,6 +274,15 @@ export default function TurnOverlay({
   const sidebarRef = useRef<HTMLElement | null>(null);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const timeline = timelineRef.current;
+    return () => {
+      if (document.activeElement instanceof HTMLElement &&
+          timeline?.contains(document.activeElement)) {
+        document.activeElement.blur();
+      }
+    };
+  }, []);
   const readerCloseRef = useRef<HTMLButtonElement | null>(null);
   const readerScrollRestoreRef = useRef<TranscriptScrollPosition | null>(null);
   const readerModeWasActiveRef = useRef(false);
@@ -483,8 +494,17 @@ export default function TurnOverlay({
     }
   };
 
+  const userMessageCursorRef = useRef<{ agentId: string | undefined; key: string } | null>(null);
+
   const handleTimelinePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    userMessageCursorRef.current = null;
     const timeline = event.currentTarget;
+    const control = event.target instanceof Element
+      ? event.target.closest("input, textarea, select, button, a, [contenteditable], [tabindex]")
+      : null;
+    if (event.button === 0 && (!control || control === timeline)) {
+      timeline.focus({ preventScroll: true });
+    }
     const rect = timeline.getBoundingClientRect();
     pointerScrollIntentRef.current = transcriptPointerDownSignalsScrollIntent(
       event.pointerType,
@@ -508,12 +528,41 @@ export default function TurnOverlay({
   };
 
   const handleTimelineWheel = () => {
+    userMessageCursorRef.current = null;
     noteTimelineUserScrollIntent();
     cancelJumpToLatest();
   };
 
   const handleTimelineKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if ((event.key === "ArrowLeft" || event.key === "ArrowRight") &&
+        !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
+        !event.nativeEvent.isComposing && !isEditableTarget(event.target) &&
+        !(event.target instanceof Element && event.target.closest('[role="slider"], [role="separator"], [role="menu"], [role="tablist"]'))) {
+      const timeline = event.currentTarget;
+      const cards = Array.from(timeline.querySelectorAll<HTMLElement>(".turn-card.role-user"));
+      if (cards.length === 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      noteTimelineUserScrollIntent();
+      cancelJumpToLatest();
+      // Measure normal-flow positions, including the currently sticky user card.
+      const sticky = timeline.classList.contains("has-sticky-user");
+      timeline.classList.remove("has-sticky-user");
+      const top = timeline.getBoundingClientRect().top;
+      const padding = Number.parseFloat(getComputedStyle(timeline).paddingTop) || 0;
+      const positions = cards.map(card => card.getBoundingClientRect().top - top + timeline.scrollTop - padding);
+      if (sticky) timeline.classList.add("has-sticky-user");
+      const cursor = userMessageCursorRef.current;
+      const current = cursor?.agentId === agentId
+        ? cards.findIndex(card => card.dataset.messageKey === cursor?.key) : -1;
+      const index = transcriptUserMessageIndex(positions, timeline.scrollTop, current, event.key === "ArrowLeft" ? -1 : 1);
+      userMessageCursorRef.current = { agentId, key: cards[index].dataset.messageKey! };
+      timeline.scrollTo({ top: Math.max(0, positions[index]), behavior: "instant" });
+      handleTimelineScroll();
+      return;
+    }
     if (transcriptScrollKeySignalsIntent(event.key)) {
+      userMessageCursorRef.current = null;
       noteTimelineUserScrollIntent();
     }
     cancelJumpToLatest();
@@ -1236,6 +1285,8 @@ export default function TurnOverlay({
       <TranscriptLinkActionsProvider actions={linkActions}>
         <div
           ref={timelineRef}
+          tabIndex={0}
+          aria-label="Conversation transcript"
           className={`turn-timeline${displayedTimelineItems.length === 0 && !thinking ? " is-empty" : ""}${
             stickyUserEnabled && !readerMode ? " has-sticky-user" : ""
           }`}
@@ -1613,6 +1664,7 @@ function MessageItemView({
     (showName || showMessageActions || item.contextStatus === "rolledBack");
   return (
     <article
+      data-message-key={item.key}
       className={`turn-card role-${item.role}${
         taggedInstructionMessage ? " is-tagged-instruction-message" : ""
       }${timelineStatusClass(item.status)}${timelineContextStatusClass(
