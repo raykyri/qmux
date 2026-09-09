@@ -78,6 +78,7 @@ final class NativeTerminalLayoutTests: XCTestCase {
                         action: "scroll_to_top"
                     )
                 )
+                await Self.waitForPtyResizeFlush()
                 let viewportBefore = try XCTUnwrap(session.readViewportText())
                 XCTAssertTrue(viewportBefore.contains("line-000"))
 
@@ -126,6 +127,47 @@ final class NativeTerminalLayoutTests: XCTestCase {
                 XCTAssertTrue(text.contains("first line"), text)
                 XCTAssertTrue(text.contains("prompt>"), text)
             }
+        }
+    }
+
+    func testViewGridNotificationDoesNotResizePty() async {
+        let pane = NativeTerminalPane(
+            paneID: "view-grid-notification-test",
+            workingDirectory: nil,
+            themeName: QmuxTerminalTheme.defaultName
+        )
+        NativeTerminalCallbackRecorder.shared.reset()
+        pane.terminalDidResize(columns: 40, rows: 12)
+        await Self.waitForPtyResizeFlush()
+        XCTAssertTrue(NativeTerminalCallbackRecorder.shared.resizes.isEmpty)
+    }
+
+    func testPrimaryScreenPagerRepaintAfterResize() async throws {
+        try await Self.withPane { paneID, frame in
+            let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
+            session.receive((0..<80).map { "old-\($0)" }.joined(separator: "\r\n"))
+            NativeTerminalCallbackRecorder.shared.reset()
+            let smaller = CGRect(
+                x: frame.minX, y: frame.minY,
+                width: frame.width / 2, height: frame.height / 2
+            )
+            XCTAssertTrue(Self.setLayout(paneID: paneID, frame: smaller, visible: true))
+            // Repaint as soon as the PTY is notified, just as less -X does on
+            // SIGWINCH. Polling has a deadline, not a guessed IO resize delay.
+            let deadline = ContinuousClock.now + .seconds(2)
+            while NativeTerminalCallbackRecorder.shared.resizes.isEmpty,
+                  ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            let resize = try XCTUnwrap(NativeTerminalCallbackRecorder.shared.resizes.last)
+            let repaint = "\u{1b}[H\u{1b}[2J" + (0..<Int(resize.rows)).map {
+                "new-\($0) " + String(repeating: "x", count: max(0, Int(resize.columns) - 10))
+            }.joined(separator: "\r\n")
+            session.receive(repaint)
+            await Self.waitForPtyResizeFlush()
+            let settled = try XCTUnwrap(session.readViewportText())
+            XCTAssertTrue(settled.hasPrefix("new-0"), settled)
+            XCTAssertTrue(settled.contains("new-\(resize.rows - 1)"), settled)
         }
     }
 
@@ -382,6 +424,9 @@ final class NativeTerminalLayoutTests: XCTestCase {
 
     @MainActor
     private static func waitForPtyResizeFlush() async {
+        // Ghostty coalesces IO resizes on its own timer, independently of the
+        // AppKit main queue. Include that work when settling layout tests.
+        try? await Task.sleep(for: .milliseconds(100))
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             DispatchQueue.main.async {
                 DispatchQueue.main.async {

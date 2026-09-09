@@ -273,8 +273,8 @@ final class NativeTerminalHost {
     /// Host-managed PTY size follows Ghostty's grid, but `TIOCSWINSZ` is
     /// deferred one present so a SIGWINCH redraw cannot hit a stale
     /// IOSurface. The in-memory session resize callback is `@Sendable` and
-    /// may fire off the main actor; hop here and coalesce with the surface
-    /// delegate path.
+    /// fires on Ghostty's IO thread after resize coalescing; view geometry
+    /// delegates must not bypass this callback.
     nonisolated static func enqueuePanePtyResizeFromAnyThread(
         id: String,
         columns: Int32,
@@ -474,8 +474,8 @@ final class NativeTerminalHost {
             pane.view.frame = frame
         }
         if !pane.view.isHidden, frameChanged || forceFit {
-            // fitToSize resizes Ghostty's grid immediately and schedules the
-            // IOSurface present. The PTY ioctl is intentionally not issued
+            // fitToSize requests Ghostty's grid resize. Its IO thread coalesces
+            // that work before reporting the backend size. The ioctl is not issued
             // here: NativeTerminalPane coalesces grid reports and flushes
             // TIOCSWINSZ after that present so a TUI redraw cannot race a
             // stale backing store.

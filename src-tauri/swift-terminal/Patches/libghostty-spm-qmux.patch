@@ -512,3 +512,60 @@ new file mode 100644
 +        }
 +    }
 +#endif
+diff --git a/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSession.swift b/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSession.swift
+index c209d86..8268d7a 100644
+--- a/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSession.swift
++++ b/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSession.swift
+@@ -12,6 +12,8 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
+     private let lock = NSLock()
+     private var surface: ghostty_surface_t?
+     private var lastResize: InMemoryTerminalViewport?
++    private var measuredCellWidthPixels: UInt32 = 0
++    private var measuredCellHeightPixels: UInt32 = 0
+     private let writeHandler: @Sendable (Data) -> Void
+     private let resizeHandler: @Sendable (InMemoryTerminalViewport) -> Void
+
+@@ -108,16 +110,14 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
+         return String(decoding: bytes, as: UTF8.self)
+     }
+
++    /// Cache cell metrics without notifying the host of a PTY resize. Surface
++    /// geometry changes before Ghostty's IO thread processes its coalesced
++    /// resize; only receiveResizeCallback may publish the new grid to a child.
+     func updateViewport(_ size: TerminalGridMetrics) {
+-        TerminalDebugLog.log(.metrics, "in-memory viewport update \(size.debugSummary)")
+-        dispatchResize(InMemoryTerminalViewport(
+-            columns: size.columns,
+-            rows: size.rows,
+-            widthPixels: size.widthPixels,
+-            heightPixels: size.heightPixels,
+-            cellWidthPixels: size.cellWidthPixels,
+-            cellHeightPixels: size.cellHeightPixels
+-        ))
++        lock.lock()
++        defer { lock.unlock() }
++        measuredCellWidthPixels = size.cellWidthPixels
++        measuredCellHeightPixels = size.cellHeightPixels
+     }
+
+     // MARK: - Receiving Data
+@@ -240,15 +240,13 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
+     }
+
+     private func mergedResize(_ resize: InMemoryTerminalViewport) -> InMemoryTerminalViewport {
+-        guard let lastResize else { return resize }
+-
+         return InMemoryTerminalViewport(
+             columns: resize.columns,
+             rows: resize.rows,
+-            widthPixels: resize.widthPixels == 0 ? lastResize.widthPixels : resize.widthPixels,
+-            heightPixels: resize.heightPixels == 0 ? lastResize.heightPixels : resize.heightPixels,
+-            cellWidthPixels: resize.cellWidthPixels == 0 ? lastResize.cellWidthPixels : resize.cellWidthPixels,
+-            cellHeightPixels: resize.cellHeightPixels == 0 ? lastResize.cellHeightPixels : resize.cellHeightPixels
++            widthPixels: resize.widthPixels == 0 ? (lastResize?.widthPixels ?? 0) : resize.widthPixels,
++            heightPixels: resize.heightPixels == 0 ? (lastResize?.heightPixels ?? 0) : resize.heightPixels,
++            cellWidthPixels: resize.cellWidthPixels == 0 ? measuredCellWidthPixels : resize.cellWidthPixels,
++            cellHeightPixels: resize.cellHeightPixels == 0 ? measuredCellHeightPixels : resize.cellHeightPixels
+         )
+     }
+ }

@@ -116,9 +116,8 @@ final class NativeTerminalPane: NSObject,
     /// Last grid Ghostty reported that we have not yet turned into a PTY ioctl.
     private var pendingPtyColumns: Int32?
     private var pendingPtyRows: Int32?
-    /// Last grid we actually delivered to Rust. Duplicate reports (the
-    /// in-memory session callback plus the surface delegate, or two fits
-    /// of the same frame) must not TIOCSWINSZ again.
+    /// Last grid delivered to Rust. Repeated backend reports of the same
+    /// dimensions must not TIOCSWINSZ again.
     private var flushedPtyColumns: Int32?
     private var flushedPtyRows: Int32?
     private var ptyResizeFlushGeneration: UInt64 = 0
@@ -317,12 +316,9 @@ final class NativeTerminalPane: NSObject,
     func terminalDidResize(columns: Int, rows: Int) {
         annotationViewportRevision &+= 1
         scheduleAnnotationViewportReport()
-        guard let columns = Int32(exactly: columns),
-              let rows = Int32(exactly: rows)
-        else {
-            return
-        }
-        enqueuePtyResize(columns: columns, rows: rows)
+        // This delegate reports requested view geometry, before Ghostty's
+        // coalesced IO resize. The session backend callback alone drives the
+        // PTY, otherwise a pager repaints into the old primary-screen grid.
     }
 
     func terminalDidChangeScrollbar(_ metrics: TerminalScrollbarMetrics) {
@@ -414,14 +410,11 @@ final class NativeTerminalPane: NSObject,
         )
     }
 
-    /// Record a Ghostty grid change without TIOCSWINSZ yet. `fitToSize` /
-    /// `setFrameSize` apply the new size and schedule the IOSurface present
-    /// as one `main.async`. Two further hops put the ioctl after that
-    /// present, so a full-screen TUI's SIGWINCH redraw cannot race a stale
-    /// backing store (Emacs after a split close). If no present was queued
-    /// (occluded / background), the ioctl still runs — same as the old
-    /// immediate path. Repeated reports before the flush coalesce to the
-    /// last size.
+    /// Called only from Ghostty's host-managed IO resize callback, after its
+    /// resize coalescing timer fires. View geometry is not a PTY size signal.
+    /// Keep the additional main-queue hops to allow the scheduled IOSurface
+    /// present before a TUI's SIGWINCH redraw (Emacs after a split close).
+    /// Repeated backend reports before the flush coalesce to the last size.
     func enqueuePtyResize(columns: Int32, rows: Int32) {
         guard columns > 0, rows > 0 else { return }
         pendingPtyColumns = columns
