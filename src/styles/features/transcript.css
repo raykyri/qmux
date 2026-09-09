@@ -151,6 +151,52 @@
   box-shadow: 0 0 0 2px var(--accent-shadow);
 }
 
+.turn-message-navigation {
+  position: absolute;
+  right: 11px;
+  z-index: 3;
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--popover-bg) 90%, transparent);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(10px) saturate(120%);
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
+}
+
+.turn-message-navigation button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-body-soft);
+  cursor: pointer;
+}
+
+.turn-message-navigation button + button {
+  border-left: 1px solid var(--surface-border-strong);
+}
+
+.turn-message-navigation button:hover {
+  background: var(--accent-shadow);
+  color: var(--text-primary);
+}
+
+.turn-message-navigation button:active {
+  background: var(--surface-border-strong);
+}
+
+.turn-message-navigation button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -3px;
+}
+
 /* A real flex item reserves the floating composer's height at the tail. WebKit
    does not reliably include block-end padding in a flex scroller's usable
    scroll range, which could leave the final transcript lines underneath the

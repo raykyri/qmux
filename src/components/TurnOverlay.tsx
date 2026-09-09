@@ -15,7 +15,7 @@ import type {
   ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { ArrowDown, ArrowUpRight, Ellipsis, History, LoaderCircle, X } from "lucide-react";
+import { ArrowDown, ArrowUpRight, ChevronLeft, ChevronRight, Ellipsis, History, LoaderCircle, X } from "lucide-react";
 import type {
   MessageAnchor,
   ThreadParticipant,
@@ -533,32 +533,37 @@ export default function TurnOverlay({
     cancelJumpToLatest();
   };
 
+  const navigateUserMessage = (direction: -1 | 1) => {
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+    const cards = Array.from(timeline.querySelectorAll<HTMLElement>(".turn-card.role-user"));
+    if (cards.length === 0) return;
+    noteTimelineUserScrollIntent();
+    cancelJumpToLatest();
+    // Measure normal-flow positions, including the currently sticky user card.
+    const sticky = timeline.classList.contains("has-sticky-user");
+    timeline.classList.remove("has-sticky-user");
+    const top = timeline.getBoundingClientRect().top;
+    const padding = Number.parseFloat(getComputedStyle(timeline).paddingTop) || 0;
+    const positions = cards.map(card => card.getBoundingClientRect().top - top + timeline.scrollTop - padding);
+    if (sticky) timeline.classList.add("has-sticky-user");
+    const cursor = userMessageCursorRef.current;
+    const current = cursor?.agentId === agentId
+      ? cards.findIndex(card => card.dataset.messageKey === cursor?.key) : -1;
+    const index = transcriptUserMessageIndex(positions, timeline.scrollTop, current, direction);
+    userMessageCursorRef.current = { agentId, key: cards[index].dataset.messageKey! };
+    timeline.scrollTo({ top: Math.max(0, positions[index]), behavior: "instant" });
+    handleTimelineScroll();
+  };
+
   const handleTimelineKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if ((event.key === "ArrowLeft" || event.key === "ArrowRight") &&
         !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
         !event.nativeEvent.isComposing && !isEditableTarget(event.target) &&
         !(event.target instanceof Element && event.target.closest('[role="slider"], [role="separator"], [role="menu"], [role="tablist"]'))) {
-      const timeline = event.currentTarget;
-      const cards = Array.from(timeline.querySelectorAll<HTMLElement>(".turn-card.role-user"));
-      if (cards.length === 0) return;
       event.preventDefault();
       event.stopPropagation();
-      noteTimelineUserScrollIntent();
-      cancelJumpToLatest();
-      // Measure normal-flow positions, including the currently sticky user card.
-      const sticky = timeline.classList.contains("has-sticky-user");
-      timeline.classList.remove("has-sticky-user");
-      const top = timeline.getBoundingClientRect().top;
-      const padding = Number.parseFloat(getComputedStyle(timeline).paddingTop) || 0;
-      const positions = cards.map(card => card.getBoundingClientRect().top - top + timeline.scrollTop - padding);
-      if (sticky) timeline.classList.add("has-sticky-user");
-      const cursor = userMessageCursorRef.current;
-      const current = cursor?.agentId === agentId
-        ? cards.findIndex(card => card.dataset.messageKey === cursor?.key) : -1;
-      const index = transcriptUserMessageIndex(positions, timeline.scrollTop, current, event.key === "ArrowLeft" ? -1 : 1);
-      userMessageCursorRef.current = { agentId, key: cards[index].dataset.messageKey! };
-      timeline.scrollTo({ top: Math.max(0, positions[index]), behavior: "instant" });
-      handleTimelineScroll();
+      navigateUserMessage(event.key === "ArrowLeft" ? -1 : 1);
       return;
     }
     if (transcriptScrollKeySignalsIntent(event.key)) {
@@ -1500,6 +1505,37 @@ export default function TurnOverlay({
           <ArrowDown size={12} aria-hidden="true" />
           Jump to latest
         </button>
+      ) : null}
+      {!readerMode && displayedTimelineItems.some(item => item.role === "user") ? (
+        <div
+          className="turn-message-navigation"
+          role="group"
+          aria-label="Navigate user messages"
+          style={{ bottom: jumpToLatestBottom }}
+        >
+          <button
+            type="button"
+            aria-label="Previous user message"
+            title="Previous user message (Left arrow)"
+            onClick={() => {
+              timelineRef.current?.focus({ preventScroll: true });
+              navigateUserMessage(-1);
+            }}
+          >
+            <ChevronLeft size={14} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            aria-label="Next user message"
+            title="Next user message (Right arrow)"
+            onClick={() => {
+              timelineRef.current?.focus({ preventScroll: true });
+              navigateUserMessage(1);
+            }}
+          >
+            <ChevronRight size={14} aria-hidden="true" />
+          </button>
+        </div>
       ) : null}
       {!readerMode && input ? (
         <div
