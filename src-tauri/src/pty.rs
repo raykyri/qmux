@@ -4561,18 +4561,28 @@ pub fn close_worktree_pane(
     Ok(())
 }
 
-/// Color probes buffered before attachment cannot be answered promptly. A late
-/// OSC reply can become editor input (ESC ] even opens an editor in some TUIs).
-/// Drop only those probes, preserving rendering and live queries. Keep partial
-/// matches across reads, including a probe straddling the attach boundary.
+/// Terminal probes buffered before attachment cannot be answered promptly. A
+/// late reply can become editor input after tmux has stopped waiting for it
+/// (ESC ] even opens an editor in some TUIs). Drop only those probes,
+/// preserving rendering and live queries. Keep partial matches across reads,
+/// including a probe straddling the attach boundary.
 #[derive(Default)]
-struct StartupColorQueries {
+struct StartupTerminalQueries {
     pending: Vec<u8>,
 }
 
-impl StartupColorQueries {
+impl StartupTerminalQueries {
     fn filter<'a>(&mut self, bytes: &'a [u8], buffering: bool) -> Cow<'a, [u8]> {
         const QUERIES: &[&[u8]] = &[
+            // tmux asks for these while attaching a client. If the native
+            // surface is still waiting for its first layout, Ghostty cannot
+            // answer until after tmux's response window has closed. Replaying
+            // them then types Ghostty's DA2 and XTVERSION replies into the
+            // surviving agent instead (for example `1;10;0c>|ghostty 1.3.1`).
+            b"\x1b[>c",
+            b"\x1b[>0c",
+            b"\x1b[>q",
+            b"\x1b[>0q",
             b"\x1b]10;?\x07",
             b"\x1b]10;?\x1b\\",
             b"\x1b]11;?\x07",
@@ -4625,7 +4635,7 @@ fn start_reader_thread(
         // to keep the reader thread's stack frame small.
         let mut buffer = vec![0_u8; 64 * 1024];
         let mut handshake = RemoteClientHandshake::default();
-        let mut startup_color_queries = StartupColorQueries::default();
+        let mut startup_terminal_queries = StartupTerminalQueries::default();
         let mut first_output = true;
         loop {
             match reader.read(&mut buffer) {
@@ -4658,7 +4668,7 @@ fn start_reader_thread(
                     // ever both buffered and emitted, and order is preserved.
                     let (live, chunk) = match backlog.lock() {
                         Ok(mut backlog) => {
-                            let chunk = startup_color_queries
+                            let chunk = startup_terminal_queries
                                 .filter(chunk, native_surface && !backlog.ready);
                             if backlog.ready {
                                 (true, chunk)
@@ -4667,7 +4677,7 @@ fn start_reader_thread(
                                 (false, chunk)
                             }
                         }
-                        Err(_) => (true, startup_color_queries.filter(chunk, false)),
+                        Err(_) => (true, startup_terminal_queries.filter(chunk, false)),
                     };
                     let chunk = chunk.as_ref();
                     if live {
@@ -5127,11 +5137,11 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn startup_color_queries_drop_probes_across_every_read_boundary() {
-        let input = b"\x1b[?1049h\x1b]10;?\x07\x1b]11;?\x1b\\\x1b]12;?\x07\x1b[31mDevin\x1b[0m";
+    fn startup_terminal_queries_drop_probes_across_every_read_boundary() {
+        let input = b"\x1b[?1049h\x1b[>c\x1b[>0q\x1b]10;?\x07\x1b]11;?\x1b\\\x1b]12;?\x07\x1b[31mDevin\x1b[0m";
         let expected = b"\x1b[?1049h\x1b[31mDevin\x1b[0m";
         for split in 0..=input.len() {
-            let mut filter = StartupColorQueries::default();
+            let mut filter = StartupTerminalQueries::default();
             let mut output = filter.filter(&input[..split], true).into_owned();
             output.extend_from_slice(&filter.filter(&input[split..], true));
             assert_eq!(output, expected, "split {split}");
@@ -5139,28 +5149,29 @@ mod tests {
     }
 
     #[test]
-    fn startup_color_queries_finish_pending_probe_after_attach_but_keep_live_queries() {
-        let query = b"\x1b]11;?\x1b\\";
-        for split in 1..query.len() {
-            let mut filter = StartupColorQueries::default();
-            assert!(filter.filter(&query[..split], true).is_empty());
-            let mut live = query[split..].to_vec();
-            live.extend_from_slice(query);
-            live.extend_from_slice(b"prompt");
-            let mut expected = query.to_vec();
-            expected.extend_from_slice(b"prompt");
-            assert_eq!(
-                filter.filter(&live, false).as_ref(),
-                expected,
-                "split {split}"
-            );
+    fn startup_terminal_queries_finish_pending_probe_after_attach_but_keep_live_queries() {
+        for query in [b"\x1b[>0c".as_slice(), b"\x1b[>q", b"\x1b]11;?\x1b\\"] {
+            for split in 1..query.len() {
+                let mut filter = StartupTerminalQueries::default();
+                assert!(filter.filter(&query[..split], true).is_empty());
+                let mut live = query[split..].to_vec();
+                live.extend_from_slice(query);
+                live.extend_from_slice(b"prompt");
+                let mut expected = query.to_vec();
+                expected.extend_from_slice(b"prompt");
+                assert_eq!(
+                    filter.filter(&live, false).as_ref(),
+                    expected,
+                    "query {query:?}, split {split}"
+                );
+            }
         }
     }
 
     #[test]
-    fn startup_color_queries_preserve_colors_titles_modes_and_non_queries() {
+    fn startup_terminal_queries_preserve_colors_titles_modes_and_non_queries() {
         let input = b"\x1b]10;rgb:ffff/0000/0000\x07\x1b]2;Devin\x07\x1b[?2004h\x1b]110;?\x07text";
-        let mut filter = StartupColorQueries::default();
+        let mut filter = StartupTerminalQueries::default();
         let mut output = Vec::new();
         for byte in input {
             output.extend_from_slice(&filter.filter(std::slice::from_ref(byte), true));
