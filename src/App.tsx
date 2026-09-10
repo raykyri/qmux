@@ -163,7 +163,7 @@ import {
 } from "./lib/researchScope";
 import ResearchDocument from "./components/research/ResearchDocument";
 import ExportToResearchDialog from "./components/research/ExportToResearchDialog";
-import RecentActivityPane from "./components/research/JournalPane";
+import ResearchBrowserHost from "./components/research/ResearchBrowserHost";
 import {
   normalizeNotificationLog,
   type NotificationLogEntry,
@@ -16022,12 +16022,12 @@ function MainApp() {
                 type="button"
                 className="control-button research-sidebar-select"
                 aria-current={researchStageView === "journal" ? "page" : undefined}
-                title="Recent Activity"
+                title="Research Browser"
                 onClick={openJournal}
               >
                 <span className="research-sidebar-copy">
                   <span className="research-sidebar-title">
-                    <span className="research-sidebar-title-text">Recent Activity</span>
+                    <span className="research-sidebar-title-text">Research Browser</span>
                   </span>
                 </span>
               </button>
@@ -18917,7 +18917,9 @@ function MainApp() {
             </div>
           ) : null}
           {researchStageView === "journal" ? (
-            <RecentActivityPane
+            <ResearchBrowserHost
+              onOpenPane={handleResearchDocumentOpenPane}
+              onAppShortcut={(command, repeat) => nativeAppShortcutHandlerRef.current(command, repeat)}
               items={recentActivityItems}
               researchTrees={[...researchTrees, ...archivedResearchTrees]}
               nextCursor={recentActivityCursor}

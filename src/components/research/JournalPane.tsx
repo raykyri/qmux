@@ -54,7 +54,12 @@ import { writeClipboardText } from "../../lib/clipboard";
 import { ResearchDocumentFrame } from "./ResearchDocumentChrome";
 import ActivityMetadataLine from "../ActivityMetadataLine";
 
-interface RecentActivityPaneProps {
+export interface RecentActivityPaneProps {
+  embedded?: boolean;
+  initialDraft?: string;
+  initialScrollTop?: number;
+  onScrollChange?: (top: number) => void;
+  onDraftChange?: (draft: string) => void;
   items: RecentActivityItem[];
   researchTrees: ResearchTreeSummary[];
   nextCursor: RecentActivityCursor | null;
@@ -757,6 +762,11 @@ function MeasuredActivityRow({
 }
 
 function RecentActivityPane({
+  embedded = false,
+  initialDraft = "",
+  initialScrollTop = 0,
+  onScrollChange,
+  onDraftChange,
   items,
   researchTrees,
   nextCursor,
@@ -775,12 +785,18 @@ function RecentActivityPane({
   onBack,
   onForward,
 }: RecentActivityPaneProps) {
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(initialDraft);
+  useEffect(() => { onDraftChange?.(draft); }, [draft, onDraftChange]);
   const [menu, setMenu] = useState<{ entryId: string; left: number; top: number } | null>(
     null,
   );
   const menuRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const onScrollChangeRef = useRef(onScrollChange);
+  onScrollChangeRef.current = onScrollChange;
+  useLayoutEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = initialScrollTop;
+  }, []);
   const virtualCanvasRef = useRef<HTMLDivElement | null>(null);
   const loadSentinelRef = useRef<HTMLDivElement | null>(null);
   const onBackRef = useRef(onBack);
@@ -788,6 +804,7 @@ function RecentActivityPane({
   onBackRef.current = onBack;
   onForwardRef.current = onForward;
   useEffect(() => {
+    if (embedded) return; // The SDK owns history input in the iframe.
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented || isEditableTarget(event.target)) {
         return;
@@ -922,6 +939,7 @@ function RecentActivityPane({
       ? { key: row.key, offset: canvasTop + geometry.offsets[visible] - scroller.scrollTop }
       : null;
     setViewport({ scrollTop: feedScrollTop, height: scroller.clientHeight });
+    onScrollChangeRef.current?.(scroller.scrollTop);
     if (scroller.scrollTop <= 60) setNewActivityCount(0);
   }, []);
 
@@ -1207,9 +1225,10 @@ function RecentActivityPane({
     }
   }
 
+  const Frame = embedded ? ActivityBody : ResearchDocumentFrame;
   return (
-    <ResearchDocumentFrame
-      title="Recent Activity"
+    <Frame
+      title="Research Browser"
       canGoBack={canGoBack}
       canGoForward={canGoForward}
       backTitle={`Back (${IS_MAC ? "⌘[" : "Ctrl+["})`}
@@ -1407,8 +1426,12 @@ function RecentActivityPane({
             document.body,
           )
         : null}
-    </ResearchDocumentFrame>
+    </Frame>
   );
+}
+
+function ActivityBody({ children }: { children: ReactNode }) {
+  return <main className="research-browser-body">{children}</main>;
 }
 
 export default memo(RecentActivityPane);

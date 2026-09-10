@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
     "dev:site": "tsx watch web/server.tsx",
+    "dev:research-browser": "node scripts/research-browser-dev.mjs",
     "dev:tauri": "tauri dev",
     "build": "bash scripts/build.sh",
     "build:aarch": "QMUX_BUILD_TARGET=aarch64-apple-darwin bash scripts/build.sh",

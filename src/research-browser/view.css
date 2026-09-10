@@ -1,0 +1,63 @@
+#root {
+  display: flex;
+  flex-direction: column;
+  color: var(--text-primary);
+  background: var(--research-workspace-bg);
+  font-family: var(--font-ui);
+}
+.research-browser-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.research-browser-error {
+  padding: 12px 20px;
+  color: var(--status-error-fg);
+}
+
+.research-browser-conversation {
+  overflow-y: auto;
+  flex: 1;
+  padding: 24px max(24px, calc((100% - 900px) / 2));
+}
+.research-browser-conversation-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.research-browser-conversation-nav h1 {
+  flex-basis: 100%;
+}
+.research-browser-conversation-nav select {
+  max-width: 400px;
+}
+.research-browser-segment {
+  border-bottom: 1px solid var(--border-subtle);
+  padding-block: 24px;
+  overflow-wrap: anywhere;
+}
+.research-browser-meta {
+  color: var(--text-subtle);
+}
+.research-browser-turn {
+  margin-block: 24px;
+}
+.research-browser-turn pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.research-browser-followup {
+  padding-block: 24px;
+}
+.research-browser-followup textarea {
+  display: block;
+  width: 100%;
+  margin-block: 12px;
+  resize: vertical;
+}
+.research-browser-followup-actions {
+  display: flex;
+  gap: 12px;
+}

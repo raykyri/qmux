@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>My Research Browser</title>
+    <style>
+      body {
+        font: 16px system-ui;
+        margin: 32px;
+        color: #ddd;
+        background: #17191c;
+      }
+      button {
+        padding: 8px;
+        margin: 4px;
+      }
+      pre {
+        white-space: pre-wrap;
+      }
+      textarea {
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="app">Connecting to qmux…</main>
+    <script type="module">
+      import { connectResearchBrowser } from "/@qmux/sdk";
+      const qmux = await connectResearchBrowser();
+      const app = document.querySelector("#app");
+      let sequence = 0;
+      async function render() {
+        const ticket = ++sequence;
+        const route = qmux.getSnapshot().route;
+        const trees = await qmux.call("research.list");
+        if (ticket !== sequence) return;
+        app.replaceChildren();
+        const title = document.createElement("h1");
+        title.textContent = "My research";
+        app.append(title);
+        for (const tree of trees) {
+          const button = document.createElement("button");
+          button.textContent = tree.title;
+          button.onclick = () =>
+            qmux.call(
+              "navigation.go",
+              `/research/${encodeURIComponent(tree.id)}`,
+            );
+          app.append(button);
+        }
+        const [, kind, encodedTreeId] = route.split("/");
+        if (kind !== "research") return;
+        const treeId = decodeURIComponent(encodedTreeId);
+        const detail = await qmux.call("research.getTree", treeId);
+        const content = await qmux.call(
+          "research.getNodeContent",
+          detail.tree.rootNodeId,
+        );
+        if (ticket !== sequence) return;
+        const pre = document.createElement("pre");
+        pre.textContent = content.turns
+          .map(
+            (turn) =>
+              `${turn.role}\n${turn.blocks
+                .filter((block) => block.type === "text")
+                .map((block) => block.text)
+                .join("\n")}`,
+          )
+          .join("\n\n");
+        app.append(pre);
+      }
+      qmux.subscribe((name) => {
+        if (name === "snapshot" || name === "research.changed")
+          void render().catch(showError);
+      });
+      function showError(error) {
+        app.textContent = String(error);
+      }
+      await render().catch(showError);
+    </script>
+  </body>
+</html>
