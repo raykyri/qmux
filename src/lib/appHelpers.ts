@@ -741,6 +741,55 @@ export function agentDisplayCheckoutRoot(agent: AgentInfo | undefined): string |
       : null;
 }
 
+function paneDisplayCheckoutRoot(pane: PaneInfo, agent: AgentInfo | undefined): string | null {
+  return agent
+    ? agentDisplayCheckoutRoot(agent)
+    : (pane.activeWorkspace?.gitRoot ?? null);
+}
+
+function paneDisplayDirectory(pane: PaneInfo, agent: AgentInfo | undefined): string {
+  return agentDisplayDirectory(agent, pane.cwd);
+}
+
+/**
+ * Names a tab's checkout when it differs from the first tab's location. This
+ * feeds the terminal-group branch subtitle, where the short root name disambiguates
+ * identical branch names without repeating a full path.
+ */
+export function paneBranchLocationLabel(
+  pane: PaneInfo,
+  agent: AgentInfo | undefined,
+  firstPane: PaneInfo | undefined,
+  firstAgent: AgentInfo | undefined,
+): string | null {
+  const branch = agent
+    ? agentDisplayBranch(agent)
+    : (pane.activeWorkspace?.branch ?? null);
+  const checkoutRoot = paneDisplayCheckoutRoot(pane, agent);
+  if (!branch || !checkoutRoot || !firstPane) {
+    return null;
+  }
+
+  const firstCheckoutRoot = paneDisplayCheckoutRoot(firstPane, firstAgent);
+  const firstLocation = firstCheckoutRoot ?? paneDisplayDirectory(firstPane, firstAgent);
+  if (displayPathsReferToSameDirectory(checkoutRoot, firstLocation)) {
+    return null;
+  }
+  // A legacy or just-spawned first tab may not have workspace metadata yet.
+  // Its cwd still proves it is inside the current tab's checkout.
+  if (!firstCheckoutRoot) {
+    const normalizedRoot = normalizeDisplayPath(checkoutRoot);
+    const normalizedFirstLocation = normalizeDisplayPath(firstLocation);
+    const rootPrefix = normalizedRoot === "/" ? "/" : `${normalizedRoot}/`;
+    if (normalizedFirstLocation.startsWith(rootPrefix)) {
+      return null;
+    }
+  }
+
+  const name = checkoutRoot.split("/").filter(Boolean).pop();
+  return name || checkoutRoot;
+}
+
 /** Whether an agent may still be doing work and should keep the machine awake.
  * Permission and user-feedback waits remain inside an unfinished turn, so they
  * keep the wake lock. Using a resting-state denylist also makes an unexpected

@@ -237,6 +237,7 @@ import {
   desiredPreventSleepState,
   agentCanFork,
   agentDisplayBranch,
+  agentDisplayCheckoutRoot,
   agentDisplayDirectory,
   agentDisplayWorktreeRoot,
   agentSupportsForkAtMessage,
@@ -252,6 +253,7 @@ import {
   IS_MAC,
   isTerminalTarget,
   measureTerminalCellSize,
+  paneBranchLocationLabel,
   selectPaneAfterClose,
   statusLabel,
   upsertThreadGraphs,
@@ -15017,18 +15019,37 @@ function MainApp() {
     const paneShellWorkspace = paneAgent ? null : (pane.activeWorkspace ?? null);
     const paneBranch =
       agentDisplayBranch(paneAgent) ?? (paneShellWorkspace?.branch ?? null);
+    const firstPane = groupPanes[0];
+    const paneGroup = groupById.get(groupId);
+    const paneBranchLocationName =
+      paneGroup?.scope === "terminal"
+        ? paneBranchLocationLabel(
+            pane,
+            paneAgent,
+            firstPane,
+            firstPane ? agentByPaneId.get(firstPane.id) : undefined,
+          )
+        : null;
     const paneWorktreeRoot =
       agentDisplayWorktreeRoot(paneAgent) ??
       (paneShellWorkspace?.kind === "linkedWorktree"
         ? (paneShellWorkspace.gitRoot ?? null)
         : null);
+    const paneCheckoutRoot = paneAgent
+      ? agentDisplayCheckoutRoot(paneAgent)
+      : (paneShellWorkspace?.gitRoot ?? null);
     // Name comes from the root alone so a detached-HEAD worktree still badges
     // (with just the directory name) instead of silently hiding the indicator.
     const paneWorktreeName = paneWorktreeRoot
       ? (paneWorktreeRoot.split("/").filter(Boolean).pop() ?? null)
       : null;
+    const showPaneWorktreeBadge = Boolean(paneWorktreeName && !paneBranchLocationName);
     const hasGitMeta = Boolean(paneBranch || paneWorktreeName);
-    const paneGitMetaTitle = [paneBranch, paneWorktreeRoot]
+    const paneGitMetaTitle = [
+      paneBranchLocationName ? paneCheckoutRoot : null,
+      paneBranch,
+      showPaneWorktreeBadge ? paneWorktreeRoot : null,
+    ]
       .filter(Boolean)
       .join(" ");
     const dropGap =
@@ -15104,11 +15125,15 @@ function MainApp() {
             ) : null}
             {settings.codeMode && hasGitMeta ? (
               <span className="pane-tab-gitmeta" title={paneGitMetaTitle}>
+                {paneBranchLocationName ? (
+                  <span className="pane-tab-gitmeta-location">{paneBranchLocationName}</span>
+                ) : null}
+                {paneBranchLocationName && paneBranch ? " · " : null}
                 {paneBranch ? (
                   <span className="pane-tab-gitmeta-branch">{paneBranch}</span>
                 ) : null}
-                {paneBranch && paneWorktreeName ? "\u00A0" : null}
-                {paneWorktreeName ? (
+                {paneBranch && showPaneWorktreeBadge ? "\u00A0" : null}
+                {showPaneWorktreeBadge ? (
                   <span className="pane-tab-gitmeta-worktree">
                     <FolderGit2 size={11} aria-hidden="true" className="pane-tab-gitmeta-icon" />
                     {paneWorktreeName}

@@ -7,8 +7,9 @@ import {
   agentDisplayWorktreeRoot,
   agentEventAffectsThinkingState,
   agentShowsLaunchDirectory,
+  paneBranchLocationLabel,
 } from "../src/lib/appHelpers";
-import type { AgentInfo } from "../src/types";
+import type { AgentInfo, PaneInfo } from "../src/types";
 
 function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
   return {
@@ -20,6 +21,20 @@ function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
     status: "running",
     paused: false,
     createdAt: 1,
+    ...overrides,
+  };
+}
+
+function pane(overrides: Partial<PaneInfo> = {}): PaneInfo {
+  return {
+    id: "pane-1",
+    title: "Shell",
+    kind: "shell",
+    groupId: "group-1",
+    cwd: "/repo",
+    cols: 80,
+    rows: 24,
+    status: "running",
     ...overrides,
   };
 }
@@ -135,4 +150,101 @@ test("a nested command cwd still shows the launch directory", () => {
   });
 
   assert.equal(agentShowsLaunchDirectory(current), true);
+});
+
+test("a branch tab names a checkout different from the first tab", () => {
+  const first = pane({
+    activeWorkspace: {
+      cwd: "/repo/app",
+      gitRoot: "/repo/app",
+      branch: "main",
+      kind: "mainCheckout",
+      source: "qmux",
+      managedByQmux: false,
+    },
+  });
+  const other = pane({
+    id: "pane-2",
+    cwd: "/repo/tools/src",
+    activeWorkspace: {
+      cwd: "/repo/tools/src",
+      gitRoot: "/repo/tools",
+      branch: "main",
+      kind: "mainCheckout",
+      source: "qmux",
+      managedByQmux: false,
+    },
+  });
+
+  assert.equal(paneBranchLocationLabel(other, undefined, first, undefined), "tools");
+});
+
+test("branch tabs in the first tab's checkout do not repeat its root", () => {
+  const first = pane({ cwd: "/repo/src" });
+  const nested = pane({
+    id: "pane-2",
+    cwd: "/repo/packages/app",
+    activeWorkspace: {
+      cwd: "/repo/packages/app",
+      gitRoot: "/repo",
+      branch: "feature/app",
+      kind: "mainCheckout",
+      source: "qmux",
+      managedByQmux: false,
+    },
+  });
+
+  assert.equal(paneBranchLocationLabel(nested, undefined, first, undefined), null);
+});
+
+test("branch location comparison falls back to a non-Git first tab cwd", () => {
+  const first = pane({ cwd: "/tmp/scratch" });
+  const checkout = pane({
+    id: "pane-2",
+    cwd: "/repo/app/src",
+    activeWorkspace: {
+      cwd: "/repo/app/src",
+      gitRoot: "/repo/app",
+      branch: "feature/app",
+      kind: "mainCheckout",
+      source: "qmux",
+      managedByQmux: false,
+    },
+  });
+
+  assert.equal(paneBranchLocationLabel(checkout, undefined, first, undefined), "app");
+});
+
+test("agent branch locations use live checkout roots", () => {
+  const first = pane({ cwd: "/repo/app" });
+  const currentAgent = agent({
+    activeWorkspace: {
+      cwd: "/repo/tools/src",
+      gitRoot: "/repo/tools",
+      branch: "feature/tools",
+      kind: "mainCheckout",
+      source: "codex",
+      managedByQmux: false,
+    },
+  });
+
+  assert.equal(paneBranchLocationLabel(pane(), currentAgent, first, undefined), "tools");
+});
+
+test("branchless tabs do not get a checkout label", () => {
+  const first = pane();
+  const detached = pane({
+    id: "pane-2",
+    cwd: "/repo/detached",
+    activeWorkspace: {
+      cwd: "/repo/detached",
+      gitRoot: "/repo/detached",
+      branch: null,
+      kind: "linkedWorktree",
+      source: "qmux",
+      managedByQmux: false,
+    },
+  });
+
+  assert.equal(paneBranchLocationLabel(detached, undefined, first, undefined), null);
 });
