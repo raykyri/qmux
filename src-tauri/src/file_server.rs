@@ -3,12 +3,12 @@
 //! Binds `127.0.0.1:0` (ephemeral, loopback-only) at startup and serves files via
 //! `http://127.0.0.1:<port>/<token>/<percent-encoded-abs-path>`. Because any local
 //! process can reach a loopback port, a random `token` (not loopback alone) is what
-//! gates access. The token is *per pane* (minted in `AppState::pane_file_token`): the
-//! server resolves it back to the requesting pane and only serves paths that
-//! canonicalize under that pane's own roots (`pane_file_roots`), including the local
-//! temporary directories where agents commonly write artifacts. So a token an agent
-//! obtains for its own pane can't reach another pane's workspace, and `..`/symlinks
-//! can't escape into other locations such as `~/.ssh/id_rsa`.
+//! gates access. Inert content uses a pane token restricted to that pane's roots;
+//! executable content receives a token restricted to its exact source file. The server
+//! canonicalizes every requested path, including the local temporary directories where
+//! agents commonly write artifacts. A pane token cannot reach another pane's workspace,
+//! an executable preview cannot read sibling files, and `..`/symlinks cannot escape into
+//! other locations such as `~/.ssh/id_rsa`.
 //!
 //! Hand-rolled GET/HEAD + Range over `TcpListener` to keep the dependency posture of
 //! the rest of the backend (cf. the hand-rolled base64 in events.rs). Each connection
@@ -151,17 +151,21 @@ pub fn resolve_tokenized_file_path(
         .find('/')
         .ok_or_else(|| "invalid qmux preview URL".to_string())?;
     let (token, encoded_path) = after_root.split_at(slash);
-    let pane_id = state
-        .pane_for_file_token(token)
-        .ok_or_else(|| "qmux preview URL is no longer authorized".to_string())?;
     let decoded = percent_decode(encoded_path)
         .ok_or_else(|| "invalid path encoding in qmux preview URL".to_string())?;
-    let requested = Path::new(&decoded);
-    let roots = state.pane_file_roots(&pane_id);
-    let grants = state.pane_file_preview_grants(&pane_id);
-    resolve_under_roots(requested, &roots)
-        .or_else(|| resolve_exact_file(requested, &grants))
+    resolve_file_token_path(state, token, Path::new(&decoded))
         .ok_or_else(|| "qmux preview file is no longer authorized".to_string())
+}
+
+fn resolve_file_token_path(state: &AppState, token: &str, requested: &Path) -> Option<PathBuf> {
+    if let Some(pane_id) = state.pane_for_file_token(token) {
+        let roots = state.pane_file_roots(&pane_id);
+        let grants = state.pane_file_preview_grants(&pane_id);
+        return resolve_under_roots(requested, &roots)
+            .or_else(|| resolve_exact_file(requested, &grants));
+    }
+    let (_, exact) = state.exact_file_for_preview_token(token)?;
+    resolve_exact_file(requested, &[exact])
 }
 
 fn valid_codex_inline_vis_filename(file: &str) -> bool {
@@ -440,9 +444,9 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
             .any(|p| p == "codex-inline-vis" || p == "codex-inline-vis=1")
     });
     let body_font_id = query_parameter(query, "qmux-body-font");
-    // The path is "/<token>/<abs path>": the first segment is the per-pane token, and
-    // everything from the next '/' onward is the percent-encoded absolute path (with
-    // its leading slash preserved). Tokens are hex, so they never contain a slash.
+    // The path is "/<token>/<abs path>": the first segment is the preview capability,
+    // and everything from the next '/' onward is the percent-encoded absolute path
+    // (with its leading slash preserved). Tokens are hex, so they never contain a slash.
     let Some(after_root) = path.strip_prefix('/') else {
         return Response::error(404, "Not Found");
     };
@@ -450,23 +454,18 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
         return Response::error(404, "Not Found");
     };
     let (token, encoded_path) = after_root.split_at(slash);
-    // Resolve the token to its pane and serve only that pane's roots, so a URL minted
-    // for one pane can never read another pane's files. An unknown token is an opaque
-    // 404, indistinguishable from a missing route.
-    let Some(pane_id) = state.pane_for_file_token(token) else {
+    // Resolve pane-wide tokens beneath that pane's roots, while tokens exposed to
+    // executable previews can only re-read the exact source file. Unknown tokens and
+    // paths outside either capability fail without exposing whether the path exists.
+    if state.pane_for_file_token(token).is_none()
+        && state.exact_file_for_preview_token(token).is_none()
+    {
         return Response::error(404, "Not Found");
-    };
+    }
     let Some(decoded) = percent_decode(encoded_path) else {
         return Response::error(400, "Bad Request");
     };
-
-    let roots = state.pane_file_roots(&pane_id);
-    let grants = state.pane_file_preview_grants(&pane_id);
-    let Some(canonical) = resolve_under_roots(Path::new(&decoded), &roots)
-        .or_else(|| resolve_exact_file(Path::new(&decoded), &grants))
-    else {
-        // Either it doesn't exist or it isn't under an allowed root — same opaque 403
-        // so the server isn't a probe for which paths exist.
+    let Some(canonical) = resolve_file_token_path(state, token, Path::new(&decoded)) else {
         return Response::error(403, "Forbidden");
     };
 
@@ -481,12 +480,10 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
     }
     let total = meta.len();
     let content_type = mime_type(&canonical);
-    // CSP for served content: the overlay already sandboxes it into an opaque origin
-    // (so scripts can't read sibling responses cross-origin), and `connect-src 'none'`
-    // closes the remaining channel — a hostile HTML file phoning the token home via
-    // fetch/XHR/WebSocket/beacon. Passive subresources (a report's own CSS/JS/images)
-    // still load, but only from this same file-server origin; nothing may talk to the
-    // network. `state.file_server_port()` is always set once the server is serving.
+    // CSP for served content: the overlay sandboxes it into an opaque origin, while
+    // `connect-src 'none'` blocks fetch/XHR/WebSocket/beacon. Passive subresources are
+    // limited to the file-server origin and the token independently limits which paths
+    // that origin will serve. `state.file_server_port()` is set once the server runs.
     let csp = state.file_server_port().map(file_content_csp);
 
     // `codex-inline-vis` files are HTML fragments rather than standalone pages.
@@ -654,12 +651,11 @@ fn html_preview_scroll_bridge() -> String {
 
 /// CSP applied to every served file. Served files always come back from
 /// `http://127.0.0.1:<port>` (see `file_url`), so passive subresources are pinned to
-/// that exact origin — a report's sibling CSS/JS/images/fonts render, but the document
-/// cannot reach any other host. `connect-src 'none'` blocks all scripted network egress
-/// (the token-exfiltration channel), and `object-src`/`base-uri`/`form-action` are
-/// locked down for good measure. Inline scripts/styles are permitted because a served
-/// report legitimately carries its own, and the sandbox opaque origin already contains
-/// what they can read.
+/// that exact origin. Pane-wide tokens let inert documents load sibling resources;
+/// executable reports use exact-file tokens. `connect-src 'none'` blocks all scripted
+/// network egress, and `object-src`/`base-uri`/`form-action` are locked down for good
+/// measure. Inline scripts/styles are permitted because a served report legitimately
+/// carries its own, while the sandbox keeps its opaque origin isolated from qmux.
 fn file_content_csp(port: u16) -> String {
     let origin = format!("http://127.0.0.1:{port}");
     format!(
@@ -696,127 +692,6 @@ fn markdown_page_csp(port: u16) -> String {
          base-uri 'none'; \
          form-action 'none'"
     )
-}
-
-/// CSP for `srcdoc`-embedded HTML previews. Unlike [`file_content_csp`], this omits the
-/// file-server origin because `about:srcdoc` has no HTTP origin — subresources are
-/// limited to `data:`/`blob:` URIs that are already embedded in the content. This is
-/// the token-free equivalent: the framed document cannot reach the file server at all,
-/// so no capability token is needed or exposable.
-fn srcdoc_file_content_csp() -> String {
-    "default-src 'none'; \
-     script-src 'unsafe-inline'; \
-     style-src 'unsafe-inline'; \
-     img-src data: blob:; \
-     font-src data:; \
-     media-src blob:; \
-     connect-src 'none'; \
-     object-src 'none'; \
-     base-uri 'none'; \
-     form-action 'none'"
-        .to_string()
-}
-
-/// CSP for `srcdoc`-embedded rendered Markdown. Same as [`srcdoc_file_content_csp`]
-/// but only the scroll-bridge script hash is allowed (no `unsafe-inline`), matching
-/// [`markdown_page_csp`].
-fn srcdoc_markdown_csp() -> String {
-    let script_hash = STANDARD.encode(Sha256::digest(HTML_PREVIEW_SCROLL_SCRIPT.as_bytes()));
-    format!(
-        "default-src 'none'; \
-         script-src 'sha256-{script_hash}'; \
-         style-src 'unsafe-inline'; \
-         img-src data: blob:; \
-         font-src data:; \
-         media-src blob:; \
-         connect-src 'none'; \
-         object-src 'none'; \
-         base-uri 'none'; \
-         form-action 'none'"
-    )
-}
-
-/// Injects a `<meta http-equiv="Content-Security-Policy">` tag before the untrusted
-/// HTML document. For `srcdoc` content there are no HTTP headers, so CSP must be
-/// applied via `<meta>`. Prefixing it prevents hostile markup from placing executable
-/// content before the policy takes effect.
-fn inject_csp_meta(html: &str, csp: &str) -> String {
-    let meta = format!("<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">");
-    format!("{meta}{html}")
-}
-
-/// Renders a file as a self-contained HTML string suitable for `srcdoc` embedding in
-/// the browser overlay iframe. This is the token-free alternative to serving via a
-/// file-server URL: the content is delivered directly through Tauri IPC, so the framed
-/// document's `location.href` is `about:srcdoc` and contains no per-pane capability
-/// token.
-///
-/// Returns `Ok(None)` for content types that cannot be meaningfully rendered as
-/// `srcdoc` (e.g., raw binary images, PDFs). The caller should fall back to the
-/// file-server URL for those — non-HTML content cannot execute JavaScript to read
-/// `location.href`, so the token exfiltration risk does not apply.
-pub fn render_sandboxed_preview(
-    canonical: &Path,
-    codex_inline_vis: bool,
-) -> Result<Option<String>, String> {
-    let content_type = mime_type(canonical);
-    if !codex_inline_vis
-        && !is_markdown(canonical)
-        && !content_type.starts_with("text/html")
-        && !content_type.starts_with("image/svg")
-    {
-        return Ok(None);
-    }
-    let file =
-        File::open(canonical).map_err(|err| format!("failed to open preview file: {err}"))?;
-    let meta = file
-        .metadata()
-        .map_err(|err| format!("failed to read file metadata: {err}"))?;
-    let total = meta.len();
-    if total > MAX_INLINE_BYTES {
-        return Err("file is too large for inline preview".to_string());
-    }
-    let source =
-        read_slice(file, 0, total).map_err(|err| format!("failed to read preview file: {err}"))?;
-    let source_str = String::from_utf8_lossy(&source);
-
-    let html = if codex_inline_vis {
-        if total > MAX_CODEX_INLINE_VIS_BYTES {
-            return Err("codex inline visualization is too large".to_string());
-        }
-        if !canonical
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
-        {
-            return Err("codex inline visualization must be an HTML file".to_string());
-        }
-        let page = render_codex_inline_visualization_page(canonical, &source_str, None);
-        inject_csp_meta(&page, &srcdoc_file_content_csp())
-    } else if is_markdown(canonical) {
-        let page = render_markdown_page(canonical, &source_str, None);
-        inject_csp_meta(&page, &srcdoc_markdown_csp())
-    } else if content_type.starts_with("text/html") {
-        let scroll_bridge = html_preview_scroll_bridge();
-        let page = format!("{source_str}\n{scroll_bridge}");
-        inject_csp_meta(&page, &srcdoc_file_content_csp())
-    } else if content_type.starts_with("image/svg") {
-        // Wrap SVG in a minimal HTML document so the CSP meta tag applies. SVG
-        // scripts execute in this context, but location.href is about:srcdoc (no
-        // token) and connect-src 'none' blocks network exfiltration.
-        let page = format!(
-            "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n\
-             <body style=\"margin:0;display:grid;place-items:center;min-height:100vh\">\n\
-             {source_str}\n</body>\n</html>\n"
-        );
-        inject_csp_meta(&page, &srcdoc_file_content_csp())
-    } else {
-        // Non-HTML content (images, PDFs, etc.) cannot execute JavaScript and
-        // therefore cannot exfiltrate the token from location.href. Fall back to
-        // the file-server URL.
-        return Ok(None);
-    };
-    Ok(Some(html))
 }
 
 fn write_response(stream: &mut TcpStream, response: Response) -> std::io::Result<()> {
@@ -1134,6 +1009,11 @@ pub(crate) fn is_browser_previewable_path(path: &Path) -> bool {
         .is_some_and(qmux_proto::is_browser_preview_extension)
 }
 
+pub(crate) fn is_executable_preview_path(path: &Path) -> bool {
+    let content_type = mime_type(path);
+    content_type.starts_with("text/html") || content_type.starts_with("image/svg")
+}
+
 /// Percent-encodes a path, leaving `/` (the separator) and the RFC 3986 unreserved
 /// set intact so the encoded form is a normal multi-segment URL path.
 fn percent_encode_path(path: &str) -> String {
@@ -1246,14 +1126,6 @@ mod tests {
     }
 
     #[test]
-    fn srcdoc_csp_precedes_hostile_document_content() {
-        let source = "<script>window.location='https://example.com'</script><head></head>";
-        let page = inject_csp_meta(source, &srcdoc_file_content_csp());
-        assert!(page.starts_with("<meta http-equiv=\"Content-Security-Policy\""));
-        assert!(page.find("Content-Security-Policy").unwrap() < page.find("<script>").unwrap());
-    }
-
-    #[test]
     fn codex_visualization_page_reports_fragment_load_failures_generically() {
         let source = "<div id=\"visualization-source\">Ready</div>";
         let page = render_codex_inline_visualization_page(
@@ -1273,6 +1145,9 @@ mod tests {
         assert!(is_browser_previewable_path(Path::new("report.HTML")));
         assert!(is_browser_previewable_path(Path::new("notes.md")));
         assert!(is_browser_previewable_path(Path::new("diagram.svg")));
+        assert!(is_executable_preview_path(Path::new("report.html")));
+        assert!(is_executable_preview_path(Path::new("diagram.svg")));
+        assert!(!is_executable_preview_path(Path::new("notes.md")));
         assert!(!is_browser_previewable_path(Path::new("release.dmg")));
         assert!(!is_browser_previewable_path(Path::new("installer.pkg")));
         assert!(!is_browser_previewable_path(Path::new("archive.zip")));
@@ -1769,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_preview_grant_serves_wrapped_inline_vis_but_not_siblings() {
+    fn exact_preview_token_serves_executable_content_but_not_siblings() {
         let base = non_temp_test_dir("inline-vis");
         let root = base.join("ws");
         let visuals = base.join("private-visuals");
@@ -1784,7 +1659,9 @@ mod tests {
         let canonical = state.grant_pane_file_preview("pane-vis", &visual).unwrap();
         let info = start_file_server(state.clone()).unwrap();
         state.set_file_server(info.port);
-        let token = state.pane_file_token("pane-vis").unwrap();
+        let token = state
+            .exact_file_preview_token("pane-vis", &canonical)
+            .unwrap();
         let path = format!(
             "{}?codex-inline-vis=1",
             url_path(info.port, &token, &canonical)
@@ -1793,6 +1670,7 @@ mod tests {
         let body = String::from_utf8(body).unwrap();
         assert!(head.starts_with("HTTP/1.1 200"), "head: {head}");
         assert!(head.contains("Content-Security-Policy"), "head: {head}");
+        assert!(head.contains("script-src 'unsafe-inline'"), "head: {head}");
         assert!(body.starts_with("<!doctype html>"), "body: {body}");
         assert!(body.contains("--background:"), "body: {body}");
         assert!(body.contains("<div class=\"card\">preview</div>"));

@@ -1255,20 +1255,11 @@ fn handle_request_with_peer(
                 payload.target.trim(),
                 payload.cwd.as_deref(),
             )?;
-            let content = if resolved.sandbox {
-                resolved.path.as_ref().and_then(|path| {
-                    crate::file_server::render_sandboxed_preview(path, false)
-                        .ok()
-                        .flatten()
-                })
-            } else {
-                None
-            };
             state.emit(QmuxEvent::new(
                 "browser.open",
                 Some(authed_pane.clone()),
                 None,
-                json!({ "url": resolved.url, "sandbox": resolved.sandbox, "content": content }),
+                json!({ "url": resolved.url, "sandbox": resolved.sandbox }),
             ));
             // Panes with an attached agent also collect the target into the
             // workspace artifact tray. This deliberately covers both callers a
@@ -1313,7 +1304,6 @@ fn handle_browser_open_file<R: Read>(
     let port = state
         .file_server_port()
         .ok_or_else(|| "the file server is not running".to_string())?;
-    let token = state.pane_file_token(&authed_pane)?;
     let upload_id = state.next_id("remote-file");
     let path = crate::remote_files::stage(
         &state.config().workspace_root,
@@ -1331,15 +1321,17 @@ fn handle_browser_open_file<R: Read>(
             return Err(err);
         }
     };
+    let token = if crate::file_server::is_executable_preview_path(&canonical) {
+        state.exact_file_preview_token(&authed_pane, &canonical)?
+    } else {
+        state.pane_file_token(&authed_pane)?
+    };
     let url = crate::file_server::file_url(port, &token, &canonical);
-    let content = crate::file_server::render_sandboxed_preview(&canonical, false)
-        .ok()
-        .flatten();
     state.emit(QmuxEvent::new(
         "browser.open",
         Some(authed_pane.clone()),
         None,
-        json!({ "url": url, "sandbox": true, "content": content }),
+        json!({ "url": url, "sandbox": true }),
     ));
     if state.agent_by_pane(&authed_pane)?.is_some()
         && let Err(err) = state.record_artifact(
@@ -1528,7 +1520,11 @@ pub(crate) fn resolve_browser_target(
     let port = state
         .file_server_port()
         .ok_or_else(|| "the file server is not running".to_string())?;
-    let token = state.pane_file_token(authed_pane)?;
+    let token = if crate::file_server::is_executable_preview_path(&canonical) {
+        state.exact_file_preview_token(authed_pane, &canonical)?
+    } else {
+        state.pane_file_token(authed_pane)?
+    };
     Ok(ResolvedBrowserTarget {
         url: crate::file_server::file_url(port, &token, &canonical),
         sandbox: true,

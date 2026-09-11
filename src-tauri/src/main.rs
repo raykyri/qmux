@@ -1050,17 +1050,6 @@ fn open_local_link(
             "sandbox": false,
         }));
     }
-    // Render sandboxed previews as token-free srcdoc content so the framed
-    // document's location.href is about:srcdoc, not a token-bearing file-server
-    // URL. Non-HTML content falls back to the file-server URL (no JS → no
-    // token exfiltration risk).
-    let content = if resolved.sandbox {
-        file_server::render_sandboxed_preview(source, false)
-            .ok()
-            .flatten()
-    } else {
-        None
-    };
     state.emit(events::QmuxEvent::new(
         "browser.open",
         Some(pane_id.to_string()),
@@ -1069,7 +1058,6 @@ fn open_local_link(
             "url": resolved.url,
             "sandbox": resolved.sandbox,
             "artifactId": artifact_id,
-            "content": content,
         }),
     ));
     Ok(serde_json::json!({
@@ -1316,19 +1304,16 @@ async fn browser_open_codex_inline_visualization(
         let port = state
             .file_server_port()
             .ok_or_else(|| "the file server is not running".to_string())?;
-        let token = state.pane_file_token(&pane_id)?;
+        let token = state.exact_file_preview_token(&pane_id, &canonical)?;
         let url = format!(
             "{}?codex-inline-vis=1",
             file_server::file_url(port, &token, &canonical)
         );
-        let content = file_server::render_sandboxed_preview(&canonical, true)
-            .ok()
-            .flatten();
         state.emit(events::QmuxEvent::new(
             "browser.open",
             Some(pane_id),
             None,
-            serde_json::json!({ "url": url, "sandbox": true, "content": content }),
+            serde_json::json!({ "url": url, "sandbox": true }),
         ));
         Ok(serde_json::json!({ "url": url, "sandbox": true }))
     })
@@ -1373,19 +1358,16 @@ async fn browser_open_codex_visualization_reference(
         let port = state
             .file_server_port()
             .ok_or_else(|| "the file server is not running".to_string())?;
-        let token = state.pane_file_token(&pane_id)?;
+        let token = state.exact_file_preview_token(&pane_id, &canonical)?;
         let url = format!(
             "{}?codex-inline-vis=1",
             file_server::file_url(port, &token, &canonical)
         );
-        let content = file_server::render_sandboxed_preview(&canonical, true)
-            .ok()
-            .flatten();
         state.emit(events::QmuxEvent::new(
             "browser.open",
             Some(pane_id),
             None,
-            serde_json::json!({ "url": url, "sandbox": true, "content": content }),
+            serde_json::json!({ "url": url, "sandbox": true }),
         ));
         Ok(serde_json::json!({ "url": url, "sandbox": true }))
     })

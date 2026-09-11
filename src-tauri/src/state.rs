@@ -336,8 +336,10 @@ struct AppStateInner {
     // strip them before exec, keeping cross-pane user control distinct from
     // the pane-scoped token inherited by hooks and MCP servers.
     user_tokens: Mutex<HashMap<String, String>>,
-    // Separate read-only credentials used in file-preview URLs.
+    // Separate read-only credentials used in file-preview URLs. Executable
+    // previews get a narrower token that can only re-read their exact source.
     file_tokens: Mutex<HashMap<String, String>>,
+    exact_file_tokens: Mutex<HashMap<String, (String, std::path::PathBuf)>>,
     // Exact, canonical files outside a pane's normal project roots that the
     // trusted UI explicitly granted to its preview. Codex inline visualizations
     // live under qmux's private workspace metadata, so granting the whole root
@@ -1957,6 +1959,7 @@ impl AppState {
                 remote_tokens: Mutex::new(HashMap::new()),
                 user_tokens: Mutex::new(HashMap::new()),
                 file_tokens: Mutex::new(HashMap::new()),
+                exact_file_tokens: Mutex::new(HashMap::new()),
                 file_preview_grants: Mutex::new(HashMap::new()),
                 model: Mutex::new(Model::default()),
                 pane_cwd_commit_lock: Mutex::new(()),
@@ -2328,6 +2331,46 @@ impl AppState {
         tokens
             .iter()
             .find_map(|(pane_id, pane_token)| (pane_token == token).then(|| pane_id.clone()))
+    }
+
+    pub fn exact_file_preview_token(
+        &self,
+        pane_id: &str,
+        path: &std::path::Path,
+    ) -> Result<String, String> {
+        if !self.pane_exists(pane_id)? {
+            return Err(format!("pane {pane_id} was not found"));
+        }
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|err| format!("failed to resolve {}: {err}", path.display()))?;
+        if !canonical.is_file() {
+            return Err(format!("{} is not a file", canonical.display()));
+        }
+        let mut tokens = self
+            .inner
+            .exact_file_tokens
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(existing) = tokens.iter().find_map(|(token, (owner, source))| {
+            (owner == pane_id && source == &canonical).then(|| token.clone())
+        }) {
+            return Ok(existing);
+        }
+        let token = random_token()?;
+        tokens.insert(token.clone(), (pane_id.to_string(), canonical));
+        Ok(token)
+    }
+
+    pub fn exact_file_for_preview_token(
+        &self,
+        token: &str,
+    ) -> Option<(String, std::path::PathBuf)> {
+        self.inner
+            .exact_file_tokens
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(token)
+            .cloned()
     }
 
     /// Add one exact file to a pane's read-only preview capability. The caller
@@ -8158,6 +8201,9 @@ impl AppState {
         }
         if let Ok(mut tokens) = self.inner.file_tokens.lock() {
             tokens.remove(pane_id);
+        }
+        if let Ok(mut tokens) = self.inner.exact_file_tokens.lock() {
+            tokens.retain(|_, (owner, _)| owner != pane_id);
         }
         if let Ok(mut grants) = self.inner.file_preview_grants.lock() {
             grants.remove(pane_id);
@@ -20262,16 +20308,27 @@ mod tests {
     #[test]
     fn remove_pane_reclaims_its_file_preview_token() {
         let workspace = temp_workspace();
-        let state = AppState::new(test_config(workspace));
+        let state = AppState::new(test_config(workspace.clone()));
         state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
 
         let token = state.pane_file_token("pane-1").unwrap();
         assert_eq!(state.pane_file_token("pane-1").unwrap(), token);
         assert_eq!(state.pane_for_file_token(&token).as_deref(), Some("pane-1"));
         assert_ne!(state.pane_token("pane-1").unwrap(), token);
+        let source = workspace.join("report.html");
+        std::fs::write(&source, "<p>report</p>").unwrap();
+        let exact_token = state.exact_file_preview_token("pane-1", &source).unwrap();
+        assert_eq!(
+            state.exact_file_preview_token("pane-1", &source).unwrap(),
+            exact_token
+        );
+        let (owner, exact_file) = state.exact_file_for_preview_token(&exact_token).unwrap();
+        assert_eq!(owner, "pane-1");
+        assert_eq!(exact_file, std::fs::canonicalize(source).unwrap());
 
         state.remove_pane("pane-1").unwrap();
         assert!(state.pane_for_file_token(&token).is_none());
+        assert!(state.exact_file_for_preview_token(&exact_token).is_none());
     }
 
     #[test]
