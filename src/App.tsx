@@ -254,6 +254,7 @@ import {
   isTerminalTarget,
   measureTerminalCellSize,
   paneBranchLocationLabel,
+  repositoryWorktreeName,
   selectPaneAfterClose,
   statusLabel,
   upsertThreadGraphs,
@@ -693,6 +694,20 @@ type WorktreeCreateAction =
   | { kind: "open" }
   | { kind: "fork"; prompt?: string; anchor?: MessageAnchor };
 
+type WorktreeCreateDialogState = {
+  pane: PaneInfo;
+  action: WorktreeCreateAction;
+  name: string;
+  suggestedName: string;
+  creating: boolean;
+  error: string | null;
+  inventory: RepositoryInventory | null;
+  inventoryLoading: boolean;
+  inventoryError: string | null;
+  startRef: string | null;
+  requestId: number;
+};
+
 type RepositoryBrowserState = {
   pane: PaneInfo;
   inventory: RepositoryInventory | null;
@@ -700,13 +715,6 @@ type RepositoryBrowserState = {
   opening: string | null;
   names: Record<string, string>;
 };
-
-function repositoryWorktreeName(branch: RepositoryBranch): string {
-  const parts = branch.name.split("/");
-  const leaf = parts[parts.length - 1] || "branch";
-  const normalized = leaf.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
-  return (normalized || "branch").slice(0, 240);
-}
 
 function remoteSettingsDraft(remote: RemoteChoice): RemoteSettingsDraft {
   return {
@@ -3123,15 +3131,11 @@ function MainApp() {
     };
   }, [settingsOpen]);
   const [folderPickerStatus, setFolderPickerStatus] = useState<string | null>(null);
-  const [worktreeCreateDialog, setWorktreeCreateDialog] = useState<{
-    pane: PaneInfo;
-    action: WorktreeCreateAction;
-    name: string;
-    creating: boolean;
-    error: string | null;
-  } | null>(null);
+  const [worktreeCreateDialog, setWorktreeCreateDialog] =
+    useState<WorktreeCreateDialogState | null>(null);
   const [repositoryBrowser, setRepositoryBrowser] = useState<RepositoryBrowserState | null>(null);
   const worktreeDialogResolveRef = useRef<((created: boolean) => void) | null>(null);
+  const worktreeDialogRequestIdRef = useRef(0);
   const worktreeNameInputRef = useRef<HTMLInputElement | null>(null);
   const [closeDialog, setCloseDialog] = useState<CloseDialogState | null>(null);
   const [researchFolderRemovalError, setResearchFolderRemovalError] = useState<string | null>(null);
@@ -10831,11 +10835,46 @@ function MainApp() {
     setPaneContextMenu(null);
     try {
       const name = await suggestPaneWorktreeName(pane.id);
+      const requestId = ++worktreeDialogRequestIdRef.current;
       worktreeDialogResolveRef.current?.(false);
-      return await new Promise<boolean>((resolve) => {
+      const result = new Promise<boolean>((resolve) => {
         worktreeDialogResolveRef.current = resolve;
-        setWorktreeCreateDialog({ pane, action, name, creating: false, error: null });
+        setWorktreeCreateDialog({
+          pane,
+          action,
+          name,
+          suggestedName: name,
+          creating: false,
+          error: null,
+          inventory: null,
+          inventoryLoading: action.kind === "open",
+          inventoryError: null,
+          startRef: null,
+          requestId,
+        });
       });
+      if (action.kind === "open") {
+        void paneRepositoryInventory(pane.id)
+          .then((inventory) => {
+            setWorktreeCreateDialog((current) =>
+              current?.requestId === requestId
+                ? { ...current, inventory, inventoryLoading: false }
+                : current,
+            );
+          })
+          .catch((err) => {
+            setWorktreeCreateDialog((current) =>
+              current?.requestId === requestId
+                ? {
+                    ...current,
+                    inventoryLoading: false,
+                    inventoryError: unknownErrorMessage(err),
+                  }
+                : current,
+            );
+          });
+      }
+      return await result;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       return false;
@@ -10879,13 +10918,31 @@ function MainApp() {
       return;
     }
 
+    const selectedBranch = dialog.startRef
+      ? dialog.inventory?.branches.find((branch) => branch.fullRef === dialog.startRef)
+      : undefined;
+    if (
+      selectedBranch?.checkedOutPath &&
+      focusRepositoryPane(dialog.pane.groupId, selectedBranch.checkedOutPath)
+    ) {
+      dismissWorktreeCreateDialog(true);
+      return;
+    }
+
     let created: PaneInfo;
     try {
-      created = await openPaneWorktree(
-        dialog.pane.id,
-        dialog.name.trim(),
-        estimateInitialPaneSize(false),
-      );
+      created = dialog.startRef
+        ? await openRepositoryBranch(
+            dialog.pane.id,
+            dialog.startRef,
+            dialog.name.trim(),
+            estimateInitialPaneSize(false),
+          )
+        : await openPaneWorktree(
+            dialog.pane.id,
+            dialog.name.trim(),
+            estimateInitialPaneSize(false),
+          );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setWorktreeCreateDialog((current) =>
@@ -15898,6 +15955,11 @@ function MainApp() {
     renamingGroup?.scope === "research" ? renamingGroup : undefined;
   const linkMenuLocalPath = linkMenu ? pathFromQmuxFileHref(linkMenu.url) : undefined;
   const linkMenuPaneId = linkMenu?.paneId ?? null;
+  const worktreeStartBranch = worktreeCreateDialog?.startRef
+    ? worktreeCreateDialog.inventory?.branches.find(
+        (branch) => branch.fullRef === worktreeCreateDialog.startRef,
+      )
+    : undefined;
 
   return (
     <main
@@ -18457,8 +18519,71 @@ function MainApp() {
             <h2 id="create-worktree-dialog-title">
               {worktreeCreateDialog.action.kind === "fork"
                 ? "Fork session in worktree"
-                : "Create worktree"}
+                : "Open worktree"}
             </h2>
+            {worktreeCreateDialog.action.kind === "open" ? (
+              <>
+                <label className="confirm-dialog-field-label" htmlFor="create-worktree-start">
+                  Start at
+                </label>
+                <select
+                  id="create-worktree-start"
+                  className="rename-dialog-input"
+                  value={worktreeCreateDialog.startRef ?? ""}
+                  disabled={worktreeCreateDialog.creating}
+                  onChange={(event) => {
+                    const startRef = event.currentTarget.value || null;
+                    setWorktreeCreateDialog((current) => {
+                      if (!current) return current;
+                      const branch = startRef
+                        ? current.inventory?.branches.find(
+                            (candidate) => candidate.fullRef === startRef,
+                          )
+                        : undefined;
+                      return {
+                        ...current,
+                        startRef,
+                        name: branch ? repositoryWorktreeName(branch) : current.suggestedName,
+                        error: null,
+                      };
+                    });
+                  }}
+                >
+                  <option value="">Current commit (new branch)</option>
+                  {worktreeCreateDialog.inventory?.branches.some((branch) => !branch.remote) ? (
+                    <optgroup label="Local branches">
+                      {worktreeCreateDialog.inventory.branches
+                        .filter((branch) => !branch.remote)
+                        .map((branch) => (
+                          <option key={branch.fullRef} value={branch.fullRef}>
+                            {branch.name}
+                            {branch.checkedOutPath ? " — checked out" : ""}
+                          </option>
+                        ))}
+                    </optgroup>
+                  ) : null}
+                  {worktreeCreateDialog.inventory?.branches.some((branch) => branch.remote) ? (
+                    <optgroup label="Remote branches">
+                      {worktreeCreateDialog.inventory.branches
+                        .filter((branch) => branch.remote)
+                        .map((branch) => (
+                          <option key={branch.fullRef} value={branch.fullRef}>
+                            {branch.name}
+                          </option>
+                        ))}
+                    </optgroup>
+                  ) : null}
+                  {worktreeCreateDialog.inventoryLoading ? (
+                    <option disabled>Loading branches…</option>
+                  ) : null}
+                </select>
+                {worktreeCreateDialog.inventoryError ? (
+                  <p className="confirm-dialog-error" role="alert">
+                    Could not load branches: {worktreeCreateDialog.inventoryError}
+                  </p>
+                ) : null}
+              </>
+            ) : null}
             <label className="confirm-dialog-field-label" htmlFor="create-worktree-name">
               Worktree name
             </label>
@@ -18479,8 +18604,15 @@ function MainApp() {
               aria-describedby="create-worktree-name-hint"
             />
             <p id="create-worktree-name-hint" className="rename-dialog-hint">
-              Use letters, numbers, hyphens, or underscores. The worktree and branch use this exact
-              name and start at this tab’s current commit.
+              {worktreeCreateDialog.action.kind === "fork"
+                ? "Use letters, numbers, hyphens, or underscores. The worktree and branch use this exact name and start at this tab’s current commit."
+                : worktreeStartBranch?.checkedOutPath
+                  ? `This branch is already checked out at ${formatPaneDir(worktreeStartBranch.checkedOutPath)}. qmux will open that checkout.`
+                  : worktreeStartBranch?.remote
+                    ? `Use letters, numbers, hyphens, or underscores. qmux creates a local branch and worktree with this name, tracking ${worktreeStartBranch.name}.`
+                    : worktreeStartBranch
+                      ? `Use letters, numbers, hyphens, or underscores. The worktree uses this name and checks out ${worktreeStartBranch.name}.`
+                      : "Use letters, numbers, hyphens, or underscores. The worktree and new branch use this exact name and start at this tab’s current commit."}
             </p>
             {worktreeCreateDialog.error ? (
               <p className="confirm-dialog-error" role="alert">
@@ -18500,11 +18632,11 @@ function MainApp() {
                 type="submit"
                 disabled={!worktreeCreateDialog.name.trim() || worktreeCreateDialog.creating}
                 pending={worktreeCreateDialog.creating}
-                pendingLabel="Creating…"
+                pendingLabel={
+                  worktreeCreateDialog.action.kind === "fork" ? "Creating…" : "Opening…"
+                }
               >
-                {worktreeCreateDialog.action.kind === "fork"
-                  ? "Fork session"
-                  : "Create worktree"}
+                {worktreeCreateDialog.action.kind === "fork" ? "Fork session" : "Open worktree"}
               </ConfirmDialogActionButton>
             </div>
           </form>

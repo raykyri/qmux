@@ -11,6 +11,7 @@ import type {
   PaneSplitInfo,
   QmuxEvent,
   QueuedTurn,
+  RepositoryBranch,
   RuntimeConfig,
   ThreadGraph,
   TranscriptCopyPayload,
@@ -25,6 +26,13 @@ let measuredTerminalCellSize: { width: number; height: number } | null = null;
 
 export function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+export function repositoryWorktreeName(branch: RepositoryBranch): string {
+  const parts = branch.name.split("/");
+  const leaf = parts[parts.length - 1] || "branch";
+  const normalized = leaf.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return (normalized || "branch").slice(0, 240);
 }
 
 /** Inset kept between a pointer-anchored context menu and the window edge. */
