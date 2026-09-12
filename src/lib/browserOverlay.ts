@@ -1,9 +1,57 @@
 import type { BrowserOverlayState } from "../appTypes";
+import { displayPathsReferToSameDirectory } from "./appHelpers";
+import { pathFromFileServerUrl } from "./links";
 
 export function browserOverlayIsOpen(
   state: BrowserOverlayState | undefined,
 ): boolean {
   return state?.open === true;
+}
+
+function documentHref(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    return parsed.href;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when the overlay is already showing this link's document. */
+export function browserOverlayShowsLink(
+  overlay: BrowserOverlayState | undefined,
+  target: { url?: string; path?: string },
+  fileServerPort: number | null,
+): boolean {
+  if (!overlay?.open || !overlay.url) {
+    return false;
+  }
+  if (target.url) {
+    const current = documentHref(overlay.url);
+    const next = documentHref(target.url);
+    if (current && next && current === next) {
+      return true;
+    }
+  }
+  if (target.path) {
+    const overlayPath = pathFromFileServerUrl(overlay.url, fileServerPort);
+    if (overlayPath && displayPathsReferToSameDirectory(overlayPath, target.path)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function closeBrowserOverlayState(
+  overlays: Record<string, BrowserOverlayState>,
+  ownerId: string,
+): Record<string, BrowserOverlayState> {
+  const overlay = overlays[ownerId];
+  if (!overlay?.open) {
+    return overlays;
+  }
+  return { ...overlays, [ownerId]: { ...overlay, open: false } };
 }
 
 export function anyBrowserOverlayOpen(

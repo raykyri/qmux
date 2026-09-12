@@ -209,6 +209,23 @@ export function pathFromQmuxFileHref(url: string): string | undefined {
   return path.length > 0 ? withoutTrailingPathDecoration(path) : undefined;
 }
 
+/** Resolve a transcript or terminal local path against a pane cwd. Absolute
+ *  paths are returned as-is; relative ones join like a filesystem URL. */
+export function resolveLocalLinkPath(path: string, cwd?: string | null): string {
+  if (path.startsWith("/") || /^[A-Za-z]:[\\/]/u.test(path)) {
+    return path;
+  }
+  if (!cwd) {
+    return path;
+  }
+  const base = cwd.replace(/\/+$/u, "") || "/";
+  try {
+    return decodeURI(new URL(path, `file://${base}/`).pathname);
+  } catch {
+    return `${base}/${path}`;
+  }
+}
+
 // Mirrors the file server's explicit browser-renderable MIME allowlist. This is
 // only a UI hint for whether the context menu should offer an internal preview;
 // the backend resolves the canonical path and makes the authoritative decision.
@@ -334,4 +351,32 @@ export function isFileServerUrl(url: string, fileServerPort: number | null): boo
   }
   const firstSegment = parsed.pathname.replace(/^\/+/, "").split("/")[0] ?? "";
   return /^[0-9a-f]{64}$/.test(firstSegment);
+}
+
+/** Absolute filesystem path encoded in a token-bearing file-server URL. */
+export function pathFromFileServerUrl(
+  url: string,
+  fileServerPort: number | null,
+): string | undefined {
+  if (!isFileServerUrl(url, fileServerPort)) {
+    return undefined;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  const afterRoot = parsed.pathname.replace(/^\/+/u, "");
+  const slash = afterRoot.indexOf("/");
+  if (slash < 0) {
+    return undefined;
+  }
+  const encodedPath = afterRoot.slice(slash);
+  try {
+    const path = decodeURIComponent(encodedPath);
+    return path.startsWith("/") ? path : `/${path}`;
+  } catch {
+    return undefined;
+  }
 }

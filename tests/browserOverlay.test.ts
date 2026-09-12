@@ -4,7 +4,9 @@ import type { BrowserOverlayState } from "../src/appTypes";
 import {
   anyBrowserOverlayOpen,
   browserOverlayIsOpen,
+  browserOverlayShowsLink,
   closeAllBrowserOverlaysState,
+  closeBrowserOverlayState,
   resolveTranscriptOrBrowserToggle,
 } from "../src/lib/browserOverlay";
 
@@ -45,6 +47,37 @@ test("closeAllBrowserOverlaysState closes every owner and preserves identity whe
   assert.equal(closed.a.open, false);
   assert.equal(closed.b.open, false);
   assert.equal(closed.b.url, "https://kept.example/");
+});
+
+test("browserOverlayShowsLink matches the open document, not a reload of a different page", () => {
+  const token = "a".repeat(64);
+  const fileUrl = `http://127.0.0.1:8123/${token}/tmp/preview.html`;
+  const fileOverlay = overlay({ url: fileUrl, sandbox: true });
+  assert.equal(browserOverlayShowsLink(fileOverlay, { path: "/tmp/preview.html" }, 8123), true);
+  assert.equal(
+    browserOverlayShowsLink(fileOverlay, { path: "/private/tmp/preview.html" }, 8123),
+    true,
+  );
+  assert.equal(browserOverlayShowsLink(fileOverlay, { path: "/tmp/other.html" }, 8123), false);
+  assert.equal(
+    browserOverlayShowsLink({ ...fileOverlay, open: false }, { path: "/tmp/preview.html" }, 8123),
+    false,
+  );
+
+  const web = overlay({ url: "https://example.com/report.html#old" });
+  assert.equal(browserOverlayShowsLink(web, { url: "https://example.com/report.html" }, null), true);
+  assert.equal(browserOverlayShowsLink(web, { url: "https://example.com/other.html" }, null), false);
+});
+
+test("closeBrowserOverlayState closes only the requested owner", () => {
+  const overlays = {
+    a: overlay(),
+    b: overlay({ url: "https://kept.example/" }),
+  };
+  const closed = closeBrowserOverlayState(overlays, "a");
+  assert.equal(closed.a.open, false);
+  assert.equal(closed.b.open, true);
+  assert.equal(closeBrowserOverlayState({ a: overlay({ open: false }) }, "a").a.open, false);
 });
 
 test("⌘⇧E closes a live browser instead of expanding the transcript", () => {

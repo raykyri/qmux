@@ -8,7 +8,9 @@ import {
   isFileServerUrl,
   isQmuxFileHref,
   loopbackHtmlUrl,
+  pathFromFileServerUrl,
   pathFromQmuxFileHref,
+  resolveLocalLinkPath,
   safeHref,
   terminalLinkTarget,
 } from "../src/lib/links";
@@ -215,6 +217,27 @@ test("isFileServerUrl recognizes token-bearing loopback paths", () => {
   // Dev-server URLs without a token segment are not file-server URLs.
   assert.equal(isFileServerUrl("http://localhost:5173/", null), false);
   assert.equal(isFileServerUrl("http://localhost:5173/app", 8123), false);
+});
+
+test("pathFromFileServerUrl recovers the encoded filesystem path", () => {
+  const token = "a".repeat(64);
+  assert.equal(
+    pathFromFileServerUrl(`http://127.0.0.1:8123/${token}/Users/me/file.html`, 8123),
+    "/Users/me/file.html",
+  );
+  assert.equal(
+    pathFromFileServerUrl(`http://127.0.0.1:8123/${token}/tmp/foo%20bar.html`, 8123),
+    "/tmp/foo bar.html",
+  );
+  assert.equal(pathFromFileServerUrl("http://localhost:5173/app", 8123), undefined);
+});
+
+test("resolveLocalLinkPath joins relative transcript paths against pane cwd", () => {
+  assert.equal(resolveLocalLinkPath("/tmp/preview.html", "/repo"), "/tmp/preview.html");
+  assert.equal(resolveLocalLinkPath("dev/mock.html", "/repo"), "/repo/dev/mock.html");
+  assert.equal(resolveLocalLinkPath("./dev/mock.html", "/repo"), "/repo/dev/mock.html");
+  assert.equal(resolveLocalLinkPath("../out/index.html", "/repo/dev"), "/repo/out/index.html");
+  assert.equal(resolveLocalLinkPath("dev/mock.html"), "dev/mock.html");
 });
 
 test("terminal links keep ordinary web URLs external", () => {

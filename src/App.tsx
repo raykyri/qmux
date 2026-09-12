@@ -294,7 +294,9 @@ import { requestComposerInsert } from "./lib/promptLibrary";
 import { nativeHumanBrowserOwnerIds } from "./lib/humanBrowserState";
 import {
   anyBrowserOverlayOpen,
+  browserOverlayShowsLink,
   closeAllBrowserOverlaysState,
+  closeBrowserOverlayState,
   resolveTranscriptOrBrowserToggle,
 } from "./lib/browserOverlay";
 import { artifactTrayVisible, isArtifactBrowserOpen } from "./lib/artifacts";
@@ -392,6 +394,7 @@ import {
   canRenderInInternalBrowser,
   isFileServerUrl,
   pathFromQmuxFileHref,
+  resolveLocalLinkPath,
   terminalLinkTarget,
 } from "./lib/links";
 import {
@@ -5440,9 +5443,22 @@ function MainApp() {
   const openLinkForPane = useCallback(
     (paneId: string | null | undefined, url: string) => {
       const localPath = pathFromQmuxFileHref(url);
+      const fileServerPort = configRef.current?.fileServerPort ?? null;
       if (localPath) {
         if (!paneId) {
           setError(`Cannot open local file without an active pane: ${localPath}`);
+          return;
+        }
+        const paneCwd = panesRef.current.find((pane) => pane.id === paneId)?.cwd;
+        const resolvedPath = resolveLocalLinkPath(localPath, paneCwd);
+        if (
+          browserOverlayShowsLink(
+            browserOverlayByPaneRef.current[paneId],
+            { path: resolvedPath },
+            fileServerPort,
+          )
+        ) {
+          setBrowserOverlayByPane((current) => closeBrowserOverlayState(current, paneId));
           return;
         }
         // Absolute filesystem paths from transcript markdown (e.g. an agent
@@ -5455,6 +5471,16 @@ function MainApp() {
         return;
       }
       if (paneId && canRenderInInternalBrowser(url)) {
+        if (
+          browserOverlayShowsLink(
+            browserOverlayByPaneRef.current[paneId],
+            { url },
+            fileServerPort,
+          )
+        ) {
+          setBrowserOverlayByPane((current) => closeBrowserOverlayState(current, paneId));
+          return;
+        }
         openBrowserOverlay(paneId, url);
       } else {
         void openExternalUrl(url);
@@ -5474,6 +5500,18 @@ function MainApp() {
         void openExternalUrl(target.url).catch((err) => {
           setError(err instanceof Error ? err.message : String(err));
         });
+        return;
+      }
+      const paneCwd = panesRef.current.find((pane) => pane.id === paneId)?.cwd;
+      const resolvedPath = resolveLocalLinkPath(target.path, paneCwd);
+      if (
+        browserOverlayShowsLink(
+          browserOverlayByPaneRef.current[paneId],
+          { path: resolvedPath },
+          configRef.current?.fileServerPort ?? null,
+        )
+      ) {
+        setBrowserOverlayByPane((current) => closeBrowserOverlayState(current, paneId));
         return;
       }
       void browserOpenTerminalPath(paneId, target.path).catch((err) => {
@@ -8599,7 +8637,7 @@ function MainApp() {
           if (!isArtifactBrowserOpen(overlay, artifact.id)) {
             return current;
           }
-          return { ...current, [targetPaneId]: { ...overlay, open: false } };
+          return closeBrowserOverlayState(current, targetPaneId);
         });
         return;
       }
