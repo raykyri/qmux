@@ -24,7 +24,12 @@ import remarkGfm from "remark-gfm";
 import { placePanePopover, turnPaneRectFrom } from "../lib/appHelpers";
 import { writeClipboardText } from "../lib/clipboard";
 import { rewriteDevinFileRefs } from "../lib/devinFileRefs";
-import { loopbackHtmlUrl, safeHref } from "../lib/links";
+import {
+  inlineCodeFilePath,
+  loopbackHtmlUrl,
+  QMUX_FILE_HREF_PREFIX,
+  safeHref,
+} from "../lib/links";
 import { normalizeLatexMathDelimiters } from "../lib/markdownMathDelimiters";
 import DiagramBlock, { diagramLangFromClassName, nodeText } from "./DiagramBlock";
 
@@ -48,6 +53,7 @@ interface TranscriptHastNode {
 }
 
 const LOCAL_HTML_DATA_KEY = "qmuxLocalHtmlUrl";
+const LOCAL_FILE_PATH_DATA_KEY = "qmuxInlineFilePath";
 const CODEX_INLINE_VIS_DATA_KEY = "qmuxCodexInlineVisFile";
 const CODEX_VISUALIZATION_REFERENCE_DATA_KEY = "qmuxCodexVisualizationReference";
 const CODEX_INLINE_VIS_PATTERN =
@@ -131,13 +137,17 @@ function exactTextChild(node: TranscriptHastNode): string | undefined {
   return node.children[0].value;
 }
 
-/** Mark only the Markdown contexts that are allowed to grow a launch control.
- * In particular, an inline `code` node is distinguishable from fenced output
- * here because the latter is the child of `pre`; React's code component alone
- * does not receive that parent information. */
+/** Mark inline code that should become a file link, and the Markdown contexts
+ * that are allowed to grow a launch control. An inline `code` node is
+ * distinguishable from fenced output here because the latter is the child of
+ * `pre`; React's code component alone does not receive that parent information. */
 function rehypeTranscriptArtifacts() {
   return (tree: TranscriptHastNode) => {
-    const visit = (node: TranscriptHastNode, parent?: TranscriptHastNode) => {
+    const visit = (
+      node: TranscriptHastNode,
+      parent?: TranscriptHastNode,
+      insideAnchor = false,
+    ) => {
       if (node.type === "element") {
         const text = exactTextChild(node);
         if (node.tagName === "a" && text) {
@@ -151,6 +161,11 @@ function rehypeTranscriptArtifacts() {
           const url = loopbackHtmlUrl(text);
           if (url) {
             (node.data ??= {})[LOCAL_HTML_DATA_KEY] = url;
+          } else if (!insideAnchor) {
+            const path = inlineCodeFilePath(text);
+            if (path) {
+              (node.data ??= {})[LOCAL_FILE_PATH_DATA_KEY] = path;
+            }
           }
         } else if (node.tagName === "p" && text) {
           const directive = CODEX_INLINE_VIS_PATTERN.exec(text);
@@ -165,8 +180,9 @@ function rehypeTranscriptArtifacts() {
           }
         }
       }
+      const nextInsideAnchor = insideAnchor || node.tagName === "a";
       for (const child of node.children ?? []) {
-        visit(child, node);
+        visit(child, node, nextInsideAnchor);
       }
     };
     visit(tree);
@@ -327,6 +343,14 @@ function MarkdownCode({
   const { openLink } = useContext(LinkActionsContext);
   const artifactLinks = useContext(TranscriptArtifactLinksContext);
   const localHtmlUrl = markedValue(node, LOCAL_HTML_DATA_KEY);
+  const filePath = markedValue(node, LOCAL_FILE_PATH_DATA_KEY);
+  // Pane-backed transcripts opt into artifactLinks; research documents and
+  // compact labels share this renderer but have no cwd to resolve against.
+  if (artifactLinks && filePath) {
+    return (
+      <MarkdownLink href={`${QMUX_FILE_HREF_PREFIX}${filePath}`}>{children}</MarkdownLink>
+    );
+  }
   const code = <code {...props}>{children}</code>;
   return artifactLinks && localHtmlUrl ? (
     <span className="turn-markdown-artifact-link">

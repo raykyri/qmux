@@ -28,9 +28,9 @@ export function terminalLinkTarget(value: unknown): TerminalLinkTarget | undefin
   if (typeof value !== "string" || value.length === 0 || value !== value.trim()) {
     return undefined;
   }
-  const absolutePath = absoluteLocalFilePath(value);
-  if (absolutePath !== undefined) {
-    return { kind: "localPath", path: absolutePath };
+  const localPath = absoluteLocalFilePath(value);
+  if (localPath !== undefined) {
+    return { kind: "localPath", path: localPath };
   }
   if (/[\u0000-\u001f\u007f]/u.test(value)) {
     return undefined;
@@ -96,7 +96,55 @@ export function safeHref(href: unknown): string | undefined {
     : undefined;
 }
 
-/** Absolute local filesystem path from a markdown href, or undefined. */
+// Portable path characters plus `/`. Spaces, URL punctuation, backslashes,
+// Windows drive letters, and percent-encoding are all excluded so inline code
+// like `const x = 1` or `https://example.com/a.html` never becomes a file link.
+const INLINE_CODE_FILE_CHARS_PATTERN = /^[A-Za-z0-9._/-]+$/u;
+const INLINE_CODE_FILE_EXTENSION_PATTERN = /\.(html|md)$/iu;
+// Directory segments: `.`, `..`, a portable name, or a hidden directory
+// (single leading dot). Dots inside a name are rejected so `example.com/a.html`
+// cannot pass as a relative path.
+const INLINE_CODE_DIR_SEGMENT_PATTERN = /^(?:\.\.?|\.?[A-Za-z0-9_-]+)$/u;
+const INLINE_CODE_FILE_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+\.(html|md)$/iu;
+
+/** Strict filename-like path for promoting transcript inline code to a file
+ * link. Only `.html` / `.md` destinations; no spaces, URLs, or characters
+ * outside a portable path subset. */
+export function inlineCodeFilePath(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0 || value !== value.trim()) {
+    return undefined;
+  }
+  if (!INLINE_CODE_FILE_CHARS_PATTERN.test(value) || value.includes("//")) {
+    return undefined;
+  }
+  const extension = INLINE_CODE_FILE_EXTENSION_PATTERN.exec(value);
+  if (!extension?.[0]) {
+    return undefined;
+  }
+  const segments = value.split("/");
+  const names = value.startsWith("/") ? segments.slice(1) : segments;
+  if (names.length === 0 || names.some((segment) => segment.length === 0)) {
+    return undefined;
+  }
+  const file = names[names.length - 1] ?? "";
+  if (!INLINE_CODE_FILE_SEGMENT_PATTERN.test(file)) {
+    return undefined;
+  }
+  const stem = file.slice(0, file.length - extension[0].length);
+  if (!/[A-Za-z0-9]/u.test(stem)) {
+    return undefined;
+  }
+  for (const dir of names.slice(0, -1)) {
+    if (!INLINE_CODE_DIR_SEGMENT_PATTERN.test(dir)) {
+      return undefined;
+    }
+  }
+  return value;
+}
+
+/** Local filesystem path from a markdown href, or undefined. Absolute paths
+ *  are returned as-is; relative `qmux-file:` targets must already have passed
+ *  `inlineCodeFilePath`. */
 export function absoluteLocalFilePath(href: string): string | undefined {
   const trimmed = href.trim();
   if (!trimmed) {
@@ -104,7 +152,12 @@ export function absoluteLocalFilePath(href: string): string | undefined {
   }
   if (trimmed.startsWith(QMUX_FILE_HREF_PREFIX)) {
     const path = trimmed.slice(QMUX_FILE_HREF_PREFIX.length);
-    return path.startsWith("/") ? withoutTrailingPathDecoration(path) : undefined;
+    if (path.startsWith("/")) {
+      return withoutTrailingPathDecoration(path);
+    }
+    // Relative qmux-file hrefs are only those minted from strict filename-like
+    // inline code (e.g. `dev/mock.html`), never arbitrary relative destinations.
+    return inlineCodeFilePath(path);
   }
   if (trimmed.startsWith("file:")) {
     try {

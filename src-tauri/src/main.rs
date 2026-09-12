@@ -967,15 +967,24 @@ fn resolve_local_link_target(
     if trimmed.is_empty() {
         return Err("nothing to open".to_string());
     }
-    // Absolute paths only — relative ones need a cwd the GUI does not have for
-    // arbitrary markdown links. Agents and the CLI already resolve relative
-    // targets against the pane cwd via `qmux open`.
-    if !std::path::Path::new(trimmed).is_absolute() {
-        return Err(format!(
-            "refusing to open relative path '{trimmed}'; use an absolute path or `qmux open`"
-        ));
-    }
-    control_socket::resolve_browser_target(state, pane_id, trimmed, None)
+    // Absolute paths resolve as-is. Relative local targets (transcript or
+    // terminal) resolve against the pane's live cwd, then the same root
+    // confinement as other local previews.
+    let cwd = if std::path::Path::new(trimmed).is_absolute() {
+        None
+    } else {
+        Some(
+            state
+                .inheritable_pane_cwd(pane_id)
+                .ok_or_else(|| format!("pane {pane_id} has no usable working directory"))?,
+        )
+    };
+    control_socket::resolve_browser_target(
+        state,
+        pane_id,
+        trimmed,
+        cwd.as_deref().and_then(std::path::Path::to_str),
+    )
 }
 
 fn grant_staged_artifact_to_pane(
@@ -1001,35 +1010,6 @@ fn grant_staged_artifact_to_pane(
     .ok_or_else(|| "staged remote artifact is no longer available".to_string())?;
     state.grant_pane_file_preview(pane_id, &canonical)?;
     Ok(())
-}
-
-fn resolve_terminal_link_target(
-    state: &AppState,
-    pane_id: &str,
-    path: &str,
-) -> Result<control_socket::ResolvedBrowserTarget, String> {
-    if !state.pane_exists(pane_id)? {
-        return Err(format!("pane {pane_id} was not found"));
-    }
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err("nothing to open".to_string());
-    }
-    let cwd = if std::path::Path::new(trimmed).is_absolute() {
-        None
-    } else {
-        Some(
-            state
-                .inheritable_pane_cwd(pane_id)
-                .ok_or_else(|| format!("pane {pane_id} has no usable working directory"))?,
-        )
-    };
-    control_socket::resolve_browser_target(
-        state,
-        pane_id,
-        trimmed,
-        cwd.as_deref().and_then(std::path::Path::to_str),
-    )
 }
 
 fn open_local_link(
@@ -1092,17 +1072,16 @@ fn browser_open_local_path(
     open_local_link(&state, &pane_id, resolved, artifact_id)
 }
 
-/// Open a filesystem path activated from the native terminal. Unlike transcript
-/// markdown links, Ghostty can recognize relative paths, so resolve those against
-/// the clicked pane's live cwd before applying the normal root confinement and
-/// safe preview/reveal disposition.
+/// Open a filesystem path activated from the native terminal. Relative paths
+/// resolve against the clicked pane's live cwd before the normal root
+/// confinement and safe preview/reveal disposition.
 #[tauri::command(async)]
 fn browser_open_terminal_path(
     state: tauri::State<'_, AppState>,
     pane_id: String,
     path: String,
 ) -> Result<serde_json::Value, String> {
-    let resolved = resolve_terminal_link_target(&state, &pane_id, &path)?;
+    let resolved = resolve_local_link_target(&state, &pane_id, &path)?;
     open_local_link(&state, &pane_id, resolved, None)
 }
 

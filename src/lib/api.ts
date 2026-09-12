@@ -1052,8 +1052,9 @@ export type BrowserOpenLocalPathResult = {
   sandbox: boolean;
 };
 
-/** Safely open an absolute local path: preview known renderable files in the
- * sandboxed overlay and reveal unknown/binary formats in the OS file manager. */
+/** Safely open a local path: preview known renderable files in the sandboxed
+ * overlay and reveal unknown/binary formats in the OS file manager. Relative
+ * paths resolve against the pane's live cwd. */
 export function browserOpenLocalPath(paneId: string, path: string, artifactId?: string) {
   return invoke<BrowserOpenLocalPathResult>("browser_open_local_path", {
     paneId,

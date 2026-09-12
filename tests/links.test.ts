@@ -4,6 +4,7 @@ import {
   QMUX_FILE_HREF_PREFIX,
   absoluteLocalFilePath,
   canPreviewLocalFilePath,
+  inlineCodeFilePath,
   isFileServerUrl,
   isQmuxFileHref,
   loopbackHtmlUrl,
@@ -113,6 +114,53 @@ test("local path cleanup does not alter web URL ports or punctuation", () => {
     terminalLinkTarget("https://example.com/report.html."),
     { kind: "externalUrl", url: "https://example.com/report.html." },
   );
+});
+
+test("inlineCodeFilePath accepts portable .html and .md paths", () => {
+  assert.equal(inlineCodeFilePath("dev/mock.html"), "dev/mock.html");
+  assert.equal(inlineCodeFilePath("docs/readme.md"), "docs/readme.md");
+  assert.equal(inlineCodeFilePath("index.html"), "index.html");
+  assert.equal(inlineCodeFilePath("README.md"), "README.md");
+  assert.equal(inlineCodeFilePath("./dev/mock.html"), "./dev/mock.html");
+  assert.equal(inlineCodeFilePath("../out/index.html"), "../out/index.html");
+  assert.equal(inlineCodeFilePath("/tmp/preview.html"), "/tmp/preview.html");
+  assert.equal(inlineCodeFilePath(".hidden.md"), ".hidden.md");
+  assert.equal(inlineCodeFilePath("foo.bar.html"), "foo.bar.html");
+  assert.equal(inlineCodeFilePath("path/to/file.HTML"), "path/to/file.HTML");
+  assert.equal(inlineCodeFilePath(".config/notes.md"), ".config/notes.md");
+});
+
+test("inlineCodeFilePath rejects spaces, URLs, and non-filename text", () => {
+  assert.equal(inlineCodeFilePath("foo bar.html"), undefined);
+  assert.equal(inlineCodeFilePath("http://localhost/foo.html"), undefined);
+  assert.equal(inlineCodeFilePath("https://example.com/foo.html"), undefined);
+  assert.equal(inlineCodeFilePath("example.com/foo.html"), undefined);
+  assert.equal(inlineCodeFilePath("//host/foo.html"), undefined);
+  assert.equal(inlineCodeFilePath("foo.html?x=1"), undefined);
+  assert.equal(inlineCodeFilePath("foo.html#bar"), undefined);
+  assert.equal(inlineCodeFilePath("foo.ts"), undefined);
+  assert.equal(inlineCodeFilePath("foo.mdx"), undefined);
+  assert.equal(inlineCodeFilePath("foo.markdown"), undefined);
+  assert.equal(inlineCodeFilePath("foo.htm"), undefined);
+  assert.equal(inlineCodeFilePath(".html"), undefined);
+  assert.equal(inlineCodeFilePath("foo/bar.ts"), undefined);
+  assert.equal(inlineCodeFilePath("C:\\foo\\bar.html"), undefined);
+  assert.equal(inlineCodeFilePath("foo\\bar.html"), undefined);
+  assert.equal(inlineCodeFilePath(" foo.html"), undefined);
+  assert.equal(inlineCodeFilePath("foo.html "), undefined);
+  assert.equal(inlineCodeFilePath("open dev/mock.html"), undefined);
+  assert.equal(inlineCodeFilePath("mailto:foo.md"), undefined);
+  assert.equal(inlineCodeFilePath("foo$bar.html"), undefined);
+  assert.equal(inlineCodeFilePath("@scope/file.html"), undefined);
+  assert.equal(inlineCodeFilePath("foo%20bar.html"), undefined);
+  assert.equal(inlineCodeFilePath("café.md"), undefined);
+});
+
+test("safeHref keeps relative qmux-file hrefs minted from inline code", () => {
+  assert.equal(safeHref("qmux-file:dev/mock.html"), "qmux-file:dev/mock.html");
+  assert.equal(safeHref("qmux-file:docs/readme.md"), "qmux-file:docs/readme.md");
+  assert.equal(safeHref("qmux-file:foo.ts"), undefined);
+  assert.equal(safeHref("qmux-file:foo bar.html"), undefined);
 });
 
 test("safeHref rejects relative links that only resolve against the dummy base", () => {
