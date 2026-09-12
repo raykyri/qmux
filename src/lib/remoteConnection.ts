@@ -80,7 +80,7 @@ export function remoteConnectionPresentation(
   };
   if (!connection) return view;
   if (connection.state === "connected") {
-    view.title = remoteHooksNeedAttention(connection) ? "Connected · hooks need attention" : "Connected";
+    view.title = remoteHooksNeedAttention(connection) ? "Connected · No hooks" : "Connected";
     view.lines = connectedDetails(connection);
     return view;
   }
@@ -215,15 +215,17 @@ export function remoteGroupStatus(panes: PaneInfo[]): { label: string; detail: s
     if (connection?.state === "reconnecting") return 2;
     if (connection?.state === "checking") return 3;
     if (connection?.state === "connecting") return 4;
-    if (remoteHooksNeedAttention(connection)) return 5;
     if (connection?.state === "connected") return 6;
     return 5;
   };
   const representative = [...connections].sort((a, b) => priority(a) - priority(b))[0];
+  const representativeLabel = remoteHooksNeedAttention(representative)
+    ? "Connected"
+    : remoteConnectionLabel(representative);
   return {
     label: connected > 0 && connected < connections.length
       ? `${connected} of ${connections.length} connected`
-      : remoteConnectionLabel(representative),
+      : representativeLabel,
     detail: `${connected} of ${connections.length} connected\n${remoteConnectionDetails(representative)}`,
   };
 }

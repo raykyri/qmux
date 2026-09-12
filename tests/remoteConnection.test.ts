@@ -82,18 +82,19 @@ test("restoration details include wake cause, verification time, and recovery du
   assert.match(detail, /1.2 seconds/);
 });
 
-test("hook failures stay connected and surface in pane and group status", () => {
+test("hook failures stay connected and surface as No hooks in pane status", () => {
   const connection = parseRemoteConnection({ state: "connected", hookHealth: "authenticationFailed" })!;
   assert.equal(connection.state, "connected");
   assert.equal(remoteHooksNeedAttention(connection), true);
-  assert.equal(remoteConnectionLabel(connection), "Connected · hooks need attention");
+  assert.equal(remoteConnectionLabel(connection), "Connected · No hooks");
   assert.match(remoteConnectionDetails(connection), /invalid QMUX_TOKEN/);
   assert.match(remoteConnectionDetails(connection), /terminal remains usable/);
   const panes = ["healthy", "authenticationFailed"].map(hookHealth => ({
     remoteSession: { remoteId: "r" }, remoteConnection: parseRemoteConnection({ state: "connected", hookHealth }),
   }) as PaneInfo);
-  assert.equal(remoteGroupStatus(panes)?.label, "Connected · hooks need attention");
+  assert.equal(remoteGroupStatus(panes)?.label, "Connected");
   assert.match(remoteGroupStatus(panes)!.detail, /2 of 2 connected/);
+  assert.equal(remoteGroupStatus([panes[1]!])?.label, "Connected");
   assert.match(remoteConnectionDetails({ state: "connected", hookHealth: "unavailable" }), /could not be verified/);
   assert.equal(remoteHooksNeedAttention({ state: "connected", hookHealth: "checking" }), false);
   assert.equal(remoteHooksNeedAttention({ state: "connected", hookHealth: "healthy" }), false);
