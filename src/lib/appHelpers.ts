@@ -760,42 +760,77 @@ function paneDisplayDirectory(pane: PaneInfo, agent: AgentInfo | undefined): str
 }
 
 /**
- * Names a tab's checkout when it differs from the first tab's location. This
- * feeds the terminal-group branch subtitle, where the short root name disambiguates
- * identical branch names without repeating a full path.
+ * Names a tab's checkout when it differs from the group's. Recovered first
+ * shells often reopen in an agent worktree; that tab must not become the
+ * baseline or every main-checkout tab looks "outside" the group.
  */
 export function paneBranchLocationLabel(
   pane: PaneInfo,
   agent: AgentInfo | undefined,
   firstPane: PaneInfo | undefined,
   firstAgent: AgentInfo | undefined,
+  groupDir?: string,
 ): string | null {
   const branch = agent
     ? agentDisplayBranch(agent)
     : (pane.activeWorkspace?.branch ?? null);
   const checkoutRoot = paneDisplayCheckoutRoot(pane, agent);
-  if (!branch || !checkoutRoot || !firstPane) {
+  if (!branch || !checkoutRoot) {
     return null;
   }
 
-  const firstCheckoutRoot = paneDisplayCheckoutRoot(firstPane, firstAgent);
-  const firstLocation = firstCheckoutRoot ?? paneDisplayDirectory(firstPane, firstAgent);
-  if (displayPathsReferToSameDirectory(checkoutRoot, firstLocation)) {
+  const firstCheckoutRoot = firstPane
+    ? paneDisplayCheckoutRoot(firstPane, firstAgent)
+    : null;
+  const firstLocation = firstPane
+    ? paneDisplayDirectory(firstPane, firstAgent)
+    : groupDir;
+  const baseline =
+    groupCheckoutBaseline(groupDir, firstCheckoutRoot) ??
+    groupDir ??
+    firstLocation;
+  if (!baseline) {
     return null;
   }
-  // A legacy or just-spawned first tab may not have workspace metadata yet.
-  // Its cwd still proves it is inside the current tab's checkout.
-  if (!firstCheckoutRoot) {
-    const normalizedRoot = normalizeDisplayPath(checkoutRoot);
-    const normalizedFirstLocation = normalizeDisplayPath(firstLocation);
-    const rootPrefix = normalizedRoot === "/" ? "/" : `${normalizedRoot}/`;
-    if (normalizedFirstLocation.startsWith(rootPrefix)) {
-      return null;
-    }
+  if (displayPathsReferToSameDirectory(checkoutRoot, baseline)) {
+    return null;
+  }
+  // The group's directory (or a just-spawned first tab's cwd) still proves
+  // this tab is the group's checkout when git metadata has not landed yet.
+  const normalizedRoot = normalizeDisplayPath(checkoutRoot);
+  const normalizedBaseline = normalizeDisplayPath(baseline);
+  const rootPrefix = normalizedRoot === "/" ? "/" : `${normalizedRoot}/`;
+  if (normalizedBaseline.startsWith(rootPrefix)) {
+    return null;
   }
 
   const name = checkoutRoot.split("/").filter(Boolean).pop();
   return name || checkoutRoot;
+}
+
+function groupCheckoutBaseline(
+  groupDir: string | undefined,
+  firstCheckoutRoot: string | null,
+): string | null {
+  if (!firstCheckoutRoot) {
+    return null;
+  }
+  if (!groupDir) {
+    return firstCheckoutRoot;
+  }
+  const normalizedGroup = normalizeDisplayPath(groupDir);
+  const normalizedRoot = normalizeDisplayPath(firstCheckoutRoot);
+  const rootPrefix = normalizedRoot === "/" ? "/" : `${normalizedRoot}/`;
+  // A worktree under the group folder is a different git root. Only treat the
+  // first tab as the group checkout when its root *is* the group directory or
+  // the group directory lives inside that checkout.
+  if (
+    displayPathsReferToSameDirectory(normalizedRoot, normalizedGroup) ||
+    normalizedGroup.startsWith(rootPrefix)
+  ) {
+    return firstCheckoutRoot;
+  }
+  return null;
 }
 
 /** Whether an agent may still be doing work and should keep the machine awake.

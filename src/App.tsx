@@ -15074,15 +15074,16 @@ function MainApp() {
     const paneShellWorkspace = paneAgent ? null : (pane.activeWorkspace ?? null);
     const paneBranch =
       agentDisplayBranch(paneAgent) ?? (paneShellWorkspace?.branch ?? null);
-    const firstPane = groupPanes[0];
     const paneGroup = groupById.get(groupId);
+    const rootShell = groupPanes.find((candidate) => candidate.kind === "shell") ?? groupPanes[0];
     const paneBranchLocationName =
       paneGroup?.scope === "terminal"
         ? paneBranchLocationLabel(
             pane,
             paneAgent,
-            firstPane,
-            firstPane ? agentByPaneId.get(firstPane.id) : undefined,
+            rootShell,
+            rootShell ? agentByPaneId.get(rootShell.id) : undefined,
+            paneGroup.dir,
           )
         : null;
     const paneWorktreeRoot =

@@ -250,6 +250,77 @@ test("branchless tabs do not get a checkout label", () => {
   assert.equal(paneBranchLocationLabel(detached, undefined, first, undefined), null);
 });
 
+test("a recovered first shell in a worktree does not relabel the group's checkout", () => {
+  const recovered = pane({
+    cwd: "/repo/.qmux/worktrees/agent-1",
+    activeWorkspace: {
+      cwd: "/repo/.qmux/worktrees/agent-1",
+      gitRoot: "/repo/.qmux/worktrees/agent-1",
+      branch: "qmux/agent-1",
+      kind: "linkedWorktree",
+      source: "qmux",
+      managedByQmux: true,
+    },
+  });
+  const main = pane({
+    id: "pane-2",
+    cwd: "/repo/src",
+    activeWorkspace: {
+      cwd: "/repo/src",
+      gitRoot: "/repo",
+      branch: "main",
+      kind: "mainCheckout",
+      source: "qmux",
+      managedByQmux: false,
+    },
+  });
+
+  assert.equal(paneBranchLocationLabel(main, undefined, recovered, undefined, "/repo"), null);
+  assert.equal(
+    paneBranchLocationLabel(recovered, undefined, recovered, undefined, "/repo"),
+    "agent-1",
+  );
+});
+
+test("other checkouts still label when the first tab has no git metadata after restart", () => {
+  const first = pane({ cwd: "/repo" });
+  const other = pane({
+    id: "pane-2",
+    cwd: "/other/src",
+    activeWorkspace: {
+      cwd: "/other/src",
+      gitRoot: "/other",
+      branch: "main",
+      kind: "mainCheckout",
+      source: "qmux",
+      managedByQmux: false,
+    },
+  });
+
+  assert.equal(paneBranchLocationLabel(other, undefined, first, undefined, "/repo"), "other");
+  assert.equal(
+    paneBranchLocationLabel(
+      pane({
+        id: "pane-3",
+        cwd: "/repo/packages/app",
+        activeWorkspace: {
+          cwd: "/repo/packages/app",
+          gitRoot: "/repo",
+          branch: "feature/app",
+          kind: "mainCheckout",
+          source: "qmux",
+          managedByQmux: false,
+        },
+      }),
+      undefined,
+      first,
+      undefined,
+      "/repo",
+    ),
+    null,
+  );
+});
+
 test("branch worktree names use a valid bounded leaf", () => {
   const branch = (name: string): RepositoryBranch => ({
     name,

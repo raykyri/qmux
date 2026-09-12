@@ -15,8 +15,8 @@ use crate::state::{
 };
 use crate::turn_queue::{abort_fork_barrier_for_child, release_waiters_for_agent};
 use crate::workspace::{
-    CreateGroupRequest, RemoteRef, WorkspaceScope, capture_agent_worktree_removal, create_group,
-    group_recoverable_dir, remove_captured_worktree,
+    ActiveWorkspace, CreateGroupRequest, RemoteRef, WorkspaceScope,
+    capture_agent_worktree_removal, create_group, group_recoverable_dir, remove_captured_worktree,
 };
 use portable_pty::PtySize;
 use portable_pty::{CommandBuilder, native_pty_system};
@@ -374,6 +374,7 @@ fn plan_to_spec_with_identity(
         recovered: meta.recovered,
         ssh_target: None,
         remote,
+        fallback_workspace: None,
     })
 }
 
@@ -485,6 +486,9 @@ pub struct PtySpawnSpec {
     /// reopens `ssh` rather than a login shell.
     pub ssh_target: Option<String>,
     pub remote: Option<RemoteSpawnSpec>,
+    /// Persisted observation reused when a recovered shell reopens at the same
+    /// cwd and the live git probe is unavailable.
+    pub fallback_workspace: Option<ActiveWorkspace>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -860,6 +864,9 @@ pub fn respawn_shell_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInfo,
     // OSC title. Recovery previously rebuilt every shell as literal "Shell",
     // discarding even explicitly renamed tabs.
     apply_recovered_shell_titles(&mut spec, pane);
+    if spec.cwd == PathBuf::from(&pane.cwd) {
+        spec.fallback_workspace = pane.active_workspace.clone();
+    }
     spawn_pty(state, spec)
 }
 
@@ -1917,11 +1924,13 @@ fn spawn_portable_pty(
         agent_id: spec.agent_id,
         group_id: spec.group_id,
         cwd: spec.cwd.display().to_string(),
-        // Shell tabs get their worktree badge from a single git probe at
-        // spawn; agent tabs leave this unset and rely on transcript tailing.
+        // Shell tabs get their worktree badge from a git probe at spawn;
+        // recovered shells fall back to the persisted observation if that
+        // probe cannot run. Agent tabs rely on transcript tailing.
         active_workspace: match spec.kind {
             PaneKind::Shell => {
-                crate::workspace::resolve_pane_workspace(spec.cwd.to_str().unwrap_or_default())
+                let cwd = spec.cwd.to_str().unwrap_or_default();
+                crate::workspace::resolve_pane_workspace(cwd).or(spec.fallback_workspace)
             }
             PaneKind::Agent => None,
         },
@@ -6650,6 +6659,7 @@ mod tests {
                     host: crate::host::for_group(Some(&remote_ref)),
                     identity,
                 }),
+                fallback_workspace: None,
             },
         )
         .unwrap();
@@ -6897,6 +6907,7 @@ mod tests {
             recovered: true,
             ssh_target: None,
             remote: None,
+            fallback_workspace: None,
         };
 
         materialize_support_files_or_fallback(&mut spec).unwrap();
@@ -7489,6 +7500,7 @@ mod tests {
                 recovered: false,
                 ssh_target: None,
                 remote: None,
+                fallback_workspace: None,
             },
         )
         .expect("spawning a test PTY")
@@ -7513,6 +7525,7 @@ mod tests {
             recovered: true,
             ssh_target: None,
             remote: None,
+            fallback_workspace: None,
         };
         let pane = PaneInfo {
             id: "pane-1".to_string(),
