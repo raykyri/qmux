@@ -1617,6 +1617,39 @@ pub extern "C" fn qmux_native_terminal_did_request_browser_escape() -> i32 {
     i32::from(emitted)
 }
 
+/// How long after a Ctrl-D keystroke a remote pane's EOF still counts as a
+/// user-initiated exit rather than a dropped connection.
+const REMOTE_CTRL_D_CLOSE_WINDOW_MS: u128 = 500;
+
+/// Per-pane wall-clock stamps of Ctrl-D keystrokes typed in remote panes. The
+/// map only ever holds stamps from the last window, so it is bounded by panes
+/// with recent Ctrl-Ds; the lock is held only for insert/remove.
+static REMOTE_CTRL_D_KEYSTROKES: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<String, u128>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// Records that the user typed Ctrl-D in `pane_id`, stamping the wall clock so
+/// the reader thread's EOF path can tell a deliberate exit from a drop.
+pub fn record_remote_ctrl_d(pane_id: &str) {
+    let now = crate::state::now_millis();
+    let mut stamps = REMOTE_CTRL_D_KEYSTROKES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    stamps.retain(|_, stamped| now.saturating_sub(*stamped) <= REMOTE_CTRL_D_CLOSE_WINDOW_MS);
+    stamps.insert(pane_id.to_string(), now);
+}
+
+/// Whether a Ctrl-D keystroke within [`REMOTE_CTRL_D_CLOSE_WINDOW_MS`] precedes
+/// this call. Consumes the stamp so a single keystroke can only close one pane.
+pub fn take_recent_remote_ctrl_d(pane_id: &str) -> bool {
+    let now = crate::state::now_millis();
+    REMOTE_CTRL_D_KEYSTROKES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(pane_id)
+        .is_some_and(|stamped| now.saturating_sub(stamped) <= REMOTE_CTRL_D_CLOSE_WINDOW_MS)
+}
+
 fn is_remote_close_shortcut(
     key: &str,
     shift: i32,
@@ -1660,38 +1693,47 @@ pub extern "C" fn qmux_native_terminal_did_receive_shortcut(
     // live event listener the emit below is dropped, so decline instead —
     // the chord stays in the native responder chain rather than being
     // consumed into nothing.
-    if !events_listener_ready() {
-        return 0;
-    }
     if is_remote_close_shortcut(&key, shift, control, option, command, repeat) {
         let mut emitted = false;
         with_app_state(|state| {
-            let closeable = state.list_panes().ok().and_then(|panes| {
-                panes.into_iter().find(|pane| {
-                    pane.id == pane_id
-                        && pane.remote_session.is_some()
-                        && pane.remote_connection.as_ref().is_none_or(|connection| {
-                            connection.state != crate::state::RemoteConnectionState::Connected
-                        })
-                })
+            let remote_pane = state.list_panes().ok().and_then(|panes| {
+                panes
+                    .into_iter()
+                    .find(|pane| pane.id == pane_id && pane.remote_session.is_some())
             });
-            if closeable.is_some() {
-                state.emit(QmuxEvent::new(
-                    "terminal.shortcut",
-                    Some(pane_id.clone()),
-                    None,
-                    serde_json::json!({
-                        "command": "closeUnavailableRemotePane",
-                        "tabIndex": null,
-                        "repeat": false,
-                    }),
-                ));
-                emitted = true;
+            if let Some(pane) = remote_pane.as_ref() {
+                // Stamp the keystroke even while the pane is connected: if the
+                // EOT ends the remote session, the reader thread's EOF path
+                // closes the pane outright instead of parking it on the
+                // reconnect banner for an exit the user typed on purpose.
+                record_remote_ctrl_d(&pane_id);
+                let closeable = pane
+                    .remote_connection
+                    .as_ref()
+                    .is_none_or(|connection| {
+                        connection.state != crate::state::RemoteConnectionState::Connected
+                    });
+                if closeable && events_listener_ready() {
+                    state.emit(QmuxEvent::new(
+                        "terminal.shortcut",
+                        Some(pane_id.clone()),
+                        None,
+                        serde_json::json!({
+                            "command": "closeUnavailableRemotePane",
+                            "tabIndex": null,
+                            "repeat": false,
+                        }),
+                    ));
+                    emitted = true;
+                }
             }
         });
         if emitted {
             return 1;
         }
+    }
+    if !events_listener_ready() {
+        return 0;
     }
     let Some(shortcut) =
         classify_app_shortcut(&key, shift == 1, control == 1, option == 1, command == 1)
@@ -1930,7 +1972,7 @@ pub fn native_terminal_annotation_selection_snapshot(pane_id: String) -> Result<
 
 #[cfg(test)]
 mod shortcut_tests {
-    use super::is_remote_close_shortcut;
+    use super::{is_remote_close_shortcut, record_remote_ctrl_d, take_recent_remote_ctrl_d};
 
     #[test]
     fn only_plain_nonrepeating_control_d_is_the_remote_close_chord() {
@@ -1952,6 +1994,26 @@ mod shortcut_tests {
             ));
         }
         assert!(!is_remote_close_shortcut("x", 0, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn fresh_ctrl_d_stamp_closes_remote_pane_exactly_once() {
+        record_remote_ctrl_d("pane-fresh");
+        assert!(take_recent_remote_ctrl_d("pane-fresh"));
+        // The stamp is consumed: a later EOF for the same pane (or one that
+        // never saw Ctrl-D) must not auto-close.
+        assert!(!take_recent_remote_ctrl_d("pane-fresh"));
+        assert!(!take_recent_remote_ctrl_d("pane-untouched"));
+    }
+
+    #[test]
+    fn stale_ctrl_d_stamp_does_not_close_remote_pane() {
+        let mut stamps = super::REMOTE_CTRL_D_KEYSTROKES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        stamps.insert("pane-stale".to_string(), 0);
+        drop(stamps);
+        assert!(!take_recent_remote_ctrl_d("pane-stale"));
     }
 }
 

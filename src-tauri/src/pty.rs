@@ -4726,6 +4726,21 @@ fn start_reader_thread(
         // than a blanket `None`. A pane killed via `kill_pane` is already reaped and
         // removed there, so this returns None and emits the exit with no code.
         let exit_code = if let Some(remote) = remote {
+            // A Ctrl-D typed moments before EOF is a deliberate exit, not a
+            // dropped connection: close the pane outright — the same teardown
+            // Cmd-W performs, including the remote session kill and undo
+            // snapshot — instead of parking it on the reconnect banner. If the
+            // remote kill fails (the transport died with the pane), fall
+            // through so the reconnect flow keeps the recovery path.
+            if crate::native_terminal::take_recent_remote_ctrl_d(&pane_id) {
+                if let Err(err) = kill_pane(&state, pane_id.clone()) {
+                    eprintln!(
+                        "qmux: failed to close remote pane {pane_id} exited with Ctrl-D: {err}"
+                    );
+                } else {
+                    return;
+                }
+            }
             let Some(attachment) = remote.controller.clear_if_current(remote.generation) else {
                 // A newer attachment owns the pane. This generation's late EOF
                 // must not alter its state or remove its surface.
