@@ -465,7 +465,7 @@ fn wait_for_conflict_to_clear(
     state: &AppState,
     socket_path: &Path,
     wakeup: &UnixStream,
-    shared: &SupervisorShared,
+    shared: &Arc<SupervisorShared>,
     watch_state: &mut SocketWatchState,
 ) -> Option<()> {
     enter_watch_state(
@@ -476,13 +476,7 @@ fn wait_for_conflict_to_clear(
         SocketWatchState::Conflict,
         Some("control socket path is occupied by another listener"),
     );
-    warn_control_socket(
-        state,
-        &format!(
-            "The qmux control socket at {} was replaced by another process. CLI commands will not reach this instance until that socket is removed. qmux will not delete it automatically.",
-            socket_path.display()
-        ),
-    );
+    prompt_replace_conflict_socket(state, socket_path, shared);
     loop {
         if shared.stop.load(Ordering::SeqCst) {
             return None;
@@ -654,6 +648,30 @@ fn reclaim_owned_socket(state: &AppState, socket_path: &Path) {
     state.clear_control_socket_identity();
 }
 
+/// Unlink a replacement socket the user confirmed taking over. Never deletes a
+/// path this process currently owns, and no-ops after the supervisor has stopped
+/// so a late dialog confirmation cannot steal a later instance's socket.
+fn take_over_conflict_socket(state: &AppState, socket_path: &Path, stopped: bool) {
+    if stopped || state.owns_control_socket() {
+        return;
+    }
+    match fs::remove_file(socket_path) {
+        Ok(()) => {
+            eprintln!(
+                "qmux: removed replacement control socket at {}",
+                socket_path.display()
+            );
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => {
+            eprintln!(
+                "qmux: failed to remove replacement control socket at {}: {err}",
+                socket_path.display()
+            );
+        }
+    }
+}
+
 fn enter_watch_state(
     state: &AppState,
     socket_path: &Path,
@@ -728,6 +746,38 @@ fn warn_control_socket(state: &AppState, message: &str) {
             .kind(MessageDialogKind::Warning)
             .show(|_| {});
     }
+}
+
+fn prompt_replace_conflict_socket(
+    state: &AppState,
+    socket_path: &Path,
+    shared: &Arc<SupervisorShared>,
+) {
+    let message = format!(
+        "The qmux control socket at {} was replaced by another process. CLI commands will not reach this instance until that socket is removed.\n\nDelete the replacement and take over this socket?",
+        socket_path.display()
+    );
+    eprintln!("qmux: {message}");
+    let Some(app) = state.app_handle() else {
+        return;
+    };
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let state = state.clone();
+    let path = socket_path.to_path_buf();
+    let shared = Arc::clone(shared);
+    app.dialog()
+        .message(message)
+        .title("qmux")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Delete and Replace".into(),
+            "Leave It".into(),
+        ))
+        .show(move |confirmed| {
+            if confirmed {
+                take_over_conflict_socket(&state, &path, shared.stop.load(Ordering::SeqCst));
+            }
+        });
 }
 
 struct PollReady {
@@ -2489,6 +2539,77 @@ mod tests {
         drop(replacement);
         let _ = std::fs::remove_file(&socket_path);
         wait_for_ping(&socket_path, &token, Duration::from_secs(1));
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn take_over_conflict_socket_unlinks_a_replacement_without_touching_an_owned_socket() {
+        let dir = temp_dir();
+        let owned_path = dir.join("owned.sock");
+        let replacement_path = dir.join("replacement.sock");
+
+        let _owned = UnixListener::bind(&owned_path).unwrap();
+        let owned_meta = fs::symlink_metadata(&owned_path).unwrap();
+        let (state, _) = runtime_state(dir.clone(), owned_path.clone());
+        state.set_control_socket_identity(owned_meta.dev(), owned_meta.ino());
+
+        take_over_conflict_socket(&state, &owned_path, false);
+        assert!(
+            owned_path.exists(),
+            "take-over must not unlink a socket this process owns"
+        );
+
+        take_over_conflict_socket(&state, &owned_path, true);
+        assert!(
+            owned_path.exists(),
+            "take-over must no-op after the supervisor has stopped"
+        );
+
+        let _replacement = UnixListener::bind(&replacement_path).unwrap();
+        let (conflict_state, _) = runtime_state(dir, replacement_path.clone());
+        take_over_conflict_socket(&conflict_state, &replacement_path, false);
+        assert!(
+            !replacement_path.exists(),
+            "take-over should unlink a replacement this process does not own"
+        );
+    }
+
+    #[test]
+    fn supervisor_rebinds_after_taking_over_a_replacement_socket() {
+        let (state, socket_path) = runtime_fixture();
+        let token = state.pane_token("pane-1").unwrap();
+        let runtime = start_control_socket_runtime(state.clone(), MAX_CONCURRENT_CLIENTS).unwrap();
+        wait_for_ping(&socket_path, &token, Duration::from_secs(1));
+
+        let replacement_path = socket_path.with_file_name("other.sock");
+        let replacement = UnixListener::bind(&replacement_path).unwrap();
+        std::fs::rename(&replacement_path, &socket_path).unwrap();
+
+        wait_until(
+            Duration::from_secs(1),
+            || {
+                runtime
+                    .transitions()
+                    .iter()
+                    .any(|event| event == "control_socket.conflict")
+            },
+            "expected a control_socket.conflict transition",
+        );
+        assert!(!state.owns_control_socket());
+
+        take_over_conflict_socket(&state, &socket_path, false);
+        wait_for_ping(&socket_path, &token, Duration::from_secs(1));
+        assert!(state.owns_control_socket());
+        assert_eq!(
+            runtime
+                .transitions()
+                .iter()
+                .filter(|event| event.as_str() == "control_socket.recovered")
+                .count(),
+            1
+        );
+
+        drop(replacement);
         runtime.shutdown();
     }
 
