@@ -4,11 +4,12 @@
 //! `http://127.0.0.1:<port>/<token>/<percent-encoded-abs-path>`. Because any local
 //! process can reach a loopback port, a random `token` (not loopback alone) is what
 //! gates access. Inert content uses a pane token restricted to that pane's roots;
-//! executable content receives a token restricted to its exact source file. The server
+//! executable content receives a token restricted to its exact source file plus typed
+//! browser subresources beneath that pane's roots. The server
 //! canonicalizes every requested path, including the local temporary directories where
 //! agents commonly write artifacts. A pane token cannot reach another pane's workspace,
-//! an executable preview cannot read sibling files, and `..`/symlinks cannot escape into
-//! other locations such as `~/.ssh/id_rsa`.
+//! an executable preview cannot navigate to or fetch arbitrary sibling files, and
+//! `..`/symlinks cannot escape into other locations such as `~/.ssh/id_rsa`.
 //!
 //! Hand-rolled GET/HEAD + Range over `TcpListener` to keep the dependency posture of
 //! the rest of the backend (cf. the hand-rolled base64 in events.rs). Each connection
@@ -168,6 +169,42 @@ fn resolve_file_token_path(state: &AppState, token: &str, requested: &Path) -> O
     resolve_exact_file(requested, &[exact])
 }
 
+/// Resolves a file-server request while allowing an executable preview to load the
+/// typed subresources needed to render. Exact-file tokens remain unable to navigate
+/// to sibling documents or read arbitrary files: the browser must identify a passive
+/// or script subresource destination, its MIME type must match that destination, and
+/// the canonical path must remain under the owning pane's normal roots.
+fn resolve_file_request_path(
+    state: &AppState,
+    token: &str,
+    requested: &Path,
+    fetch_dest: Option<&str>,
+) -> Option<PathBuf> {
+    if state.pane_for_file_token(token).is_some() {
+        return resolve_file_token_path(state, token, requested);
+    }
+    let (pane_id, source) = state.exact_file_for_preview_token(token)?;
+    if let Some(canonical) = resolve_exact_file(requested, &[source]) {
+        return Some(canonical);
+    }
+    let roots = state.pane_file_roots(&pane_id);
+    let canonical = resolve_under_roots(requested, &roots)?;
+    fetch_dest_matches_path(fetch_dest?, &canonical).then_some(canonical)
+}
+
+fn fetch_dest_matches_path(fetch_dest: &str, path: &Path) -> bool {
+    let content_type = mime_type(path);
+    match fetch_dest {
+        "style" => content_type.starts_with("text/css"),
+        "script" => content_type.starts_with("text/javascript"),
+        "image" => content_type.starts_with("image/"),
+        "font" => content_type.starts_with("font/"),
+        "audio" => content_type.starts_with("audio/"),
+        "video" => content_type.starts_with("video/"),
+        _ => false,
+    }
+}
+
 fn valid_codex_inline_vis_filename(file: &str) -> bool {
     let Some(stem) = file.strip_suffix(".html") else {
         return false;
@@ -296,6 +333,7 @@ struct RequestHead {
     target: String,
     range: Option<String>,
     host: Option<String>,
+    fetch_dest: Option<String>,
 }
 
 struct Response {
@@ -352,6 +390,7 @@ fn read_request_head(stream: &TcpStream) -> Option<RequestHead> {
 
     let mut range = None;
     let mut host = None;
+    let mut fetch_dest = None;
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header).ok()? == 0 {
@@ -367,6 +406,8 @@ fn read_request_head(stream: &TcpStream) -> Option<RequestHead> {
                 range = Some(value.trim().to_string());
             } else if name.eq_ignore_ascii_case("host") {
                 host = Some(value.trim().to_string());
+            } else if name.eq_ignore_ascii_case("sec-fetch-dest") {
+                fetch_dest = Some(value.trim().to_ascii_lowercase());
             }
         }
     }
@@ -376,6 +417,7 @@ fn read_request_head(stream: &TcpStream) -> Option<RequestHead> {
         target,
         range,
         host,
+        fetch_dest,
     })
 }
 
@@ -454,9 +496,10 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
         return Response::error(404, "Not Found");
     };
     let (token, encoded_path) = after_root.split_at(slash);
-    // Resolve pane-wide tokens beneath that pane's roots, while tokens exposed to
-    // executable previews can only re-read the exact source file. Unknown tokens and
-    // paths outside either capability fail without exposing whether the path exists.
+    // Resolve pane-wide tokens beneath that pane's roots. Tokens exposed to executable
+    // previews can re-read the exact source and load correctly typed browser assets
+    // beneath those roots. Unknown tokens and paths outside either capability fail
+    // without exposing whether the path exists.
     if state.pane_for_file_token(token).is_none()
         && state.exact_file_for_preview_token(token).is_none()
     {
@@ -465,7 +508,12 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
     let Some(decoded) = percent_decode(encoded_path) else {
         return Response::error(400, "Bad Request");
     };
-    let Some(canonical) = resolve_file_token_path(state, token, Path::new(&decoded)) else {
+    let Some(canonical) = resolve_file_request_path(
+        state,
+        token,
+        Path::new(&decoded),
+        head.fetch_dest.as_deref(),
+    ) else {
         return Response::error(403, "Forbidden");
     };
 
@@ -480,6 +528,10 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
     }
     let total = meta.len();
     let content_type = mime_type(&canonical);
+    let typed_asset_request = head
+        .fetch_dest
+        .as_deref()
+        .is_some_and(|destination| fetch_dest_matches_path(destination, &canonical));
     // CSP for served content: the overlay sandboxes it into an opaque origin, while
     // `connect-src 'none'` blocks fetch/XHR/WebSocket/beacon. Passive subresources are
     // limited to the file-server origin and the token independently limits which paths
@@ -595,6 +647,9 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
         if let Some(csp) = &csp {
             response.header("Content-Security-Policy", csp);
         }
+        if typed_asset_request {
+            response.header("Access-Control-Allow-Origin", "*");
+        }
         response.body = body;
         return response;
     }
@@ -619,6 +674,11 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
     response.header("Accept-Ranges", "bytes");
     if let Some(csp) = &csp {
         response.header("Content-Security-Policy", csp);
+    }
+    if typed_asset_request {
+        // The overlay gives previews an opaque origin. CORS permission lets fonts,
+        // module scripts, and canvas-safe images load after request authorization.
+        response.header("Access-Control-Allow-Origin", "*");
     }
     response.body = body;
     response
@@ -652,7 +712,8 @@ fn html_preview_scroll_bridge() -> String {
 /// CSP applied to every served file. Served files always come back from
 /// `http://127.0.0.1:<port>` (see `file_url`), so passive subresources are pinned to
 /// that exact origin. Pane-wide tokens let inert documents load sibling resources;
-/// executable reports use exact-file tokens. `connect-src 'none'` blocks all scripted
+/// executable reports use exact-file tokens that admit only correctly typed browser
+/// subresources within the pane's roots. `connect-src 'none'` blocks all scripted
 /// network egress, and `object-src`/`base-uri`/`form-action` are locked down for good
 /// measure. Inline scripts/styles are permitted because a served report legitimately
 /// carries its own, while the sandbox keeps its opaque origin isolated from qmux.
@@ -986,6 +1047,10 @@ fn mime_type(path: &Path) -> String {
         "webp" => "image/webp",
         "avif" => "image/avif",
         "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
         "pdf" => "application/pdf",
         "mp4" => "video/mp4",
         "webm" => "video/webm",
@@ -1276,7 +1341,12 @@ mod tests {
     }
 
     /// Issues a GET and returns the full response head (status line + headers) and body.
-    fn http_get_full(port: u16, path: &str, range: Option<&str>) -> (String, Vec<u8>) {
+    fn http_get_full_with_headers(
+        port: u16,
+        path: &str,
+        range: Option<&str>,
+        headers: &[(&str, &str)],
+    ) -> (String, Vec<u8>) {
         use std::io::{Read, Write};
         use std::net::TcpStream;
         let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
@@ -1287,6 +1357,9 @@ mod tests {
         let mut request = format!("GET {method_path} HTTP/1.1\r\nHost: localhost\r\n");
         if let Some(range) = range {
             request.push_str(&format!("Range: {range}\r\n"));
+        }
+        for (name, value) in headers {
+            request.push_str(&format!("{name}: {value}\r\n"));
         }
         request.push_str("\r\n");
         stream.write_all(request.as_bytes()).unwrap();
@@ -1299,6 +1372,10 @@ mod tests {
             .unwrap_or(raw.len());
         let head = String::from_utf8_lossy(&raw[..split]).to_string();
         (head, raw[split..].to_vec())
+    }
+
+    fn http_get_full(port: u16, path: &str, range: Option<&str>) -> (String, Vec<u8>) {
+        http_get_full_with_headers(port, path, range, &[])
     }
 
     fn http_get(port: u16, path: &str, range: Option<&str>) -> (String, Vec<u8>) {
@@ -1644,7 +1721,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_preview_token_serves_executable_content_but_not_siblings() {
+    fn exact_preview_token_serves_typed_assets_but_not_sibling_documents() {
         let base = non_temp_test_dir("inline-vis");
         let root = base.join("ws");
         let visuals = base.join("private-visuals");
@@ -1652,8 +1729,14 @@ mod tests {
         std::fs::create_dir_all(&visuals).unwrap();
         let visual = visuals.join("preview.html");
         let sibling = visuals.join("other.html");
+        let stylesheet = root.join("preview.css");
+        let script = root.join("preview.js");
+        let text = root.join("notes.txt");
         std::fs::write(&visual, "<div class=\"card\">preview</div>").unwrap();
         std::fs::write(&sibling, "private sibling").unwrap();
+        std::fs::write(&stylesheet, ".card { color: green; }").unwrap();
+        std::fs::write(&script, "document.body.dataset.ready = 'true';").unwrap();
+        std::fs::write(&text, "private notes").unwrap();
 
         let state = test_state(&root, &base, "pane-vis");
         let canonical = state.grant_pane_file_preview("pane-vis", &visual).unwrap();
@@ -1676,6 +1759,44 @@ mod tests {
         assert!(body.contains("<div class=\"card\">preview</div>"));
 
         let (status, _) = http_get(info.port, &url_path(info.port, &token, &sibling), None);
+        assert!(status.contains("403"), "status: {status}");
+
+        // An executable preview may load correctly typed subresources from its pane's
+        // roots, but the same paths remain forbidden as document or untyped requests.
+        let (head, body) = http_get_full_with_headers(
+            info.port,
+            &url_path(info.port, &token, &stylesheet),
+            None,
+            &[("Sec-Fetch-Dest", "style")],
+        );
+        assert!(head.starts_with("HTTP/1.1 200"), "head: {head}");
+        assert!(
+            head.contains("Access-Control-Allow-Origin: *"),
+            "head: {head}"
+        );
+        assert_eq!(body, b".card { color: green; }");
+        let (head, body) = http_get_full_with_headers(
+            info.port,
+            &url_path(info.port, &token, &script),
+            None,
+            &[("Sec-Fetch-Dest", "script")],
+        );
+        assert!(head.starts_with("HTTP/1.1 200"), "head: {head}");
+        assert_eq!(body, b"document.body.dataset.ready = 'true';");
+        for (path, destination) in [
+            (&stylesheet, "document"),
+            (&stylesheet, "script"),
+            (&text, "style"),
+        ] {
+            let (head, _) = http_get_full_with_headers(
+                info.port,
+                &url_path(info.port, &token, path),
+                None,
+                &[("Sec-Fetch-Dest", destination)],
+            );
+            assert!(head.starts_with("HTTP/1.1 403"), "head: {head}");
+        }
+        let (status, _) = http_get(info.port, &url_path(info.port, &token, &stylesheet), None);
         assert!(status.contains("403"), "status: {status}");
 
         let _ = std::fs::remove_dir_all(&base);

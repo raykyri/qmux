@@ -336,8 +336,9 @@ struct AppStateInner {
     // strip them before exec, keeping cross-pane user control distinct from
     // the pane-scoped token inherited by hooks and MCP servers.
     user_tokens: Mutex<HashMap<String, String>>,
-    // Separate read-only credentials used in file-preview URLs. Executable
-    // previews get a narrower token that can only re-read their exact source.
+    // Separate read-only credentials used in file-preview URLs. Executable previews
+    // get a narrower token for their exact source and correctly typed browser assets
+    // beneath the pane's approved roots.
     file_tokens: Mutex<HashMap<String, String>>,
     exact_file_tokens: Mutex<HashMap<String, (String, std::path::PathBuf)>>,
     // Exact, canonical files outside a pane's normal project roots that the
