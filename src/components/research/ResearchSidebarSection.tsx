@@ -1746,7 +1746,7 @@ function ResearchSidebarSection({
                 </h2>
                 <input
                   ref={renameInputRef}
-                  className="rename-dialog-input"
+                  className="form-field rename-dialog-input"
                   value={renameDraft}
                   aria-label={renamingFolder ? "Folder name" : "Research title"}
                   onChange={(event) => setRenameDraft(event.currentTarget.value)}

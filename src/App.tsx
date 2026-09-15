@@ -17473,7 +17473,7 @@ function MainApp() {
               </label>
               <select
                 id="settings-color-theme"
-                className="settings-select"
+                className="form-field settings-select"
                 value={settings.colorTheme}
                 onChange={(event) => {
                   const colorTheme = event.currentTarget.value as AppSettings["colorTheme"];
@@ -17505,7 +17505,7 @@ function MainApp() {
                   id="settings-theme"
                   ref={themePickerTriggerRef}
                   type="button"
-                  className="settings-select settings-theme-trigger"
+                  className="form-field settings-select settings-theme-trigger"
                   role="combobox"
                   aria-haspopup="listbox"
                   aria-expanded={themePickerOpen}
@@ -17596,7 +17596,7 @@ function MainApp() {
               </label>
               <select
                 id="settings-body-font"
-                className="settings-select"
+                className="form-field settings-select"
                 value={availableBodyFonts === null ? "" : settings.bodyFontId}
                 disabled={availableBodyFonts === null}
                 onChange={(event) => {
@@ -17622,7 +17622,7 @@ function MainApp() {
               </label>
               <select
                 id="settings-font"
-                className="settings-select"
+                className="form-field settings-select"
                 value={settings.fontId}
                 onChange={(event) => {
                   // Read the value synchronously: the setSettings updater runs
@@ -17707,7 +17707,7 @@ function MainApp() {
               </label>
               <select
                 id="settings-tab-title-provider"
-                className="settings-select"
+                className="form-field settings-select"
                 value={settings.tabTitleProvider}
                 onChange={(event) => {
                   const tabTitleProvider =
@@ -17938,7 +17938,7 @@ function MainApp() {
               <div className="settings-completion-sound-controls">
                 <select
                   id="settings-completion-sound"
-                  className="settings-select settings-completion-sound-select"
+                  className="form-field settings-select settings-completion-sound-select"
                   value={settings.completionSound}
                   onChange={(event) => {
                     const completionSound = event.currentTarget.value as CompletionSoundId;
@@ -18011,7 +18011,7 @@ function MainApp() {
               </div>
               <select
                 id="settings-worktree-location"
-                className="settings-select"
+                className="form-field settings-select"
                 value={settings.worktreeLocation}
                 onChange={(event) => {
                   const worktreeLocation =
@@ -18077,7 +18077,7 @@ function MainApp() {
               </label>
               <select
                 id="settings-global-task-launcher-hotkey"
-                className="settings-select"
+                className="form-field settings-select"
                 value={globalTaskLauncherSetting.hotkey ?? ""}
                 disabled={globalTaskLauncherHotkeySaving}
                 aria-invalid={globalTaskLauncherHotkeyMessage ? true : undefined}
@@ -18238,7 +18238,7 @@ function MainApp() {
                   </label>
                   <select
                     id="settings-cursor-style"
-                    className="settings-select"
+                    className="form-field settings-select"
                     value={settings.cursorStyle}
                     onChange={(event) => {
                       const cursorStyle = event.currentTarget.value as AppSettings["cursorStyle"];
@@ -18293,7 +18293,7 @@ function MainApp() {
                   </label>
                   <select
                     id="settings-mouse-wheel-sensitivity"
-                    className="settings-select"
+                    className="form-field settings-select"
                     value={settings.mouseWheelSensitivity}
                     onChange={(event) => {
                       const mouseWheelSensitivity = event.currentTarget
@@ -18628,7 +18628,7 @@ function MainApp() {
             <input
               ref={worktreeNameInputRef}
               id="create-worktree-name"
-              className="rename-dialog-input"
+              className="form-field rename-dialog-input"
               value={worktreeCreateDialog.name}
               disabled={worktreeCreateDialog.creating}
               spellCheck={false}
@@ -19023,7 +19023,7 @@ function MainApp() {
             </h2>
             <input
               ref={renameInputRef}
-              className="rename-dialog-input"
+              className="form-field rename-dialog-input"
               value={renameValue}
               onChange={(event) => setRenameValue(event.currentTarget.value)}
               onKeyDown={(event) => {

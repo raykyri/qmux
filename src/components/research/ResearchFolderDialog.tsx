@@ -57,7 +57,7 @@ export default function ResearchFolderDialog({
             : "Create an empty folder for research you want to organize later."}
         </p>
         <input
-          className="rename-dialog-input"
+          className="form-field rename-dialog-input"
           value={name}
           aria-label="Folder name"
           autoFocus

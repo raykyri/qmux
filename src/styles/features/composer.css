@@ -280,12 +280,6 @@
   color: var(--placeholder-color);
 }
 
-@keyframes spinner-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 .composer-menu {
   position: relative;
   flex: 0 0 auto;

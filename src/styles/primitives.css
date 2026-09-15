@@ -1,3 +1,18 @@
+.control-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  min-height: var(--control-h-md);
+  padding: 0 12px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
+  color: var(--control-fg);
+  font-size: var(--fs-base);
+}
+
 /* Neutralize the native button chrome so the icon renders in theme colors;
    contexts that want a filled/bordered look layer their own class on top. */
 .icon-button {
@@ -124,4 +139,10 @@
   font-size: var(--fs-xs);
   line-height: 1;
   white-space: nowrap;
+}
+
+@keyframes spinner-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

@@ -1,0 +1,114 @@
+.confirm-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(8, 10, 12, 0.58);
+}
+
+.confirm-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(440px, 100%);
+  gap: 10px;
+  border: 1px solid var(--dialog-border);
+  border-radius: 10px;
+  background: var(--panel-bg);
+  box-shadow: var(--dialog-shadow);
+  padding: 16px;
+}
+
+.confirm-dialog h2 {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text-heading);
+}
+
+.confirm-dialog p {
+  margin: 0;
+  font-size: var(--fs-base);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.confirm-dialog .confirm-dialog-error {
+  color: #e69a91;
+}
+
+.confirm-dialog-changes {
+  /* Amber to flag uncommitted work that deletion would discard. */
+  color: #e6b673;
+}
+
+.confirm-dialog-field-label {
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+}
+
+.rename-dialog-input {
+  width: 100%;
+  min-height: var(--control-h-lg);
+  padding: 0 10px;
+  color: var(--text-strong);
+  font-size: var(--fs-input);
+}
+
+.confirm-dialog .rename-dialog-hint {
+  color: #777f7b;
+  font-size: calc(12px + var(--turn-font-delta, 0px));
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.confirm-dialog-actions button {
+  min-height: var(--control-h-md);
+  padding: 0 12px;
+  font-size: var(--fs-base);
+}
+
+.confirm-dialog-action-spinner {
+  animation: spinner-spin 0.9s linear infinite;
+}
+
+.confirm-dialog-actions button:not(.danger):hover {
+  background: var(--control-bg-hover);
+  border-color: var(--control-border-hover);
+}
+
+.confirm-dialog-actions .danger {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-fg-strong);
+}
+
+.confirm-dialog-actions .danger:hover {
+  background: var(--danger-bg-hover);
+}
+
+/* Dialog action buttons are focused programmatically when the dialog opens, which
+   doesn't count as :focus-visible after a mouse interaction — so style plain :focus
+   to make the default action visible either way. Every action shares the same
+   indicator: the border keeps its resting color and a second outline sits 1px
+   outside it — accent for neutral buttons, a brighter red for danger ones. */
+.confirm-dialog-actions button:focus {
+  border-color: var(--control-border);
+  box-shadow: none;
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.confirm-dialog-actions .danger:focus {
+  border-color: var(--danger-border);
+  outline-color: var(--danger-focus-ring);
+}

@@ -57,25 +57,10 @@ select:focus {
 }
 
 /* Keep the native element neutral. Button geometry belongs to one of the
-   explicit control primitives in primitives.css or to .control-button below. */
+   explicit control primitives in primitives.css. */
 button {
   color: inherit;
   cursor: pointer;
-}
-
-.control-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 2px 8px;
-  min-height: var(--control-h-md);
-  padding: 0 12px;
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-md);
-  background: var(--control-bg);
-  color: var(--control-fg);
-  font-size: var(--fs-base);
 }
 
 button:disabled {

@@ -1,0 +1,219 @@
+.custom-select,
+.custom-select-trigger {
+  width: 100%;
+  min-width: 0;
+}
+
+.custom-select-trigger {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h-lg);
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  color: var(--text-strong);
+  font-family: var(--font-ui);
+  font-size: var(--fs-input);
+  text-align: left;
+}
+
+.custom-select-trigger:hover:not(:disabled) {
+  border-color: var(--control-border-hover);
+  background: var(--field-bg-hover);
+}
+
+.custom-select-trigger:focus-visible,
+.custom-select-trigger[aria-expanded="true"] {
+  border-color: var(--focus-ring);
+  outline: none;
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
+.custom-select-value {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-select-chevron {
+  flex: none;
+  color: var(--placeholder-color);
+  transition: transform var(--transition-fast);
+}
+
+.custom-select-trigger[aria-expanded="true"] .custom-select-chevron {
+  transform: rotate(180deg);
+}
+
+.custom-select-popover {
+  z-index: var(--z-select-popover);
+  gap: 2px;
+  max-width: calc(100vw - 16px);
+  padding: 4px;
+  overflow-y: auto;
+  user-select: none;
+}
+
+.custom-select-group-label {
+  padding: 7px 9px 4px;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.custom-select-option {
+  min-height: var(--control-h-md);
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.custom-select-option.is-highlighted:not(:disabled) {
+  background: var(--popover-item-hover-bg);
+}
+
+.custom-select-option:disabled {
+  color: var(--text-disabled);
+}
+
+.custom-select-option span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.custom-select-option svg {
+  flex: none;
+  color: var(--accent-color);
+}
+
+/* Custom launcher dropdown (LauncherSelect), used by every agent's launcher options.
+   The popover is portaled to <body> and styled like the composer menu. */
+.launcher-select {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.launcher-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-height: var(--control-h-md);
+  /* Cap width so long option labels truncate (the value ellipsizes) instead of
+     stretching the launcher row. */
+  max-width: 165px;
+  padding: 0 10px 0 11px;
+  border: 1px solid var(--control-border);
+  /* Pill, matching the launcher controls. */
+  border-radius: 999px;
+  background: var(--field-bg);
+  color: var(--text-primary);
+  /* Matches the launcher controls (--fs-base), as does .launcher-select-item. */
+  font-size: var(--fs-base);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast);
+}
+
+.launcher-select-trigger:hover {
+  border-color: var(--control-border-hover);
+  background: var(--field-bg-hover);
+}
+
+.launcher-select-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.launcher-select-icon {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+}
+
+.launcher-select-icon.is-mono-light {
+  filter: brightness(0) invert(1);
+  opacity: 0.9;
+}
+
+/* The chevron stays muted even when the value takes a tone, so only the label reads
+   as danger. */
+.launcher-select-chevron {
+  flex: 0 0 auto;
+  /* Halve the space between the chevron and its label: the trigger's 6px flex gap
+     plus the prior 2px margin was 8px; a -2px margin nets the 6px gap down to 4px. */
+  margin-left: -2px;
+  color: var(--placeholder-color);
+}
+
+.launcher-select-trigger.is-danger {
+  color: var(--status-attention-fg);
+}
+
+.launcher-select-popover {
+  z-index: var(--z-select-popover);
+  gap: 2px;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  padding: 4px;
+  user-select: none;
+}
+
+.launcher-select-item {
+  flex-wrap: nowrap;
+  gap: 8px;
+  /* min-height lowered alongside the padding so the tighter top/bottom padding
+     actually shrinks the row instead of being held open by the 30px control height. */
+  min-height: 28px;
+  padding: 5px 10px;
+  border-color: transparent;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.launcher-select-item:disabled {
+  color: var(--text-secondary);
+  cursor: default;
+  opacity: 0.72;
+}
+
+.launcher-select-item-detail {
+  margin-left: auto;
+  padding-left: 14px;
+  color: var(--placeholder-color);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.launcher-select-item:disabled .launcher-select-item-detail {
+  color: var(--status-attention-fg);
+}
+
+.launcher-select-separator {
+  height: 1px;
+  margin: 3px 4px;
+  background: #32383a;
+}
+
+.launcher-select-item-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.launcher-select-check {
+  flex: 0 0 auto;
+  color: var(--accent-color);
+}
+
+.launcher-select-item.is-danger {
+  color: var(--status-attention-fg);
+}

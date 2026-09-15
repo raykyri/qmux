@@ -64,12 +64,13 @@ export default function CustomSelect({
     const spaceAbove = rect.top - viewportGap - gap;
     const openAbove = spaceBelow < Math.min(popoverHeight, 160) && spaceAbove > spaceBelow;
     const maxHeight = Math.max(96, openAbove ? spaceAbove : spaceBelow);
+    const width = Math.min(rect.width, window.innerWidth - viewportGap * 2);
     setPosition({
-      left: Math.max(viewportGap, Math.min(rect.left, window.innerWidth - rect.width - viewportGap)),
+      left: Math.max(viewportGap, Math.min(rect.left, window.innerWidth - width - viewportGap)),
       top: openAbove
         ? Math.max(viewportGap, rect.top - gap - Math.min(popoverHeight, maxHeight))
         : rect.bottom + gap,
-      width: rect.width,
+      width,
       maxHeight,
     });
   };
@@ -131,12 +132,22 @@ export default function CustomSelect({
     if (event.key === "Escape" && open) {
       event.preventDefault();
       close();
+      return;
     }
+    if (event.key === "Tab") close();
   };
 
   useLayoutEffect(() => {
     if (open) measure();
   }, [open, options.length]);
+
+  useLayoutEffect(() => {
+    if (open) {
+      document
+        .getElementById(`${listboxId}-${highlightedValue}`)
+        ?.scrollIntoView({ block: "nearest" });
+    }
+  }, [highlightedValue, listboxId, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -201,6 +212,7 @@ export default function CustomSelect({
               className="popover-surface custom-select-popover"
               role="listbox"
               aria-label={ariaLabel}
+              aria-labelledby={ariaLabel ? undefined : triggerId}
               style={position}
             >
               {groups.map((group, groupIndex) => {
