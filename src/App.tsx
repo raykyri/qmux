@@ -106,6 +106,7 @@ import {
   subscribeDiagramLightbox,
 } from "./lib/diagramLightbox";
 import ConfirmDialogActionButton from "./components/ConfirmDialogActionButton";
+import CustomSelect from "./components/CustomSelect";
 import { queuedTurnDeliveryLabel } from "./components/QueuedTurnCard";
 import {
   latestUserTurnTimestamp,
@@ -18571,13 +18572,33 @@ function MainApp() {
                 <label className="confirm-dialog-field-label" htmlFor="create-worktree-start">
                   Start at
                 </label>
-                <select
+                <CustomSelect
                   id="create-worktree-start"
-                  className="rename-dialog-input"
+                  className="create-worktree-start-select"
                   value={worktreeCreateDialog.startRef ?? ""}
                   disabled={worktreeCreateDialog.creating}
-                  onChange={(event) => {
-                    const startRef = event.currentTarget.value || null;
+                  options={[
+                    { value: "", label: "Current commit (new branch)" },
+                    ...(worktreeCreateDialog.inventory?.branches
+                      .filter((branch) => !branch.remote)
+                      .map((branch) => ({
+                        value: branch.fullRef,
+                        label: `${branch.name}${branch.checkedOutPath ? " — checked out" : ""}`,
+                        group: "Local branches",
+                      })) ?? []),
+                    ...(worktreeCreateDialog.inventory?.branches
+                      .filter((branch) => branch.remote)
+                      .map((branch) => ({
+                        value: branch.fullRef,
+                        label: branch.name,
+                        group: "Remote branches",
+                      })) ?? []),
+                    ...(worktreeCreateDialog.inventoryLoading
+                      ? [{ value: "__loading", label: "Loading branches…", disabled: true }]
+                      : []),
+                  ]}
+                  onChange={(nextValue) => {
+                    const startRef = nextValue || null;
                     setWorktreeCreateDialog((current) => {
                       if (!current) return current;
                       const branch = startRef
@@ -18593,35 +18614,7 @@ function MainApp() {
                       };
                     });
                   }}
-                >
-                  <option value="">Current commit (new branch)</option>
-                  {worktreeCreateDialog.inventory?.branches.some((branch) => !branch.remote) ? (
-                    <optgroup label="Local branches">
-                      {worktreeCreateDialog.inventory.branches
-                        .filter((branch) => !branch.remote)
-                        .map((branch) => (
-                          <option key={branch.fullRef} value={branch.fullRef}>
-                            {branch.name}
-                            {branch.checkedOutPath ? " — checked out" : ""}
-                          </option>
-                        ))}
-                    </optgroup>
-                  ) : null}
-                  {worktreeCreateDialog.inventory?.branches.some((branch) => branch.remote) ? (
-                    <optgroup label="Remote branches">
-                      {worktreeCreateDialog.inventory.branches
-                        .filter((branch) => branch.remote)
-                        .map((branch) => (
-                          <option key={branch.fullRef} value={branch.fullRef}>
-                            {branch.name}
-                          </option>
-                        ))}
-                    </optgroup>
-                  ) : null}
-                  {worktreeCreateDialog.inventoryLoading ? (
-                    <option disabled>Loading branches…</option>
-                  ) : null}
-                </select>
+                />
                 {worktreeCreateDialog.inventoryError ? (
                   <p className="confirm-dialog-error" role="alert">
                     Could not load branches: {worktreeCreateDialog.inventoryError}

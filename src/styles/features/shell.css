@@ -1389,6 +1389,101 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   font-size: var(--fs-input);
 }
 
+.custom-select,
+.custom-select-trigger {
+  width: 100%;
+  min-width: 0;
+}
+
+.custom-select-trigger {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h-lg);
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  color: var(--text-strong);
+  font-family: var(--font-ui);
+  font-size: var(--fs-input);
+  text-align: left;
+}
+
+.custom-select-trigger:hover:not(:disabled) {
+  border-color: var(--control-border-hover);
+  background: var(--field-bg-hover);
+}
+
+.custom-select-trigger:focus-visible,
+.custom-select-trigger[aria-expanded="true"] {
+  border-color: var(--focus-ring);
+  outline: none;
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
+.custom-select-value {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-select-chevron {
+  flex: none;
+  color: var(--placeholder-color);
+  transition: transform var(--transition-fast);
+}
+
+.custom-select-trigger[aria-expanded="true"] .custom-select-chevron {
+  transform: rotate(180deg);
+}
+
+.custom-select-popover {
+  z-index: var(--z-select-popover);
+  gap: 2px;
+  max-width: calc(100vw - 16px);
+  padding: 4px;
+  overflow-y: auto;
+  user-select: none;
+}
+
+.custom-select-group-label {
+  padding: 7px 9px 4px;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.custom-select-option {
+  min-height: var(--control-h-md);
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.custom-select-option.is-highlighted:not(:disabled) {
+  background: var(--popover-item-hover-bg);
+}
+
+.custom-select-option:disabled {
+  color: var(--text-disabled);
+}
+
+.custom-select-option span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.custom-select-option svg {
+  flex: none;
+  color: var(--accent-color);
+}
+
 .confirm-dialog .rename-dialog-hint {
   color: #777f7b;
   font-size: calc(12px + var(--turn-font-delta, 0px));
