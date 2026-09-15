@@ -22,7 +22,15 @@ import {
   Trash2,
 } from "lucide-react";
 import type { ResearchTreeSummary } from "../../types";
-import { Input } from "../ui";
+import {
+  Button,
+  Dialog,
+  DialogActions,
+  DialogForm,
+  DialogRoot,
+  DialogTitle,
+  Input,
+} from "../ui";
 import { moveResearchTreeIdToGap } from "../../lib/researchOrder";
 import {
   addTreesToResearchFolder,
@@ -1543,240 +1551,155 @@ function ResearchSidebarSection({
             document.body,
           )
         : null}
-      {deletingTree
-        ? createPortal(
-            <div
-              className="confirm-dialog-backdrop"
-              role="presentation"
-              onMouseDown={(event) => {
-                if (event.target === event.currentTarget && !removingTreeId) {
-                  setDeletingTree(null);
-                }
-              }}
-            >
-              <div
-                className="confirm-dialog"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="delete-research-dialog-title"
-                aria-busy={removingTreeId === deletingTree.id}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape" && !removingTreeId) {
-                    event.preventDefault();
-                    setDeletingTree(null);
-                  }
-                }}
+      {deletingTree ? (
+        <DialogRoot
+          onDismiss={() => setDeletingTree(null)}
+          dismissDisabled={removingTreeId !== null}
+        >
+          <Dialog
+            aria-labelledby="delete-research-dialog-title"
+            aria-busy={removingTreeId === deletingTree.id}
+          >
+            <DialogTitle id="delete-research-dialog-title">
+              Delete “{deletingTree.title}”?
+            </DialogTitle>
+            <p>
+              This permanently deletes this research and its completed work and follow-up
+              history. This can’t be undone.
+            </p>
+            {treeRemovalError ? (
+              <p className="confirm-dialog-error" role="alert">
+                {treeRemovalError}
+              </p>
+            ) : null}
+            <DialogActions>
+              <Button disabled={removingTreeId !== null} onClick={() => setDeletingTree(null)}>
+                Cancel
+              </Button>
+              <Button
+                tone="danger"
+                autoFocus
+                disabled={removingTreeId !== null}
+                onClick={() => void confirmTreeRemoval()}
               >
-                <h2 id="delete-research-dialog-title">Delete “{deletingTree.title}”?</h2>
-                <p>
-                  This permanently deletes this research and its completed work and follow-up
-                  history. This can’t be undone.
-                </p>
-                {treeRemovalError ? (
-                  <p className="confirm-dialog-error" role="alert">
-                    {treeRemovalError}
-                  </p>
-                ) : null}
-                <div className="confirm-dialog-actions">
-                  <button className="control-button"
-                    type="button"
-                    disabled={removingTreeId !== null}
-                    onClick={() => setDeletingTree(null)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="control-button danger"
-                    autoFocus
-                    disabled={removingTreeId !== null}
-                    onClick={() => void confirmTreeRemoval()}
-                  >
-                    {removingTreeId === deletingTree.id ? "Deleting…" : "Delete research"}
-                  </button>
-                </div>
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
-      {deletingFolder
-        ? createPortal(
-            <div
-              className="confirm-dialog-backdrop"
-              role="presentation"
-              onMouseDown={(event) => {
-                if (event.target === event.currentTarget && !folderRemovalBusy) {
-                  setDeletingFolder(null);
-                }
-              }}
-            >
-              <div
-                className="confirm-dialog"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="delete-research-folder-dialog-title"
-                aria-busy={folderRemovalBusy}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape" && !folderRemovalBusy) {
-                    event.preventDefault();
-                    setDeletingFolder(null);
-                  }
-                }}
+                {removingTreeId === deletingTree.id ? "Deleting…" : "Delete research"}
+              </Button>
+            </DialogActions>
+          </Dialog>
+        </DialogRoot>
+      ) : null}
+      {deletingFolder ? (
+        <DialogRoot
+          onDismiss={() => setDeletingFolder(null)}
+          dismissDisabled={folderRemovalBusy}
+        >
+          <Dialog
+            aria-labelledby="delete-research-folder-dialog-title"
+            aria-busy={folderRemovalBusy}
+          >
+            <DialogTitle id="delete-research-folder-dialog-title">
+              Delete “{deletingFolder.name}”?
+            </DialogTitle>
+            <p>
+              This permanently deletes the folder and all{" "}
+              {folderMemberTrees(deletingFolder.id).length} research items inside it, including
+              their completed work and follow-up history. This can’t be undone.
+            </p>
+            {folderRemovalError ? (
+              <p className="confirm-dialog-error" role="alert">
+                {folderRemovalError}
+              </p>
+            ) : null}
+            <DialogActions>
+              <Button disabled={folderRemovalBusy} onClick={() => setDeletingFolder(null)}>
+                Cancel
+              </Button>
+              <Button
+                tone="danger"
+                autoFocus
+                disabled={folderRemovalBusy}
+                onClick={() => void confirmFolderRemoval()}
               >
-                <h2 id="delete-research-folder-dialog-title">
-                  Delete “{deletingFolder.name}”?
-                </h2>
-                <p>
-                  This permanently deletes the folder and all{" "}
-                  {folderMemberTrees(deletingFolder.id).length} research items inside it,
-                  including their completed work and follow-up history. This can’t be
-                  undone.
-                </p>
-                {folderRemovalError ? (
-                  <p className="confirm-dialog-error" role="alert">
-                    {folderRemovalError}
-                  </p>
-                ) : null}
-                <div className="confirm-dialog-actions">
-                  <button
-                    className="control-button"
-                    type="button"
-                    disabled={folderRemovalBusy}
-                    onClick={() => setDeletingFolder(null)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="control-button danger"
-                    autoFocus
-                    disabled={folderRemovalBusy}
-                    onClick={() => void confirmFolderRemoval()}
-                  >
-                    {folderRemovalBusy ? "Deleting…" : "Delete folder and items"}
-                  </button>
-                </div>
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
-      {dissolvingFolder
-        ? createPortal(
-            <div
-              className="confirm-dialog-backdrop"
-              role="presentation"
-              onMouseDown={(event) => {
-                if (event.target === event.currentTarget) {
+                {folderRemovalBusy ? "Deleting…" : "Delete folder and items"}
+              </Button>
+            </DialogActions>
+          </Dialog>
+        </DialogRoot>
+      ) : null}
+      {dissolvingFolder ? (
+        <DialogRoot onDismiss={() => setDissolvingFolder(null)}>
+          <Dialog aria-labelledby="dissolve-research-folder-dialog-title">
+            <DialogTitle id="dissolve-research-folder-dialog-title">
+              Remove {folderMemberTrees(dissolvingFolder.id).length}{" "}
+              {folderMemberTrees(dissolvingFolder.id).length === 1 ? "item" : "items"} from “
+              {dissolvingFolder.name}”?
+            </DialogTitle>
+            <p>
+              The items return to the research list and the folder is removed. No research is
+              deleted.
+            </p>
+            <DialogActions>
+              <Button onClick={() => setDissolvingFolder(null)}>Cancel</Button>
+              <Button
+                autoFocus
+                onClick={() => {
+                  const folder = dissolvingFolder;
                   setDissolvingFolder(null);
-                }
-              }}
-            >
-              <div
-                className="confirm-dialog"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="dissolve-research-folder-dialog-title"
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    setDissolvingFolder(null);
-                  }
+                  onDissolveFolder(folder.id);
                 }}
               >
-                <h2 id="dissolve-research-folder-dialog-title">
-                  Remove {folderMemberTrees(dissolvingFolder.id).length}{" "}
-                  {folderMemberTrees(dissolvingFolder.id).length === 1 ? "item" : "items"}{" "}
-                  from “{dissolvingFolder.name}”?
-                </h2>
-                <p>
-                  The items return to the research list and the folder is removed. No
-                  research is deleted.
-                </p>
-                <div className="confirm-dialog-actions">
-                  <button
-                    className="control-button"
-                    type="button"
-                    onClick={() => setDissolvingFolder(null)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="control-button"
-                    autoFocus
-                    onClick={() => {
-                      const folder = dissolvingFolder;
-                      setDissolvingFolder(null);
-                      onDissolveFolder(folder.id);
-                    }}
-                  >
-                    Remove items
-                  </button>
-                </div>
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
-      {renamingTree || renamingFolder
-        ? createPortal(
-            <div
-              className="confirm-dialog-backdrop"
-              role="presentation"
-              onMouseDown={(event) => {
-                if (event.target === event.currentTarget) {
+                Remove items
+              </Button>
+            </DialogActions>
+          </Dialog>
+        </DialogRoot>
+      ) : null}
+      {renamingTree || renamingFolder ? (
+        <DialogRoot
+          onDismiss={() => {
+            setRenamingTree(null);
+            setRenamingFolder(null);
+          }}
+        >
+          <DialogForm
+            className="rename-dialog"
+            aria-labelledby="rename-research-dialog-title"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitRename();
+            }}
+          >
+            <DialogTitle id="rename-research-dialog-title">
+              {renamingFolder ? "Rename folder" : "Rename research"}
+            </DialogTitle>
+            <Input
+              ref={renameInputRef}
+              className="rename-dialog-input"
+              value={renameDraft}
+              aria-label={renamingFolder ? "Folder name" : "Research title"}
+              onChange={(event) => setRenameDraft(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
                   setRenamingTree(null);
                   setRenamingFolder(null);
                 }
               }}
-            >
-              <form
-                className="confirm-dialog rename-dialog"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="rename-research-dialog-title"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  submitRename();
+            />
+            <DialogActions>
+              <Button
+                onClick={() => {
+                  setRenamingTree(null);
+                  setRenamingFolder(null);
                 }}
               >
-                <h2 id="rename-research-dialog-title">
-                  {renamingFolder ? "Rename folder" : "Rename research"}
-                </h2>
-                <Input
-                  ref={renameInputRef}
-                  className="rename-dialog-input"
-                  value={renameDraft}
-                  aria-label={renamingFolder ? "Folder name" : "Research title"}
-                  onChange={(event) => setRenameDraft(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      setRenamingTree(null);
-                      setRenamingFolder(null);
-                    }
-                  }}
-                />
-                <div className="confirm-dialog-actions">
-                  <button
-                    className="control-button"
-                    type="button"
-                    onClick={() => {
-                      setRenamingTree(null);
-                      setRenamingFolder(null);
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button className="control-button" type="submit">Rename</button>
-                </div>
-              </form>
-            </div>,
-            document.body,
-          )
-        : null}
+                Cancel
+              </Button>
+              <Button type="submit">Rename</Button>
+            </DialogActions>
+          </DialogForm>
+        </DialogRoot>
+      ) : null}
     </>
   );
 }

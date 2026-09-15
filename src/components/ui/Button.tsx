@@ -2,12 +2,49 @@ import { forwardRef } from "react";
 import type { ButtonHTMLAttributes } from "react";
 import { classNames } from "./classNames";
 
+export type ButtonTone = "neutral" | "primary" | "danger";
 export type ButtonVariant = "control" | "icon" | "link" | "menu" | "unstyled";
 
-export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: ButtonVariant;
-  compact?: boolean;
-}
+type NativeButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className"> & {
+  className?: string;
+};
+
+type ControlButtonProps = NativeButtonProps & {
+  variant?: "control";
+  tone?: ButtonTone;
+  size?: "sm" | "md";
+};
+
+type IconButtonProps = NativeButtonProps & {
+  variant: "icon";
+  tone?: "neutral" | "danger";
+  size?: "sm" | "md";
+};
+
+type LinkButtonProps = NativeButtonProps & {
+  variant: "link";
+  tone?: "neutral" | "danger";
+  size?: "md";
+};
+
+type MenuButtonProps = NativeButtonProps & {
+  variant: "menu";
+  tone?: "neutral" | "danger";
+  size?: "compact" | "md";
+};
+
+type UnstyledButtonProps = NativeButtonProps & {
+  variant: "unstyled";
+  tone?: never;
+  size?: never;
+};
+
+export type ButtonProps =
+  | ControlButtonProps
+  | IconButtonProps
+  | LinkButtonProps
+  | MenuButtonProps
+  | UnstyledButtonProps;
 
 const variantClass: Record<ButtonVariant, string | undefined> = {
   control: "control-button",
@@ -17,16 +54,35 @@ const variantClass: Record<ButtonVariant, string | undefined> = {
   unstyled: undefined,
 };
 
-const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant = "control", compact = false, className, type = "button", ...props },
-  ref,
-) {
+const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(props, ref) {
+  const {
+    variant = "control",
+    tone = "neutral",
+    size = "md",
+    className,
+    type = "button",
+    ...nativeProps
+  } = props;
+  const toneClass =
+    tone === "primary"
+      ? "is-primary"
+      : tone === "danger"
+        ? variant === "menu"
+          ? "is-danger"
+          : "danger"
+        : undefined;
   return (
     <button
-      {...props}
+      {...nativeProps}
       ref={ref}
       type={type}
-      className={classNames(variantClass[variant], compact && "menu-item--compact", className)}
+      className={classNames(
+        variantClass[variant],
+        size === "compact" && "menu-item--compact",
+        size === "sm" && `${variantClass[variant]}--sm`,
+        toneClass,
+        className,
+      )}
     />
   );
 });

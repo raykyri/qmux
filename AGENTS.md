@@ -33,3 +33,8 @@ Custom interactive controls must support keyboard navigation, visible
 focus, disabled states, Escape and Tab dismissal, focus restoration,
 and appropriate ARIA roles. App-level Command shortcuts must continue
 to work while a native Ghostty terminal is focused.
+
+Use `useListbox` and `useAnchoredPopover` for custom listboxes and
+portaled anchored controls instead of adding new document listeners or
+placement effects. The development component catalog is available with
+`?ui-catalog=1` and should cover new shared variants and states.

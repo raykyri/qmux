@@ -1,6 +1,21 @@
-import { Fragment, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { Check, ChevronDown } from "lucide-react";
+import {
+  Button,
+  Popover,
+  PopoverPortal,
+  classNames,
+  firstEnabledIndex,
+  useAnchoredPopover,
+  useListbox,
+} from "./ui";
 
 export interface LauncherSelectOption {
   value: string;
@@ -20,151 +35,126 @@ interface LauncherSelectProps {
   ariaLabel?: string;
 }
 
-const toneClass = (tone?: string) => (tone ? ` is-${tone}` : "");
-const iconClass = (option?: LauncherSelectOption) =>
-  ["launcher-select-icon", option?.iconClassName].filter(Boolean).join(" ");
+const launcherPopoverWidth = (trigger: HTMLElement, popover: HTMLElement) =>
+  Math.max(trigger.getBoundingClientRect().width, popover.scrollWidth);
 
-/* A native <select> can't tint a single option, so this is a custom listbox styled
-   like the launcher's controls. The popover is portaled to <body> because the launcher
-   and its options row both clip overflow, then pinned below the trigger like the
-   composer menu. */
 export function LauncherSelect({ value, options, onChange, ariaLabel }: LauncherSelectProps) {
   const [open, setOpen] = useState(false);
-  const [anchor, setAnchor] = useState<{ left: number; top: number; width: number } | null>(null);
+  const generatedId = useId();
+  const listboxId = `launcher-select-${generatedId}`;
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
-  const match = options.find((option) => option.value === value);
-  const selected = match ?? options[0];
-
-  // If the current value matches no option (e.g. a persisted choice that has since
-  // been removed), the trigger would display options[0]'s label while the stored
-  // value stayed orphaned — and launching would still send the stale value. Reconcile
-  // to the displayed default so what's shown is what gets used.
-  useEffect(() => {
-    if (!match && options.length > 0 && options[0].value !== value) {
-      onChange(options[0].value);
-    }
-  }, [match, options, value, onChange]);
-
-  const measure = () => {
-    const rect = triggerRef.current?.getBoundingClientRect();
-    if (rect) {
-      // Pin the popover's top just below the trigger so it opens downward, left edge aligned.
-      setAnchor({ left: rect.left, top: rect.bottom + 6, width: rect.width });
-    }
-  };
+  const listbox = useListbox({ options, value, open, onOpenChange: setOpen, onChange });
+  const popoverStyle = useAnchoredPopover({
+    open,
+    onClose: listbox.closeListbox,
+    triggerRef,
+    popoverRef,
+    preferredWidth: launcherPopoverWidth,
+  });
 
   useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (!triggerRef.current?.contains(target) && !popoverRef.current?.contains(target)) {
-        setOpen(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" || event.key === "Tab") {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("resize", measure);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("resize", measure);
-    };
-  }, [open]);
+    if (listbox.selectedOption || options.length === 0) return;
+    const fallbackIndex = firstEnabledIndex(options);
+    if (fallbackIndex >= 0) onChange(options[fallbackIndex].value);
+  }, [listbox.selectedOption, onChange, options, value]);
+
+  useLayoutEffect(() => {
+    if (!open || listbox.activeIndex < 0) return;
+    document
+      .getElementById(`${listboxId}-option-${listbox.activeIndex}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [listbox.activeIndex, listboxId, open]);
+
+  const selected = listbox.selectedOption;
+  const triggerIconClass = classNames("launcher-select-icon", selected?.iconClassName);
 
   return (
     <div className="launcher-select">
-      <button
+      <Button
         ref={triggerRef}
-        type="button"
-        className={`control-button launcher-select-trigger${toneClass(selected?.tone)}`}
+        className={classNames("launcher-select-trigger", selected?.tone && `is-${selected.tone}`)}
+        role="combobox"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
         aria-label={ariaLabel}
-        onClick={() => {
-          if (!open) {
-            measure();
-          }
-          setOpen((prev) => !prev);
-        }}
+        aria-activedescendant={
+          open && listbox.activeIndex >= 0
+            ? `${listboxId}-option-${listbox.activeIndex}`
+            : undefined
+        }
+        disabled={listbox.empty}
+        onClick={() => (open ? listbox.closeListbox() : listbox.openListbox())}
+        onKeyDown={listbox.handleKeyDown}
       >
         {selected?.iconSrc ? (
-          <img
-            className={iconClass(selected)}
-            src={selected.iconSrc}
-            alt=""
-            aria-hidden="true"
-          />
+          <img className={triggerIconClass} src={selected.iconSrc} alt="" aria-hidden="true" />
         ) : null}
         <span className="launcher-select-value">{selected?.label}</span>
         <ChevronDown size={13} className="launcher-select-chevron" aria-hidden="true" />
-      </button>
-      {open && anchor
-        ? createPortal(
-            <div
-              ref={popoverRef}
-              className="popover-surface launcher-select-popover"
-              role="listbox"
-              aria-label={ariaLabel}
-              style={{ left: anchor.left, top: anchor.top, minWidth: anchor.width }}
-            >
-              {options.map((option) => {
-                const active = option.value === value;
-                return (
-                  <Fragment key={option.value}>
-                    {option.dividerBefore ? (
-                      <div
-                        className="launcher-select-separator"
-                        role="separator"
+      </Button>
+      {open ? (
+        <PopoverPortal target={triggerRef.current?.closest(".confirm-dialog-backdrop")}>
+          <Popover
+            ref={popoverRef}
+            id={listboxId}
+            className="launcher-select-popover"
+            role="listbox"
+            aria-label={ariaLabel}
+            style={popoverStyle ?? { left: -9999, top: -9999 }}
+          >
+            {options.map((option, index) => {
+              const selectedOption = index === listbox.selectedIndex;
+              return (
+                <Fragment key={`${option.value}-${index}`}>
+                  {option.dividerBefore ? (
+                    <div
+                      className="launcher-select-separator"
+                      role="separator"
+                      aria-hidden="true"
+                    />
+                  ) : null}
+                  <Button
+                    id={`${listboxId}-option-${index}`}
+                    variant="menu"
+                    role="option"
+                    tabIndex={-1}
+                    aria-selected={selectedOption}
+                    disabled={option.disabled}
+                    className={classNames(
+                      "launcher-select-item",
+                      option.tone && `is-${option.tone}`,
+                      index === listbox.activeIndex && "is-highlighted",
+                    )}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onMouseEnter={() => {
+                      if (!option.disabled) listbox.setActiveIndex(index);
+                    }}
+                    onClick={() => listbox.chooseIndex(index)}
+                  >
+                    {option.iconSrc ? (
+                      <img
+                        className={classNames("launcher-select-icon", option.iconClassName)}
+                        src={option.iconSrc}
+                        alt=""
                         aria-hidden="true"
                       />
                     ) : null}
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={active}
-                      aria-disabled={option.disabled || undefined}
-                      disabled={option.disabled}
-                      className={`menu-item launcher-select-item${toneClass(option.tone)}${
-                        active ? " is-active" : ""
-                      }`}
-                      onClick={() => {
-                        setOpen(false);
-                        if (option.value !== value) {
-                          onChange(option.value);
-                        }
-                      }}
-                    >
-                      {option.iconSrc ? (
-                        <img
-                          className={iconClass(option)}
-                          src={option.iconSrc}
-                          alt=""
-                          aria-hidden="true"
-                        />
-                      ) : null}
-                      <span className="launcher-select-item-label">{option.label}</span>
-                      {option.detail ? (
-                        <span className="launcher-select-item-detail">{option.detail}</span>
-                      ) : null}
-                      {active ? (
-                        <Check size={14} className="launcher-select-check" aria-hidden="true" />
-                      ) : null}
-                    </button>
-                  </Fragment>
-                );
-              })}
-            </div>,
-            document.body,
-          )
-        : null}
+                    <span className="launcher-select-item-label">{option.label}</span>
+                    {option.detail ? (
+                      <span className="launcher-select-item-detail">{option.detail}</span>
+                    ) : null}
+                    {selectedOption ? (
+                      <Check size={14} className="launcher-select-check" aria-hidden="true" />
+                    ) : null}
+                  </Button>
+                </Fragment>
+              );
+            })}
+          </Popover>
+        </PopoverPortal>
+      ) : null}
     </div>
   );
 }

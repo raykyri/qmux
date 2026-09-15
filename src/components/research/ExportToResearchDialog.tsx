@@ -3,8 +3,8 @@ import type { GroupInfo } from "../../types";
 import {
   Button,
   DialogActions,
-  DialogBackdrop,
   DialogForm,
+  DialogRoot,
   Input,
   NativeSelect,
 } from "../ui";
@@ -97,12 +97,10 @@ export default function ExportToResearchDialog({
   }
 
   return (
-    <DialogBackdrop onDismiss={onClose} dismissDisabled={submitting}>
+    <DialogRoot onDismiss={onClose} dismissDisabled={submitting}>
       <DialogForm
         className="export-research-dialog"
         aria-label={`Export ${paneTitle} to Research`}
-        onDismiss={onClose}
-        dismissDisabled={submitting}
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -160,6 +158,6 @@ export default function ExportToResearchDialog({
           </Button>
         </DialogActions>
       </DialogForm>
-    </DialogBackdrop>
+    </DialogRoot>
   );
 }

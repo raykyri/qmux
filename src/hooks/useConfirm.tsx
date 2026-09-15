@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
-import { Button, Dialog, DialogActions, DialogBackdrop } from "../components/ui";
+import { Button, Dialog, DialogActions, DialogRoot } from "../components/ui";
 
 // A promise-based in-app confirmation, used in place of window.confirm (which is a
 // no-op in the Tauri webview). A component renders the returned `dialog` and calls
@@ -54,8 +54,8 @@ export function useConfirm(): {
   }, [open]);
 
   const dialog = state ? (
-    <DialogBackdrop onDismiss={() => settle(false)}>
-      <Dialog aria-label={state.message} onDismiss={() => settle(false)}>
+    <DialogRoot onDismiss={() => settle(false)}>
+      <Dialog aria-label={state.message}>
         <p>{state.message}</p>
         <DialogActions>
           <Button onClick={() => settle(false)}>{state.cancelLabel ?? "Cancel"}</Button>
@@ -64,7 +64,7 @@ export function useConfirm(): {
           </Button>
         </DialogActions>
       </Dialog>
-    </DialogBackdrop>
+    </DialogRoot>
   ) : null;
 
   return { confirm, dialog };

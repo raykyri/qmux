@@ -3,10 +3,10 @@ import { forwardRef } from "react";
 import type { ReactNode } from "react";
 import Button, { type ButtonProps } from "./ui/Button";
 
-interface ConfirmDialogActionButtonProps extends ButtonProps {
+type ConfirmDialogActionButtonProps = ButtonProps & {
   pending?: boolean;
   pendingLabel?: ReactNode;
-}
+};
 
 /** A confirm-dialog action that stays mounted and visibly busy while async work runs. */
 const ConfirmDialogActionButton = forwardRef<

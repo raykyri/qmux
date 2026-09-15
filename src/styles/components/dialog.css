@@ -6,7 +6,7 @@
   align-items: center;
   justify-content: center;
   padding: 18px;
-  background: rgba(8, 10, 12, 0.58);
+  background: var(--dialog-backdrop-bg);
 }
 
 .confirm-dialog {
@@ -35,12 +35,12 @@
 }
 
 .confirm-dialog .confirm-dialog-error {
-  color: #e69a91;
+  color: var(--status-error-muted-fg);
 }
 
 .confirm-dialog-changes {
   /* Amber to flag uncommitted work that deletion would discard. */
-  color: #e6b673;
+  color: var(--status-warning-muted-fg);
 }
 
 .confirm-dialog-field-label {
@@ -57,7 +57,7 @@
 }
 
 .confirm-dialog .rename-dialog-hint {
-  color: #777f7b;
+  color: var(--field-hint-fg);
   font-size: calc(12px + var(--turn-font-delta, 0px));
   line-height: 1.35;
   overflow-wrap: anywhere;

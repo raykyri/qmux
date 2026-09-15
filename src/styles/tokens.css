@@ -184,8 +184,12 @@
   --text-faint: #6f7773;
   --text-disabled: #797d80;
   --placeholder-color: #6b726d;
+  --field-hint-fg: #777f7b;
+  --dialog-backdrop-bg: rgba(8, 10, 12, 0.58);
 
   --status-failed-fg: #d98787;
+  --status-error-muted-fg: #e69a91;
+  --status-warning-muted-fg: #e6b673;
   --status-attention-fg: #e0796d;
   /* Amber "agent is working / waiting on you" cues: the pane-tab activity
      dot, the home cascade's active card border, and its pause gate. */
@@ -302,6 +306,7 @@
   --surface-divider: #2a2d2f;
   --surface-border-strong: #30383b;
   --dialog-border: #3b4447;
+  --menu-divider-strong: #32383a;
   --chrome-control-bg: rgba(20, 24, 26, 0.9);
   --chrome-control-bg-hover: rgba(32, 38, 40, 0.95);
   --chrome-control-bg-disabled: rgba(20, 24, 26, 0.65);
@@ -377,6 +382,7 @@
   --surface-divider: #2d2d2c;
   --surface-border-strong: #373634;
   --dialog-border: #3f3c37;
+  --menu-divider-strong: #3a3733;
   --chrome-control-bg: rgba(31, 29, 27, 0.9);
   --chrome-control-bg-hover: rgba(44, 41, 37, 0.95);
   --chrome-control-bg-disabled: rgba(31, 29, 26, 0.65);

@@ -19,6 +19,7 @@ import {
   syncPublication,
 } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
+import { DialogRoot } from "./ui";
 import type {
   PublicationBinding,
   PublicationDraft,
@@ -227,14 +228,10 @@ export default function PublishDialog({
   }
 
   return (
-    <div
-      className="confirm-dialog-backdrop publication-dialog-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !busy) {
-          onClose();
-        }
-      }}
+    <DialogRoot
+      className="publication-dialog-backdrop"
+      onDismiss={onClose}
+      dismissDisabled={busy}
     >
       <section
         className="publication-dialog"
@@ -467,7 +464,7 @@ export default function PublishDialog({
           </>
         )}
       </section>
-    </div>
+    </DialogRoot>
   );
 }
 

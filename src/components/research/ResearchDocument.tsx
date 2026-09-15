@@ -96,6 +96,7 @@ import type {
 import { ComposerSubmitShortcutGlyph } from "../ComposerSubmitShortcut";
 import DomSearchBar from "../DomSearchBar";
 import type { PublishDialogTarget } from "../PublishDialog";
+import { Button, Dialog, DialogActions, DialogRoot, DialogTitle } from "../ui";
 import {
   RawTranscriptDisclosure,
   TranscriptActivityItem,
@@ -5655,93 +5656,69 @@ function ResearchDocument({
               document.body,
             )
           : null}
-        {deletingBranch?.node && deletingBranch.info
-          ? createPortal(
-              <div
-                className="confirm-dialog-backdrop"
-                role="presentation"
-                onMouseDown={(event) => {
-                  if (event.target === event.currentTarget && !removingBranch) {
-                    setDeletingBranchId(null);
-                  }
-                }}
-              >
-                <div
-                  className="confirm-dialog"
-                  role="dialog"
-                  aria-modal="true"
-                  aria-labelledby="delete-research-branch-dialog-title"
-                  aria-busy={removingBranch}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape" && !removingBranch) {
-                      event.preventDefault();
-                      setDeletingBranchId(null);
-                    }
-                  }}
-                >
-                  <h2 id="delete-research-branch-dialog-title">
-                    {deletingBranch.node.id === detail.tree.rootNodeId
-                      ? "Delete research"
-                      : deletingBranch.node.inline && deletingBranch.info.descendantCount > 0
-                      ? "Delete the rest of this thread?"
-                      : deletingBranch.info.descendantCount > 0
+        {deletingBranch?.node && deletingBranch.info ? (
+          <DialogRoot
+            onDismiss={() => setDeletingBranchId(null)}
+            dismissDisabled={removingBranch}
+          >
+            <Dialog
+              aria-labelledby="delete-research-branch-dialog-title"
+              aria-busy={removingBranch}
+            >
+              <DialogTitle id="delete-research-branch-dialog-title">
+                {deletingBranch.node.id === detail.tree.rootNodeId
+                  ? "Delete research"
+                  : deletingBranch.node.inline && deletingBranch.info.descendantCount > 0
+                    ? "Delete the rest of this thread?"
+                    : deletingBranch.info.descendantCount > 0
                       ? "Delete this research branch?"
                       : "Delete this follow-up?"}
-                  </h2>
-                  <p>
-                    Delete "
-                    {(deletingBranch.node.title ?? deletingBranch.node.prompt) ||
-                      detail.tree.title}
-                    "?
-                  </p>
-                  <p>
-                    {deletingBranch.node.id === detail.tree.rootNodeId
-                      ? deletingBranch.info.descendantCount > 0
-                        ? `This permanently deletes the root answer and all ${deletingBranch.info.descendantCount} follow-up${deletingBranch.info.descendantCount === 1 ? "" : "s"}.`
-                        : "This permanently deletes the root answer and its research history."
-                      : deletingBranch.node.inline && deletingBranch.info.descendantCount > 0
-                      ? `This permanently deletes this follow-up and everything after it in the thread — ${deletingBranch.info.descendantCount} descendant node${deletingBranch.info.descendantCount === 1 ? "" : "s"} in total, including any branches. Its parent answer keeps the freed inline slot.`
-                      : deletingBranch.info.descendantCount > 0
+              </DialogTitle>
+              <p>
+                Delete "
+                {(deletingBranch.node.title ?? deletingBranch.node.prompt) || detail.tree.title}"?
+              </p>
+              <p>
+                {deletingBranch.node.id === detail.tree.rootNodeId
+                  ? deletingBranch.info.descendantCount > 0
+                    ? `This permanently deletes the root answer and all ${deletingBranch.info.descendantCount} follow-up${deletingBranch.info.descendantCount === 1 ? "" : "s"}.`
+                    : "This permanently deletes the root answer and its research history."
+                  : deletingBranch.node.inline && deletingBranch.info.descendantCount > 0
+                    ? `This permanently deletes this follow-up and everything after it in the thread — ${deletingBranch.info.descendantCount} descendant node${deletingBranch.info.descendantCount === 1 ? "" : "s"} in total, including any branches. Its parent answer keeps the freed inline slot.`
+                    : deletingBranch.info.descendantCount > 0
                       ? `This also permanently deletes ${deletingBranch.info.descendantCount} descendant follow-up${deletingBranch.info.descendantCount === 1 ? "" : "s"}.`
                       : "This permanently deletes the follow-up and its response."} {" "}
-                    This can’t be undone.
-                  </p>
-                  {branchRemovalError ? (
-                    <p className="confirm-dialog-error" role="alert">
-                      {branchRemovalError}
-                    </p>
-                  ) : null}
-                  <div className="confirm-dialog-actions">
-                    <button className="control-button"
-                      type="button"
-                      disabled={removingBranch}
-                      onClick={() => setDeletingBranchId(null)}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      className="control-button danger"
-                      autoFocus
-                      disabled={removingBranch || deletingBranch.info.hasActiveRuns}
-                      onClick={() => void confirmBranchRemoval()}
-                    >
-                      {removingBranch
-                        ? "Deleting…"
-                        : deletingBranch.node.id === detail.tree.rootNodeId
-                          ? "Delete research"
-                          : deletingBranch.node.inline && deletingBranch.info.descendantCount > 0
-                          ? "Delete from here"
-                          : deletingBranch.info.descendantCount > 0
+                This can’t be undone.
+              </p>
+              {branchRemovalError ? (
+                <p className="confirm-dialog-error" role="alert">
+                  {branchRemovalError}
+                </p>
+              ) : null}
+              <DialogActions>
+                <Button disabled={removingBranch} onClick={() => setDeletingBranchId(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  tone="danger"
+                  autoFocus
+                  disabled={removingBranch || deletingBranch.info.hasActiveRuns}
+                  onClick={() => void confirmBranchRemoval()}
+                >
+                  {removingBranch
+                    ? "Deleting…"
+                    : deletingBranch.node.id === detail.tree.rootNodeId
+                      ? "Delete research"
+                      : deletingBranch.node.inline && deletingBranch.info.descendantCount > 0
+                        ? "Delete from here"
+                        : deletingBranch.info.descendantCount > 0
                           ? "Delete branch"
                           : "Delete follow-up"}
-                    </button>
-                  </div>
-                </div>
-              </div>,
-              document.body,
-            )
-          : null}
+                </Button>
+              </DialogActions>
+            </Dialog>
+          </DialogRoot>
+        ) : null}
       </>
     </TranscriptLinkActionsProvider>
   );

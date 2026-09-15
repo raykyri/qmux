@@ -13,6 +13,22 @@
   font-size: var(--fs-base);
 }
 
+.control-button--sm {
+  min-height: var(--control-h-sm);
+  padding-inline: 8px;
+}
+
+.control-button.is-primary {
+  border-color: var(--accent-color);
+  background: var(--accent-shadow);
+}
+
+.control-button.danger {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-fg-strong);
+}
+
 /* Neutralize the native button chrome so the icon renders in theme colors;
    contexts that want a filled/bordered look layer their own class on top. */
 .icon-button {
@@ -31,6 +47,21 @@
 
 .icon-button:hover:not(:disabled) {
   color: var(--text-strong);
+}
+
+.icon-button.danger,
+.link-button.danger {
+  color: var(--danger-fg-muted);
+}
+
+.icon-button.danger:hover:not(:disabled),
+.link-button.danger:hover:not(:disabled) {
+  color: var(--danger-fg-hover);
+}
+
+.icon-button--sm {
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
 }
 
 .icon-button:disabled {
@@ -103,8 +134,18 @@
 }
 
 .menu-item:hover:not(:disabled),
-.menu-item.is-selected {
+.menu-item.is-selected,
+.menu-item.is-highlighted {
   background: var(--popover-item-hover-bg);
+}
+
+.menu-item.is-danger {
+  color: var(--danger-fg-muted);
+}
+
+.menu-item.is-danger:hover:not(:disabled),
+.menu-item.is-danger.is-highlighted {
+  background: var(--danger-bg-strong);
 }
 
 .menu-item:focus-visible {

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AgentAdapterMetadata } from "../../types";
 import { LauncherSelect, type LauncherSelectOption } from "../LauncherSelect";
+import { DialogRoot } from "../ui";
 import {
   ComposerSubmitShortcutGlyph,
   isComposerSubmitShortcut,
@@ -459,16 +460,12 @@ export default function NewResearchDialog({
   }
 
   return (
-    <div
-      className="confirm-dialog-backdrop new-research-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !submitting) {
-          close();
-        }
-      }}
+    <DialogRoot
+      className="new-research-backdrop"
+      onDismiss={close}
+      dismissDisabled={submitting}
     >
       {launcher}
-    </div>
+    </DialogRoot>
   );
 }

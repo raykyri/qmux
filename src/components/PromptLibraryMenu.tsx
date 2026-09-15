@@ -26,7 +26,15 @@ import {
   isComposerSubmitShortcut,
 } from "./ComposerSubmitShortcut";
 import ConfirmDialogActionButton from "./ConfirmDialogActionButton";
-import { Input, Textarea } from "./ui";
+import {
+  Button,
+  Dialog,
+  DialogActions,
+  DialogRoot,
+  DialogTitle,
+  Input,
+  Textarea,
+} from "./ui";
 
 const MENU_PREFERRED_WIDTH = 300;
 const ROW_MENU_PREFERRED_WIDTH = 140;
@@ -795,10 +803,8 @@ export default function PromptLibraryMenu({
 
   const editorDialog =
     dialog?.kind === "editor" ? (
-      <div
-        className="confirm-dialog prompt-editor-dialog"
-        role="dialog"
-        aria-modal="true"
+      <Dialog
+        className="prompt-editor-dialog"
         aria-label={dialog.original ? "Edit prompt" : "New prompt"}
         onKeyDown={(event) => {
           if (isComposerSubmitShortcut(event, true)) {
@@ -814,7 +820,7 @@ export default function PromptLibraryMenu({
           }
         }}
       >
-        <h2>{dialog.original ? "Edit prompt" : "New prompt"}</h2>
+        <DialogTitle>{dialog.original ? "Edit prompt" : "New prompt"}</DialogTitle>
         {hasProjectScope && !dialog.lockedScope ? (
           <div className="prompt-library-scope-picker" role="radiogroup" aria-label="Prompt scope">
             {(
@@ -852,10 +858,8 @@ export default function PromptLibraryMenu({
           />
         </div>
         {dialogError ? <div className="prompt-library-error">{dialogError}</div> : null}
-        <div className="confirm-dialog-actions">
-          <button className="control-button" type="button" onClick={closeDialog}>
-            Cancel
-          </button>
+        <DialogActions>
+          <Button onClick={closeDialog}>Cancel</Button>
           <ConfirmDialogActionButton
             pending={busy}
             pendingLabel="Saving…"
@@ -866,16 +870,13 @@ export default function PromptLibraryMenu({
             <span>Save</span>
             <ComposerSubmitShortcutGlyph requireCmdEnter className="shortcut-hint" />
           </ConfirmDialogActionButton>
-        </div>
-      </div>
+        </DialogActions>
+      </Dialog>
     ) : null;
 
   const deleteDialog =
     dialog?.kind === "delete" ? (
-      <div
-        className="confirm-dialog"
-        role="dialog"
-        aria-modal="true"
+      <Dialog
         aria-label="Delete prompt"
         onKeyDown={(event) => {
           if (event.key === "Escape") {
@@ -885,15 +886,13 @@ export default function PromptLibraryMenu({
           }
         }}
       >
-        <h2>Delete prompt?</h2>
+        <DialogTitle>Delete prompt?</DialogTitle>
         <p className="prompt-delete-snippet">{dialog.prompt.content.trim() || "(empty)"}</p>
         {dialogError ? <div className="prompt-library-error">{dialogError}</div> : null}
-        <div className="confirm-dialog-actions">
-          <button className="control-button" type="button" onClick={closeDialog}>
-            Cancel
-          </button>
+        <DialogActions>
+          <Button onClick={closeDialog}>Cancel</Button>
           <ConfirmDialogActionButton
-            className="danger"
+            tone="danger"
             autoFocus
             pending={busy}
             pendingLabel="Deleting…"
@@ -901,8 +900,8 @@ export default function PromptLibraryMenu({
           >
             Delete
           </ConfirmDialogActionButton>
-        </div>
-      </div>
+        </DialogActions>
+      </Dialog>
     ) : null;
 
   return (
@@ -944,38 +943,22 @@ export default function PromptLibraryMenu({
             document.body,
           )
         : null}
-      {dialog?.kind === "editor"
-        ? createPortal(
-            <div
-              className="confirm-dialog-backdrop prompt-editor-dialog-backdrop"
-              role="presentation"
-              onMouseDown={(event) => {
-                if (event.target === event.currentTarget) {
-                  closeDialog();
-                }
-              }}
-            >
-              {editorDialog}
-            </div>,
-            triggerRef.current?.closest(".turn-pane") ?? document.body,
-          )
-        : null}
-      {dialog?.kind === "delete"
-        ? createPortal(
-            <div
-              className="confirm-dialog-backdrop"
-              role="presentation"
-              onMouseDown={(event) => {
-                if (event.target === event.currentTarget) {
-                  closeDialog();
-                }
-              }}
-            >
-              {deleteDialog}
-            </div>,
-            document.body,
-          )
-        : null}
+      {dialog?.kind === "editor" ? (
+        <DialogRoot
+          className="prompt-editor-dialog-backdrop"
+          portalTarget={triggerRef.current?.closest(".turn-pane")}
+          inertAppRoot={false}
+          onDismiss={closeDialog}
+          dismissDisabled={busy}
+        >
+          {editorDialog}
+        </DialogRoot>
+      ) : null}
+      {dialog?.kind === "delete" ? (
+        <DialogRoot onDismiss={closeDialog} dismissDisabled={busy}>
+          {deleteDialog}
+        </DialogRoot>
+      ) : null}
     </div>
   );
 }

@@ -39,6 +39,10 @@
   white-space: nowrap;
 }
 
+.custom-select-value.is-placeholder {
+  color: var(--placeholder-color);
+}
+
 .custom-select-chevron {
   flex: none;
   color: var(--placeholder-color);
@@ -201,7 +205,7 @@
 .launcher-select-separator {
   height: 1px;
   margin: 3px 4px;
-  background: #32383a;
+  background: var(--menu-divider-strong);
 }
 
 .launcher-select-item-label {

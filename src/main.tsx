@@ -7,4 +7,11 @@ import "./styles.css";
 // stable metrics before the first terminal is opened.
 void loadTerminalFont().catch(() => {});
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(<App />);
+const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("ui-catalog")) {
+  void import("./components/ui/ComponentCatalog").then(({ default: ComponentCatalog }) => {
+    root.render(<ComponentCatalog />);
+  });
+} else {
+  root.render(<App />);
+}

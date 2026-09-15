@@ -24,6 +24,12 @@ export const Popover = forwardRef<HTMLDivElement, PopoverProps>(function Popover
   );
 });
 
-export function PopoverPortal({ children }: { children: ReactNode }) {
-  return typeof document === "undefined" ? null : createPortal(children, document.body);
+export function PopoverPortal({
+  children,
+  target,
+}: {
+  children: ReactNode;
+  target?: Element | null;
+}) {
+  return typeof document === "undefined" ? null : createPortal(children, target ?? document.body);
 }

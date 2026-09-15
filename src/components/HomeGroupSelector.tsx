@@ -1,13 +1,6 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useRef, useState } from "react";
 import { Check, ChevronDown, Minus } from "lucide-react";
-import { placePanePopover } from "../lib/appHelpers";
-import { Button, Menu, MenuItem, PopoverPortal } from "./ui";
+import { Button, Menu, MenuItem, PopoverPortal, useAnchoredPopover } from "./ui";
 
 export interface HomeGroupTerminal {
   agentId: string;
@@ -52,12 +45,14 @@ function HomeGroupChip({
   const [open, setOpen] = useState(false);
   const caretRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const [pos, setPos] = useState<{
-    left: number;
-    top: number;
-    maxHeight: number;
-    maxWidth: number;
-  } | null>(null);
+  const closeMenu = useCallback(() => setOpen(false), []);
+  const menuStyle = useAnchoredPopover({
+    open,
+    onClose: closeMenu,
+    triggerRef: caretRef,
+    popoverRef: menuRef,
+    preferredWidth: HOME_GROUP_MENU_WIDTH,
+  });
 
   const agentIds = group.terminals.map((terminal) => terminal.agentId);
   const visibleCount = agentIds.filter((id) => !hiddenTerminalIds.has(id)).length;
@@ -70,62 +65,6 @@ function HomeGroupChip({
     // hides. Mirrors a tristate checkbox's "click resolves to all-on".
     onSetTerminalsHidden(agentIds, allVisible);
   };
-
-  const position = useCallback(() => {
-    const trigger = caretRef.current;
-    const menu = menuRef.current;
-    if (!trigger || !menu) {
-      return;
-    }
-    const { height } = menu.getBoundingClientRect();
-    setPos(
-      placePanePopover({
-        triggerRect: trigger.getBoundingClientRect(),
-        popoverSize: { width: HOME_GROUP_MENU_WIDTH, height },
-        align: "start",
-        prefer: "below",
-      }),
-    );
-  }, []);
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (!caretRef.current?.contains(target) && !menuRef.current?.contains(target)) {
-        setOpen(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handlePointerDown);
-    window.addEventListener("keydown", handleKeyDown, true);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      window.removeEventListener("keydown", handleKeyDown, true);
-    };
-  }, [open]);
-
-  useLayoutEffect(() => {
-    if (!open) {
-      setPos(null);
-      return;
-    }
-    position();
-    const onReflow = () => position();
-    window.addEventListener("resize", onReflow);
-    window.addEventListener("scroll", onReflow, true);
-    return () => {
-      window.removeEventListener("resize", onReflow);
-      window.removeEventListener("scroll", onReflow, true);
-    };
-  }, [open, position]);
 
   return (
     <div
@@ -166,23 +105,13 @@ function HomeGroupChip({
         <ChevronDown size={13} aria-hidden="true" />
       </Button>
       {open ? (
-        <PopoverPortal>
+        <PopoverPortal target={caretRef.current?.closest(".confirm-dialog-backdrop")}>
           <Menu
             ref={menuRef}
             className="home-group-menu"
             role="menu"
             aria-label={`Terminals in ${group.name}`}
-            style={
-              pos
-                ? {
-                    left: pos.left,
-                    top: pos.top,
-                    maxHeight: pos.maxHeight,
-                    width: Math.min(HOME_GROUP_MENU_WIDTH, pos.maxWidth),
-                    maxWidth: pos.maxWidth,
-                  }
-                : { left: -9999, top: -9999 }
-            }
+            style={menuStyle ?? { left: -9999, top: -9999 }}
           >
             {group.terminals.map((terminal) => {
               const shown = !hiddenTerminalIds.has(terminal.agentId);

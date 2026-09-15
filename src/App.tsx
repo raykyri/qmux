@@ -108,13 +108,15 @@ import {
 import ConfirmDialogActionButton from "./components/ConfirmDialogActionButton";
 import {
   Button,
+  Dialog,
   DialogActions,
-  DialogBackdrop,
   DialogForm,
+  DialogRoot,
   DialogTitle,
   Input,
   NativeSelect,
   Select,
+  Textarea,
 } from "./components/ui";
 import { queuedTurnDeliveryLabel } from "./components/QueuedTurnCard";
 import {
@@ -4624,9 +4626,8 @@ function MainApp() {
         <div className="settings-remote-fields settings-remote-fields-id">
           <label htmlFor={`${fieldPrefix}-id`}>
             <span>ID</span>
-            <input
+            <Input
               id={`${fieldPrefix}-id`}
-              className="form-field"
               type="text"
               value={draft.id}
               disabled={!remoteSettingsDraftIsNew}
@@ -4642,9 +4643,8 @@ function MainApp() {
         <div className="settings-remote-fields">
           <label htmlFor={`${fieldPrefix}-label`}>
             <span>Name</span>
-            <input
+            <Input
               id={`${fieldPrefix}-label`}
-              className="form-field"
               type="text"
               autoFocus={remoteSettingsDraftIsNew}
               value={draft.label}
@@ -4664,9 +4664,8 @@ function MainApp() {
           </label>
           <label htmlFor={`${fieldPrefix}-host`}>
             <span>SSH host</span>
-            <input
+            <Input
               id={`${fieldPrefix}-host`}
-              className="form-field"
               type="text"
               value={draft.host}
               placeholder="devbox or user@host"
@@ -4683,9 +4682,8 @@ function MainApp() {
           </label>
           <label htmlFor={`${fieldPrefix}-root`}>
             <span>Workspace root <small>optional</small></span>
-            <input
+            <Input
               id={`${fieldPrefix}-root`}
-              className="form-field"
               type="text"
               value={draft.workspaceRoot}
               placeholder="~/.qmux/workspaces"
@@ -4698,9 +4696,8 @@ function MainApp() {
           </label>
           <label htmlFor={`${fieldPrefix}-cli`}>
             <span>qmux CLI <small>optional</small></span>
-            <input
+            <Input
               id={`${fieldPrefix}-cli`}
-              className="form-field"
               type="text"
               value={draft.qmuxCli}
               placeholder="qmux-cli"
@@ -17755,9 +17752,9 @@ function MainApp() {
                     OpenRouter key
                   </label>
                   <div className="settings-secret-input">
-                    <input
+                    <Input
                       id="settings-openrouter-key"
-                      className="form-field settings-input"
+                      className="settings-input"
                       type={openRouterKeyVisible ? "text" : "password"}
                       value={settings.openRouterKey}
                       placeholder="sk-or-v1-..."
@@ -17790,9 +17787,9 @@ function MainApp() {
                   <label htmlFor="settings-openrouter-model" className="settings-label">
                     OpenRouter model
                   </label>
-                  <input
+                  <Input
                     id="settings-openrouter-model"
-                    className="form-field settings-input"
+                    className="settings-input"
                     type="text"
                     value={settings.openRouterModel}
                     placeholder="google/gemma-4-31b-it:free"
@@ -18045,9 +18042,9 @@ function MainApp() {
                   Sent with every research launch
                 </p>
               </div>
-              <textarea
+              <Textarea
                 id="settings-research-instructions"
-                className="form-field settings-input settings-textarea"
+                className="settings-input settings-textarea"
                 rows={1}
                 placeholder={DEFAULT_RESEARCH_LAUNCH_INSTRUCTION}
                 value={settings.researchLaunchInstruction}
@@ -18148,9 +18145,9 @@ function MainApp() {
                   </>
                 ) : null}
               </div>
-              <input
+              <Input
                 id="settings-show-hide-shortcut"
-                className="form-field settings-input settings-shortcut-input"
+                className="settings-input settings-shortcut-input"
                 data-shortcut-capture="show-hide"
                 value={showHideShortcutValue}
                 placeholder="e.g. Option+Space"
@@ -18266,9 +18263,9 @@ function MainApp() {
                   <label htmlFor="settings-scrollback-rows" className="settings-label">
                     Scrollback rows (new tabs)
                   </label>
-                  <input
+                  <Input
                     id="settings-scrollback-rows"
-                    className="form-field settings-input settings-number-input"
+                    className="settings-input settings-number-input"
                     type="number"
                     min={SCROLLBACK_ROWS_MIN}
                     max={SCROLLBACK_ROWS_MAX}
@@ -18398,9 +18395,9 @@ function MainApp() {
                   <label htmlFor="settings-confirm-paste-over" className="settings-label">
                     Confirm paste over chars
                   </label>
-                  <input
+                  <Input
                     id="settings-confirm-paste-over"
-                    className="form-field settings-input settings-number-input"
+                    className="settings-input settings-number-input"
                     type="number"
                     min={CONFIRM_PASTE_OVER_CHARS_MIN}
                     max={CONFIRM_PASTE_OVER_CHARS_MAX}
@@ -18422,39 +18419,27 @@ function MainApp() {
       ) : null}
 
       {repositoryBrowser ? (
-        <div
-          className="confirm-dialog-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !repositoryBrowser.opening) {
-              setRepositoryBrowser(null);
-            }
-          }}
+        <DialogRoot
+          onDismiss={() => setRepositoryBrowser(null)}
+          dismissDisabled={Boolean(repositoryBrowser.opening)}
         >
-          <div
-            className="confirm-dialog repository-browser-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="repository-browser-title"
-          >
+          <Dialog className="repository-browser-dialog" aria-labelledby="repository-browser-title">
             <div className="repository-browser-header">
               <div>
-                <h2 id="repository-browser-title">Branches and worktrees</h2>
+                <DialogTitle id="repository-browser-title">Branches and worktrees</DialogTitle>
                 {repositoryBrowser.inventory ? (
                   <p title={repositoryBrowser.inventory.repositoryRoot}>
                     {formatPaneDir(repositoryBrowser.inventory.repositoryRoot)}
                   </p>
                 ) : null}
               </div>
-              <button
-                className="control-button"
-                type="button"
+              <Button
                 disabled={Boolean(repositoryBrowser.opening)}
                 onClick={() => setRepositoryBrowser(null)}
                 aria-label="Close branches and worktrees"
               >
                 <X size={14} aria-hidden="true" />
-              </button>
+              </Button>
             </div>
             {!repositoryBrowser.inventory && !repositoryBrowser.error ? (
               <p className="repository-browser-loading">
@@ -18512,7 +18497,7 @@ function MainApp() {
                           </span>
                         </div>
                         {!branch.checkedOutPath ? (
-                          <input
+                          <Input
                             className="repository-browser-name"
                             aria-label={`Worktree name for ${branch.name}`}
                             value={repositoryBrowser.names[branch.fullRef] ?? ""}
@@ -18547,20 +18532,18 @@ function MainApp() {
                 </section>
               </div>
             ) : null}
-          </div>
-        </div>
+          </Dialog>
+        </DialogRoot>
       ) : null}
 
       {worktreeCreateDialog ? (
-        <DialogBackdrop
+        <DialogRoot
           onDismiss={() => dismissWorktreeCreateDialog(false)}
           dismissDisabled={worktreeCreateDialog.creating}
         >
           <DialogForm
             className="rename-dialog"
             aria-labelledby="create-worktree-dialog-title"
-            onDismiss={() => dismissWorktreeCreateDialog(false)}
-            dismissDisabled={worktreeCreateDialog.creating}
             onSubmit={(event) => {
               event.preventDefault();
               void createWorktreeFromDialog();
@@ -18680,46 +18663,39 @@ function MainApp() {
               </ConfirmDialogActionButton>
             </DialogActions>
           </DialogForm>
-        </DialogBackdrop>
+        </DialogRoot>
       ) : null}
 
       {remoteDeleteConfirm ? (
-        <div
-          className="confirm-dialog-backdrop settings-remote-delete-dialog"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !remoteSettingsSaving) {
-              setRemoteDeleteConfirm(null);
-            }
-          }}
+        <DialogRoot
+          className="settings-remote-delete-dialog"
+          onDismiss={() => setRemoteDeleteConfirm(null)}
+          dismissDisabled={remoteSettingsSaving}
         >
-          <div
-            className="confirm-dialog"
-            role="dialog"
-            aria-modal="true"
+          <Dialog
             aria-labelledby="remote-delete-dialog-title"
             aria-busy={remoteSettingsSaving}
           >
-            <h2 id="remote-delete-dialog-title">Remove {remoteDeleteConfirm.label}?</h2>
+            <DialogTitle id="remote-delete-dialog-title">
+              Remove {remoteDeleteConfirm.label}?
+            </DialogTitle>
             <p>Existing groups stay connected to this machine.</p>
             {remoteSettingsError ? (
               <p className="confirm-dialog-error" role="alert">
                 {remoteSettingsError}
               </p>
             ) : null}
-            <div className="confirm-dialog-actions">
-              <button
-                className="control-button"
-                type="button"
+            <DialogActions>
+              <Button
                 disabled={remoteSettingsSaving}
                 onClick={() => setRemoteDeleteConfirm(null)}
               >
                 Cancel
-              </button>
+              </Button>
               <ConfirmDialogActionButton
                 ref={remoteDeleteConfirmButtonRef}
                 type="button"
-                className="danger"
+                tone="danger"
                 autoFocus
                 pending={remoteSettingsSaving}
                 pendingLabel="Removing…"
@@ -18727,34 +18703,24 @@ function MainApp() {
               >
                 Remove remote
               </ConfirmDialogActionButton>
-            </div>
-          </div>
-        </div>
+            </DialogActions>
+          </Dialog>
+        </DialogRoot>
       ) : null}
 
       {closeDialog ? (
-        <div
-          className="confirm-dialog-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !resolvingClose) {
-              setCloseDialog(null);
-            }
-          }}
+        <DialogRoot
+          onDismiss={() => setCloseDialog(null)}
+          dismissDisabled={resolvingClose !== null}
         >
-          <div
-            className="confirm-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="close-dialog-title"
-          >
-            <h2 id="close-dialog-title">
+          <Dialog aria-labelledby="close-dialog-title">
+            <DialogTitle id="close-dialog-title">
               {closeDialog.kind === "researchFolderRemove"
                 ? `Remove ${displayGroupName(closeDialog.workspace)}?`
                 : closeDialog.groupClose
                 ? `Close ${closeDialog.groupClose.groupName}?`
                 : `Close "${closeDialog.pane.title}?"`}
-            </h2>
+            </DialogTitle>
             {closeDialog.kind !== "researchFolderRemove" && closeDialog.groupClose ? (
               <p>
                 Closing tab{" "}
@@ -18771,25 +18737,23 @@ function MainApp() {
                     {researchFolderRemovalError}
                   </p>
                 ) : null}
-                <div className="confirm-dialog-actions">
-                  <button className="control-button"
-                    type="button"
+                <DialogActions>
+                  <Button
                     disabled={resolvingClose !== null}
                     onClick={() => setCloseDialog(null)}
                   >
                     Cancel
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     ref={closeConfirmButtonRef}
-                    type="button"
-                    className="control-button danger"
+                    tone="danger"
                     autoFocus
                     disabled={resolvingClose !== null}
                     onClick={() => void confirmResearchFolderRemoval()}
                   >
                     {resolvingClose === "removeResearchFolder" ? "Removing…" : "Remove folder"}
-                  </button>
-                </div>
+                  </Button>
+                </DialogActions>
               </>
             ) : closeDialog.kind === "worktree" ? (
               <>
@@ -18822,17 +18786,16 @@ function MainApp() {
                   )}{" "}
                   Delete the worktree?
                 </p>
-                <div className="confirm-dialog-actions">
-                  <button className="control-button"
-                    type="button"
+                <DialogActions>
+                  <Button
                     disabled={resolvingClose !== null}
                     onClick={() => setCloseDialog(null)}
                   >
                     Cancel
-                  </button>
+                  </Button>
                   <ConfirmDialogActionButton
                     type="button"
-                    className="danger"
+                    tone="danger"
                     // Deleting stays gated on the status verdict: before the
                     // dialog opened eagerly the user could never delete ahead
                     // of the probe, so keep that ordering.
@@ -18854,43 +18817,37 @@ function MainApp() {
                   >
                     Keep worktree
                   </ConfirmDialogActionButton>
-                </div>
+                </DialogActions>
               </>
             ) : closeDialog.kind === "researchCancel" ? (
               <>
                 <p>Closing cancels this research run. Its completed work and follow-up history remain available.</p>
-                <div className="confirm-dialog-actions">
-                  <button className="control-button" type="button" onClick={() => setCloseDialog(null)}>
-                    Keep running
-                  </button>
-                  <button
+                <DialogActions>
+                  <Button onClick={() => setCloseDialog(null)}>Keep running</Button>
+                  <Button
                     ref={closeConfirmButtonRef}
-                    type="button"
-                    className="control-button danger"
+                    tone="danger"
                     autoFocus
                     onClick={() => void confirmStopAndClose()}
                   >
                     Cancel research
-                  </button>
-                </div>
+                  </Button>
+                </DialogActions>
               </>
             ) : closeDialog.kind === "stop" ? (
               <>
                 <p>This agent {closeDialog.reason}. Close the tab and stop it?</p>
-                <div className="confirm-dialog-actions">
-                  <button className="control-button" type="button" onClick={() => setCloseDialog(null)}>
-                    Cancel
-                  </button>
-                  <button
+                <DialogActions>
+                  <Button onClick={() => setCloseDialog(null)}>Cancel</Button>
+                  <Button
                     ref={closeConfirmButtonRef}
-                    type="button"
-                    className="control-button danger"
+                    tone="danger"
                     autoFocus
                     onClick={() => void confirmStopAndClose()}
                   >
                     Close tab
-                  </button>
-                </div>
+                  </Button>
+                </DialogActions>
               </>
             ) : closeDialog.kind === "runningProcess" ? (
               <>
@@ -18902,62 +18859,42 @@ function MainApp() {
                     : `This tab has ${closeDialog.processCount} running processes.`}
                 </p>
                 <p>Closing this tab will terminate running processes in it.</p>
-                <div className="confirm-dialog-actions">
-                  <button className="control-button" type="button" onClick={() => setCloseDialog(null)}>
-                    Cancel
-                  </button>
-                  <button
+                <DialogActions>
+                  <Button onClick={() => setCloseDialog(null)}>Cancel</Button>
+                  <Button
                     ref={closeConfirmButtonRef}
-                    type="button"
-                    className="control-button danger"
+                    tone="danger"
                     autoFocus
                     onClick={() => void confirmPaneClose()}
                   >
                     Close tab
-                  </button>
-                </div>
+                  </Button>
+                </DialogActions>
               </>
             ) : (
               <>
                 <p>Close this tab?</p>
-                <div className="confirm-dialog-actions">
-                  <button className="control-button" type="button" onClick={() => setCloseDialog(null)}>
-                    Cancel
-                  </button>
-                  <button
+                <DialogActions>
+                  <Button onClick={() => setCloseDialog(null)}>Cancel</Button>
+                  <Button
                     ref={closeConfirmButtonRef}
-                    type="button"
-                    className="control-button danger"
+                    tone="danger"
                     autoFocus
                     onClick={() => void confirmPaneClose()}
                   >
                     Close tab
-                  </button>
-                </div>
+                  </Button>
+                </DialogActions>
               </>
             )}
-          </div>
-        </div>
+          </Dialog>
+        </DialogRoot>
       ) : null}
 
       {exitDialog ? (
-        <div
-          className="confirm-dialog-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !quitting) {
-              setExitDialog(null);
-            }
-          }}
-        >
-          <div
-            className="confirm-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="exit-dialog-title"
-            aria-busy={quitting}
-          >
-            <h2 id="exit-dialog-title">Quit qmux?</h2>
+        <DialogRoot onDismiss={() => setExitDialog(null)} dismissDisabled={quitting}>
+          <Dialog aria-labelledby="exit-dialog-title" aria-busy={quitting}>
+            <DialogTitle id="exit-dialog-title">Quit qmux?</DialogTitle>
             {exitDialog.paneCount > 0 ? (
               <p>
                 Quitting will close{" "}
@@ -18976,14 +18913,14 @@ function MainApp() {
                 Research history.
               </p>
             ) : null}
-            <div className="confirm-dialog-actions">
-              <button className="control-button" type="button" disabled={quitting} onClick={() => setExitDialog(null)}>
+            <DialogActions>
+              <Button disabled={quitting} onClick={() => setExitDialog(null)}>
                 Cancel
-              </button>
+              </Button>
               <ConfirmDialogActionButton
                 ref={exitConfirmButtonRef}
                 type="button"
-                className="danger"
+                tone="danger"
                 autoFocus
                 pending={quitting}
                 pendingLabel="Closing terminals..."
@@ -18991,38 +18928,28 @@ function MainApp() {
               >
                 Quit qmux
               </ConfirmDialogActionButton>
-            </div>
-          </div>
-        </div>
+            </DialogActions>
+          </Dialog>
+        </DialogRoot>
       ) : null}
 
       {renamePaneId || renameGroupId ? (
-        <div
-          className="confirm-dialog-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeRenameDialog();
-            }
-          }}
-        >
-          <form
-            className="confirm-dialog rename-dialog"
-            role="dialog"
-            aria-modal="true"
+        <DialogRoot onDismiss={closeRenameDialog}>
+          <DialogForm
+            className="rename-dialog"
             aria-labelledby="rename-dialog-title"
             onSubmit={(event) => {
               event.preventDefault();
               void submitRename();
             }}
           >
-            <h2 id="rename-dialog-title">
+            <DialogTitle id="rename-dialog-title">
               {renamingResearchFolder
                 ? "Rename folder"
                 : renameGroupId
                   ? "Rename group"
                   : "Rename tab"}
-            </h2>
+            </DialogTitle>
             <Input
               ref={renameInputRef}
               className="rename-dialog-input"
@@ -19042,14 +18969,12 @@ function MainApp() {
                 Contents will remain in {renamingResearchFolder.dir}
               </p>
             ) : null}
-            <div className="confirm-dialog-actions">
-              <button className="control-button" type="button" onClick={closeRenameDialog}>
-                Cancel
-              </button>
-              <button className="control-button" type="submit">Rename</button>
-            </div>
-          </form>
-        </div>
+            <DialogActions>
+              <Button onClick={closeRenameDialog}>Cancel</Button>
+              <Button type="submit">Rename</Button>
+            </DialogActions>
+          </DialogForm>
+        </DialogRoot>
       ) : null}
 
       <section className="workspace">
@@ -19582,29 +19507,13 @@ function MainApp() {
       />
 
       {newAgentOpen ? (
-        <div
-          className="confirm-dialog-backdrop new-agent-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeNewAgentPopover();
-            }
-          }}
-        >
+        <DialogRoot className="new-agent-backdrop" onDismiss={closeNewAgentPopover}>
           {renderLauncher()}
-        </div>
+        </DialogRoot>
       ) : null}
 
       {terminalMapOpen ? (
-        <div
-          className="confirm-dialog-backdrop terminal-map-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              closeTerminalMap();
-            }
-          }}
-        >
+        <DialogRoot className="terminal-map-backdrop" onDismiss={closeTerminalMap}>
           <div
             ref={terminalMapDialogRef}
             className="terminal-map-popover"
@@ -19654,7 +19563,7 @@ function MainApp() {
               />
             </div>
           </div>
-        </div>
+        </DialogRoot>
       ) : null}
 
       <ResearchFolderDialog

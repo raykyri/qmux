@@ -16,6 +16,7 @@ import {
   readSessionDraftJson,
   saveSessionDraftJson,
 } from "../../lib/sessionDrafts";
+import { Button, DialogActions, DialogRoot } from "../ui";
 
 interface DocumentComposerProps {
   mode: "create" | "edit";
@@ -289,11 +290,11 @@ export default function DocumentComposer({
                 {error}
               </p>
             ) : null}
-            <div className="confirm-dialog-actions">
-              <button className="control-button" type="button" disabled={submitting} onClick={close}>
+            <DialogActions>
+              <Button disabled={submitting} onClick={close}>
                 Cancel
-              </button>
-              <button className="control-button" type="submit" disabled={!canSubmit}>
+              </Button>
+              <Button type="submit" disabled={!canSubmit}>
                 <span>
                   {submitting
                     ? editing
@@ -306,8 +307,8 @@ export default function DocumentComposer({
                 {!submitting ? (
                   <ComposerSubmitShortcutGlyph requireCmdEnter className="shortcut-hint" />
                 ) : null}
-              </button>
-            </div>
+              </Button>
+            </DialogActions>
           </div>
         </footer>
       </form>
@@ -317,16 +318,12 @@ export default function DocumentComposer({
     return form;
   }
   return (
-    <div
-      className="confirm-dialog-backdrop new-document-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && pristine && !submitting) {
-          close();
-        }
-      }}
+    <DialogRoot
+      className="new-document-backdrop"
+      onDismiss={close}
+      dismissDisabled={!pristine || submitting}
     >
       {form}
-    </div>
+    </DialogRoot>
   );
 }

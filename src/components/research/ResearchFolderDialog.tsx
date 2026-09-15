@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import {
   Button,
   DialogActions,
-  DialogBackdrop,
   DialogForm,
+  DialogRoot,
   DialogTitle,
   Input,
 } from "../ui";
@@ -35,11 +35,10 @@ export default function ResearchFolderDialog({
 
   const trimmedName = name.trim();
   return (
-    <DialogBackdrop onDismiss={onClose}>
+    <DialogRoot onDismiss={onClose}>
       <DialogForm
         className="rename-dialog"
         aria-labelledby="create-research-folder-dialog-title"
-        onDismiss={onClose}
         onSubmit={(event) => {
           event.preventDefault();
           if (trimmedName) {
@@ -69,6 +68,6 @@ export default function ResearchFolderDialog({
           </Button>
         </DialogActions>
       </DialogForm>
-    </DialogBackdrop>
+    </DialogRoot>
   );
 }
