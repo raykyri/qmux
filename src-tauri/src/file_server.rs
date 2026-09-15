@@ -65,6 +65,61 @@ const VALLEY_SANS_ITALIC_PATH: &str = "/__qmux/fonts/ValleySans-VariableItalic.w
 const VALLEY_SANS_ROMAN: &[u8] = include_bytes!("../../src/assets/fonts/ValleySans-Variable.woff2");
 const VALLEY_SANS_ITALIC: &[u8] =
     include_bytes!("../../src/assets/fonts/ValleySans-VariableItalic.woff2");
+const LOCAL_BODY_FONT_PATH_PREFIX: &str = "/__qmux/local-body-fonts/";
+
+struct LocalBodyFontResource {
+    request_name: &'static str,
+    file_names: &'static [&'static str],
+    content_type: &'static str,
+}
+
+const LOCAL_BODY_FONT_RESOURCES: &[LocalBodyFontResource] = &[
+    LocalBodyFontResource {
+        request_name: "AnthropicSansText-Regular.otf",
+        file_names: &[
+            "AnthropicSans-Text-Regular-Static.otf",
+            "AnthropicSansText-Regular.otf",
+        ],
+        content_type: "font/otf",
+    },
+    LocalBodyFontResource {
+        request_name: "AnthropicSansText-Italic.otf",
+        file_names: &[
+            "AnthropicSans-Text-RegularItalic-Static.otf",
+            "AnthropicSansText-RegularItalic.otf",
+        ],
+        content_type: "font/otf",
+    },
+    LocalBodyFontResource {
+        request_name: "AnthropicSansText-Bold.otf",
+        file_names: &[
+            "AnthropicSans-Text-Bold-Static.otf",
+            "AnthropicSansText-Bold.otf",
+        ],
+        content_type: "font/otf",
+    },
+    LocalBodyFontResource {
+        request_name: "AnthropicSansText-BoldItalic.otf",
+        file_names: &[
+            "AnthropicSans-Text-BoldItalic-Static.otf",
+            "AnthropicSansText-BoldItalic.otf",
+        ],
+        content_type: "font/otf",
+    },
+    LocalBodyFontResource {
+        request_name: "Inter-Variable.ttf",
+        file_names: &["Inter-VariableFont_opsz,wght.ttf", "InterVariable.ttf"],
+        content_type: "font/ttf",
+    },
+    LocalBodyFontResource {
+        request_name: "Inter-Italic-Variable.ttf",
+        file_names: &[
+            "Inter-Italic-VariableFont_opsz,wght.ttf",
+            "InterVariable-Italic.ttf",
+        ],
+        content_type: "font/ttf",
+    },
+];
 
 pub struct FileServerInfo {
     pub port: u16,
@@ -505,6 +560,13 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
     {
         return Response::error(404, "Not Found");
     }
+    // WebKit deliberately hides user-installed fonts from ordinary web origins.
+    // Serve only the allowlisted face files used by qmux's display-font picker, and
+    // keep them behind the preview capability already present in the page URL.
+    if let Some(resource_name) = encoded_path.strip_prefix(LOCAL_BODY_FONT_PATH_PREFIX) {
+        return local_body_font_response(resource_name, is_head)
+            .unwrap_or_else(|| Response::error(404, "Not Found"));
+    }
     let Some(decoded) = percent_decode(encoded_path) else {
         return Response::error(400, "Bad Request");
     };
@@ -559,6 +621,7 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
             &canonical,
             &String::from_utf8_lossy(&source),
             body_font_id,
+            token,
         );
         let mut response = Response::new(200, "OK");
         response.header("Content-Type", "text/html; charset=utf-8");
@@ -581,8 +644,12 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
         let Ok(source) = read_slice(file, 0, total) else {
             return Response::error(500, "Internal Server Error");
         };
-        let page =
-            render_markdown_page(&canonical, &String::from_utf8_lossy(&source), body_font_id);
+        let page = render_markdown_page(
+            &canonical,
+            &String::from_utf8_lossy(&source),
+            body_font_id,
+            token,
+        );
         let mut response = Response::new(200, "OK");
         response.header("Content-Type", "text/html; charset=utf-8");
         response.header("Content-Length", &page.len().to_string());
@@ -701,6 +768,42 @@ fn embedded_font_response(path: &str, is_head: bool) -> Option<Response> {
     response.header("Access-Control-Allow-Origin", "*");
     if !is_head {
         response.body.extend_from_slice(bytes);
+    }
+    Some(response)
+}
+
+fn local_body_font_response(resource_name: &str, is_head: bool) -> Option<Response> {
+    let mut roots = Vec::new();
+    if let Some(font_dir) = dirs::font_dir() {
+        roots.push(font_dir);
+    }
+    roots.push(PathBuf::from("/Library/Fonts"));
+    local_body_font_response_in(resource_name, is_head, &roots)
+}
+
+fn local_body_font_response_in(
+    resource_name: &str,
+    is_head: bool,
+    roots: &[PathBuf],
+) -> Option<Response> {
+    let resource = LOCAL_BODY_FONT_RESOURCES
+        .iter()
+        .find(|resource| resource.request_name == resource_name)?;
+    let path = roots.iter().find_map(|root| {
+        resource
+            .file_names
+            .iter()
+            .map(|file_name| root.join(file_name))
+            .find(|candidate| candidate.is_file())
+    })?;
+    let bytes = fs::read(path).ok()?;
+    let mut response = Response::new(200, "OK");
+    response.header("Content-Type", resource.content_type);
+    response.header("Content-Length", &bytes.len().to_string());
+    response.header("Cache-Control", "private, max-age=31536000, immutable");
+    response.header("Access-Control-Allow-Origin", "*");
+    if !is_head {
+        response.body = bytes;
     }
     Some(response)
 }
@@ -904,6 +1007,7 @@ fn render_codex_inline_visualization_page(
     path: &Path,
     source: &str,
     body_font_id: Option<&str>,
+    preview_token: &str,
 ) -> String {
     let title = escape_html(
         path.file_stem()
@@ -911,7 +1015,10 @@ fn render_codex_inline_visualization_page(
             .unwrap_or("Codex visualization"),
     );
     let css = CODEX_INLINE_VIS_CSS
-        .replace("__QMUX_FONT_FACE__", markdown_font_face_css(body_font_id))
+        .replace(
+            "__QMUX_FONT_FACE__",
+            &markdown_font_face_css(body_font_id, preview_token),
+        )
         .replace("__QMUX_BODY_FONT__", markdown_body_font(body_font_id));
     let scroll_bridge = html_preview_scroll_bridge();
     format!(
@@ -954,11 +1061,21 @@ const DM_SANS_MARKDOWN_FONT_FACE_CSS: &str = "\
 @font-face { font-family: 'DM Sans'; src: url('/__qmux/fonts/DMSans-VariableItalic-LatinExt.woff2') format('woff2'); font-style: italic; font-weight: 100 1000; font-display: swap; unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }\
 @font-face { font-family: 'DM Sans'; src: url('/__qmux/fonts/DMSans-VariableItalic-Latin.woff2') format('woff2'); font-style: italic; font-weight: 100 1000; font-display: swap; unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }";
 
-fn markdown_font_face_css(font_id: Option<&str>) -> &'static str {
+fn markdown_font_face_css(font_id: Option<&str>, preview_token: &str) -> String {
     match font_id {
-        Some("dm-sans") => DM_SANS_MARKDOWN_FONT_FACE_CSS,
-        Some("valley-sans") => VALLEY_SANS_MARKDOWN_FONT_FACE_CSS,
-        _ => "",
+        Some("dm-sans") => DM_SANS_MARKDOWN_FONT_FACE_CSS.to_string(),
+        Some("valley-sans") => VALLEY_SANS_MARKDOWN_FONT_FACE_CSS.to_string(),
+        Some("anthropic-sans-text") => format!(
+            "@font-face {{ font-family: 'Anthropic Sans Text'; src: url('/{preview_token}{LOCAL_BODY_FONT_PATH_PREFIX}AnthropicSansText-Regular.otf') format('opentype'); font-style: normal; font-weight: 400; font-display: swap; }}\
+@font-face {{ font-family: 'Anthropic Sans Text'; src: url('/{preview_token}{LOCAL_BODY_FONT_PATH_PREFIX}AnthropicSansText-Italic.otf') format('opentype'); font-style: italic; font-weight: 400; font-display: swap; }}\
+@font-face {{ font-family: 'Anthropic Sans Text'; src: url('/{preview_token}{LOCAL_BODY_FONT_PATH_PREFIX}AnthropicSansText-Bold.otf') format('opentype'); font-style: normal; font-weight: 700; font-display: swap; }}\
+@font-face {{ font-family: 'Anthropic Sans Text'; src: url('/{preview_token}{LOCAL_BODY_FONT_PATH_PREFIX}AnthropicSansText-BoldItalic.otf') format('opentype'); font-style: italic; font-weight: 700; font-display: swap; }}"
+        ),
+        Some("inter") => format!(
+            "@font-face {{ font-family: 'Inter'; src: url('/{preview_token}{LOCAL_BODY_FONT_PATH_PREFIX}Inter-Variable.ttf') format('truetype'); font-style: normal; font-weight: 100 900; font-display: swap; }}\
+@font-face {{ font-family: 'Inter'; src: url('/{preview_token}{LOCAL_BODY_FONT_PATH_PREFIX}Inter-Italic-Variable.ttf') format('truetype'); font-style: italic; font-weight: 100 900; font-display: swap; }}"
+        ),
+        _ => String::new(),
     }
 }
 
@@ -984,7 +1101,12 @@ fn markdown_body_font(font_id: Option<&str>) -> &'static str {
 /// the Markdown passes through untouched: the overlay's sandbox + CSP were designed to
 /// contain fully hostile served HTML files, so rendered Markdown gets the same
 /// containment rather than a sanitizer.
-fn render_markdown_page(path: &Path, source: &str, body_font_id: Option<&str>) -> String {
+fn render_markdown_page(
+    path: &Path,
+    source: &str,
+    body_font_id: Option<&str>,
+    preview_token: &str,
+) -> String {
     use pulldown_cmark::{Options, Parser, html};
 
     let mut options = Options::empty();
@@ -1002,7 +1124,10 @@ fn render_markdown_page(path: &Path, source: &str, body_font_id: Option<&str>) -
             .unwrap_or("Markdown"),
     );
     let markdown_page_css = MARKDOWN_PAGE_CSS
-        .replace("__QMUX_FONT_FACE__", markdown_font_face_css(body_font_id))
+        .replace(
+            "__QMUX_FONT_FACE__",
+            &markdown_font_face_css(body_font_id, preview_token),
+        )
         .replace("__QMUX_BODY_FONT__", markdown_body_font(body_font_id));
     let scroll_bridge = html_preview_scroll_bridge();
     format!(
@@ -1197,6 +1322,7 @@ mod tests {
             Path::new("/tmp/activity.fragment.html"),
             source,
             None,
+            "test-token",
         );
         assert!(page.contains(source));
         assert!(page.contains("qmux-visualization-error"));
@@ -1245,6 +1371,32 @@ mod tests {
         let valley = embedded_font_response(VALLEY_SANS_ROMAN_PATH, false).unwrap();
         assert_eq!(valley.body, VALLEY_SANS_ROMAN);
         assert!(embedded_font_response("/__qmux/fonts/unknown.woff2", false).is_none());
+    }
+
+    #[test]
+    fn local_body_fonts_are_allowlisted_and_cors_readable() {
+        let base = non_temp_test_dir("local-body-font");
+        std::fs::create_dir_all(&base).unwrap();
+        let bytes = b"test font bytes";
+        std::fs::write(base.join("AnthropicSans-Text-Regular-Static.otf"), bytes).unwrap();
+
+        let response = local_body_font_response_in(
+            "AnthropicSansText-Regular.otf",
+            false,
+            std::slice::from_ref(&base),
+        )
+        .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, bytes);
+        assert!(
+            response
+                .headers
+                .contains(&("Access-Control-Allow-Origin".to_string(), "*".to_string()))
+        );
+        assert!(local_body_font_response_in("../secret", false, &[base.clone()]).is_none());
+        assert!(local_body_font_response_in("unknown.otf", false, &[base.clone()]).is_none());
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1310,16 +1462,21 @@ mod tests {
             Some("inter")
         );
 
-        let default_page = render_markdown_page(path, source, None);
+        let default_page = render_markdown_page(path, source, None, "test-token");
         assert!(default_page.contains("font-family: ui-sans-serif, system-ui"));
         assert!(default_page.contains("font-variant-ligatures: no-common-ligatures"));
 
-        let selected_page = render_markdown_page(path, source, Some("anthropic-sans-text"));
+        let selected_page =
+            render_markdown_page(path, source, Some("anthropic-sans-text"), "test-token");
         assert!(selected_page.contains("font-family: 'Anthropic Sans Text', ui-sans-serif"));
+        assert!(
+            selected_page
+                .contains("/test-token/__qmux/local-body-fonts/AnthropicSansText-Regular.otf")
+        );
         assert!(!selected_page.contains("__QMUX_BODY_FONT__"));
         assert!(!selected_page.contains("ValleySans-Variable.woff2"));
 
-        let dm_sans_page = render_markdown_page(path, source, Some("dm-sans"));
+        let dm_sans_page = render_markdown_page(path, source, Some("dm-sans"), "test-token");
         assert!(dm_sans_page.contains("font-family: 'DM Sans', ui-sans-serif"));
         assert!(dm_sans_page.contains("DMSans-Variable-Latin.woff2"));
         assert!(dm_sans_page.contains("DMSans-Variable-LatinExt.woff2"));
@@ -1328,14 +1485,15 @@ mod tests {
         assert!(!dm_sans_page.contains("__QMUX_BODY_FONT__"));
         assert!(!dm_sans_page.contains("__QMUX_FONT_FACE__"));
 
-        let valley_page = render_markdown_page(path, source, Some("valley-sans"));
+        let valley_page = render_markdown_page(path, source, Some("valley-sans"), "test-token");
         assert!(valley_page.contains("font-family: 'Valley Sans', ui-sans-serif"));
         assert!(valley_page.contains("ValleySans-Variable.woff2"));
         assert!(valley_page.contains("ValleySans-VariableItalic.woff2"));
         assert!(!valley_page.contains("__QMUX_BODY_FONT__"));
         assert!(!valley_page.contains("__QMUX_FONT_FACE__"));
 
-        let unknown_page = render_markdown_page(path, source, Some("body{};color:red"));
+        let unknown_page =
+            render_markdown_page(path, source, Some("body{};color:red"), "test-token");
         assert!(unknown_page.contains("font-family: ui-sans-serif, system-ui"));
         assert!(!unknown_page.contains("body{};color:red"));
     }
@@ -1599,6 +1757,20 @@ mod tests {
             body_text.contains("qmux-preview-scroll"),
             "body: {body_text}"
         );
+
+        // The display-font query reaches the standalone document and points its
+        // user-installed face at the capability-protected local-font route.
+        let (head, body) = http_get_full(
+            info.port,
+            &format!("{path}?qmux-body-font=anthropic-sans-text"),
+            None,
+        );
+        let body_text = String::from_utf8(body).unwrap();
+        assert!(head.starts_with("HTTP/1.1 200"), "head: {head}");
+        assert!(body_text.contains("font-family: 'Anthropic Sans Text'"));
+        assert!(body_text.contains(&format!(
+            "/{token}/__qmux/local-body-fonts/AnthropicSansText-Regular.otf"
+        )));
 
         // `?raw=1` opts out and serves the source as plain text.
         let (head, body) = http_get_full(info.port, &format!("{path}?raw=1"), None);
