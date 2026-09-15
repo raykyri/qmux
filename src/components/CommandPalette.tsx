@@ -1,4 +1,5 @@
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Input } from "./ui";
 
 // One runnable entry in the ⌘K palette. Commands are grouped by section in the
 // order sections first appear in the array.
@@ -115,10 +116,10 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
         aria-label="Command palette"
         onKeyDown={handleKeyDown}
       >
-        <input
+        <Input
           ref={inputRef}
           type="text"
-          className="form-field command-palette-input"
+          className="command-palette-input"
           placeholder="Type a command or search…"
           value={query}
           onChange={(event) => setQuery(event.target.value)}

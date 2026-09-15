@@ -26,6 +26,7 @@ import {
   isComposerSubmitShortcut,
 } from "./ComposerSubmitShortcut";
 import ConfirmDialogActionButton from "./ConfirmDialogActionButton";
+import { Input, Textarea } from "./ui";
 
 const MENU_PREFERRED_WIDTH = 300;
 const ROW_MENU_PREFERRED_WIDTH = 140;
@@ -713,10 +714,10 @@ export default function PromptLibraryMenu({
 
   const listView = (
     <>
-      <input
+      <Input
         ref={searchInputRef}
         type="text"
-        className="form-field prompt-library-search"
+        className="prompt-library-search"
         placeholder="Search prompts…"
         value={search}
         autoFocus
@@ -744,9 +745,9 @@ export default function PromptLibraryMenu({
         {view.placeholders.map((name, index) => (
           <label key={name} className="prompt-library-field">
             <span className="prompt-library-field-label">{name}</span>
-            <input
+            <Input
               type="text"
-              className="form-field prompt-library-search"
+              className="prompt-library-search"
               value={
                 Object.prototype.hasOwnProperty.call(fillValues, name)
                   ? fillValues[name]
@@ -839,9 +840,9 @@ export default function PromptLibraryMenu({
           </div>
         ) : null}
         <div className="prompt-library-field">
-          <textarea
+          <Textarea
             ref={editorTextareaRef}
-            className="form-field prompt-library-editor prompt-editor-dialog-textarea"
+            className="prompt-library-editor prompt-editor-dialog-textarea"
             aria-label="Prompt"
             value={editContent}
             rows={3}

@@ -1,8 +1,9 @@
 import { LoaderCircle } from "lucide-react";
 import { forwardRef } from "react";
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import type { ReactNode } from "react";
+import Button, { type ButtonProps } from "./ui/Button";
 
-interface ConfirmDialogActionButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+interface ConfirmDialogActionButtonProps extends ButtonProps {
   pending?: boolean;
   pendingLabel?: ReactNode;
 }
@@ -24,9 +25,9 @@ const ConfirmDialogActionButton = forwardRef<
   ref,
 ) {
   return (
-    <button
+    <Button
       {...props}
-      className={["control-button", className].filter(Boolean).join(" ")}
+      className={className}
       ref={ref}
       type={type}
       disabled={disabled || pending}
@@ -40,7 +41,7 @@ const ConfirmDialogActionButton = forwardRef<
       ) : (
         children
       )}
-    </button>
+    </Button>
   );
 });
 

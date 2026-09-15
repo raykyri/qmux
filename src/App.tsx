@@ -106,7 +106,16 @@ import {
   subscribeDiagramLightbox,
 } from "./lib/diagramLightbox";
 import ConfirmDialogActionButton from "./components/ConfirmDialogActionButton";
-import CustomSelect from "./components/CustomSelect";
+import {
+  Button,
+  DialogActions,
+  DialogBackdrop,
+  DialogForm,
+  DialogTitle,
+  Input,
+  NativeSelect,
+  Select,
+} from "./components/ui";
 import { queuedTurnDeliveryLabel } from "./components/QueuedTurnCard";
 import {
   latestUserTurnTimestamp,
@@ -17471,9 +17480,9 @@ function MainApp() {
               <label htmlFor="settings-color-theme" className="settings-label">
                 Color theme
               </label>
-              <select
+              <NativeSelect
                 id="settings-color-theme"
-                className="form-field settings-select"
+                className="settings-select"
                 value={settings.colorTheme}
                 onChange={(event) => {
                   const colorTheme = event.currentTarget.value as AppSettings["colorTheme"];
@@ -17485,7 +17494,7 @@ function MainApp() {
                     {option.label}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </div>
 
             <div className="settings-row">
@@ -17505,7 +17514,7 @@ function MainApp() {
                   id="settings-theme"
                   ref={themePickerTriggerRef}
                   type="button"
-                  className="form-field settings-select settings-theme-trigger"
+                  className="settings-select settings-theme-trigger"
                   role="combobox"
                   aria-haspopup="listbox"
                   aria-expanded={themePickerOpen}
@@ -17594,9 +17603,9 @@ function MainApp() {
               <label htmlFor="settings-body-font" className="settings-label">
                 Body font
               </label>
-              <select
+              <NativeSelect
                 id="settings-body-font"
-                className="form-field settings-select"
+                className="settings-select"
                 value={availableBodyFonts === null ? "" : settings.bodyFontId}
                 disabled={availableBodyFonts === null}
                 onChange={(event) => {
@@ -17613,16 +17622,16 @@ function MainApp() {
                     </option>
                   ))
                 )}
-              </select>
+              </NativeSelect>
             </div>
 
             <div className="settings-row">
               <label htmlFor="settings-font" className="settings-label">
                 Terminal font
               </label>
-              <select
+              <NativeSelect
                 id="settings-font"
-                className="form-field settings-select"
+                className="settings-select"
                 value={settings.fontId}
                 onChange={(event) => {
                   // Read the value synchronously: the setSettings updater runs
@@ -17637,7 +17646,7 @@ function MainApp() {
                     {option.label}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </div>
 
             <div className="settings-row">
@@ -17705,9 +17714,9 @@ function MainApp() {
               <label htmlFor="settings-tab-title-provider" className="settings-label">
                 Generate tab titles
               </label>
-              <select
+              <NativeSelect
                 id="settings-tab-title-provider"
-                className="form-field settings-select"
+                className="settings-select"
                 value={settings.tabTitleProvider}
                 onChange={(event) => {
                   const tabTitleProvider =
@@ -17728,7 +17737,7 @@ function MainApp() {
                       : option.label}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </div>
             {!appleFoundationTitleAvailable ? (
               <p className="settings-hint">
@@ -17936,9 +17945,9 @@ function MainApp() {
                 Completion sound
               </label>
               <div className="settings-completion-sound-controls">
-                <select
+                <NativeSelect
                   id="settings-completion-sound"
-                  className="form-field settings-select settings-completion-sound-select"
+                  className="settings-select settings-completion-sound-select"
                   value={settings.completionSound}
                   onChange={(event) => {
                     const completionSound = event.currentTarget.value as CompletionSoundId;
@@ -17951,7 +17960,7 @@ function MainApp() {
                       {option.label}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
                 <button
                   type="button"
                   className="control-button settings-completion-sound-test"
@@ -18009,9 +18018,9 @@ function MainApp() {
                       : "New worktrees stored in qmux’s global workspace directory."}
                 </p>
               </div>
-              <select
+              <NativeSelect
                 id="settings-worktree-location"
-                className="form-field settings-select"
+                className="settings-select"
                 value={settings.worktreeLocation}
                 onChange={(event) => {
                   const worktreeLocation =
@@ -18024,7 +18033,7 @@ function MainApp() {
                     {option.label}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </div>
 
             <div className="settings-row settings-research-instructions-row">
@@ -18075,9 +18084,9 @@ function MainApp() {
               <label htmlFor="settings-global-task-launcher-hotkey" className="settings-label">
                 Global quick launch hotkey
               </label>
-              <select
+              <NativeSelect
                 id="settings-global-task-launcher-hotkey"
-                className="form-field settings-select"
+                className="settings-select"
                 value={globalTaskLauncherSetting.hotkey ?? ""}
                 disabled={globalTaskLauncherHotkeySaving}
                 aria-invalid={globalTaskLauncherHotkeyMessage ? true : undefined}
@@ -18107,7 +18116,7 @@ function MainApp() {
                     {option.accelerator === showHideShortcutValue ? " (used by Show/hide)" : ""}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </div>
             {globalTaskLauncherHotkeyMessage || globalTaskLauncherHotkeySaving ? (
               <p
@@ -18236,9 +18245,9 @@ function MainApp() {
                   <label htmlFor="settings-cursor-style" className="settings-label">
                     Cursor style
                   </label>
-                  <select
+                  <NativeSelect
                     id="settings-cursor-style"
-                    className="form-field settings-select"
+                    className="settings-select"
                     value={settings.cursorStyle}
                     onChange={(event) => {
                       const cursorStyle = event.currentTarget.value as AppSettings["cursorStyle"];
@@ -18250,7 +18259,7 @@ function MainApp() {
                         {option.label}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 </div>
 
                 <div className="settings-row">
@@ -18291,9 +18300,9 @@ function MainApp() {
                   <label htmlFor="settings-mouse-wheel-sensitivity" className="settings-label">
                     Mouse wheel sensitivity
                   </label>
-                  <select
+                  <NativeSelect
                     id="settings-mouse-wheel-sensitivity"
-                    className="form-field settings-select"
+                    className="settings-select"
                     value={settings.mouseWheelSensitivity}
                     onChange={(event) => {
                       const mouseWheelSensitivity = event.currentTarget
@@ -18306,7 +18315,7 @@ function MainApp() {
                         {option.label}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 </div>
 
                 <div className="settings-row">
@@ -18543,36 +18552,31 @@ function MainApp() {
       ) : null}
 
       {worktreeCreateDialog ? (
-        <div
-          className="confirm-dialog-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !worktreeCreateDialog.creating) {
-              dismissWorktreeCreateDialog(false);
-            }
-          }}
+        <DialogBackdrop
+          onDismiss={() => dismissWorktreeCreateDialog(false)}
+          dismissDisabled={worktreeCreateDialog.creating}
         >
-          <form
-            className="confirm-dialog rename-dialog"
-            role="dialog"
-            aria-modal="true"
+          <DialogForm
+            className="rename-dialog"
             aria-labelledby="create-worktree-dialog-title"
+            onDismiss={() => dismissWorktreeCreateDialog(false)}
+            dismissDisabled={worktreeCreateDialog.creating}
             onSubmit={(event) => {
               event.preventDefault();
               void createWorktreeFromDialog();
             }}
           >
-            <h2 id="create-worktree-dialog-title">
+            <DialogTitle id="create-worktree-dialog-title">
               {worktreeCreateDialog.action.kind === "fork"
                 ? "Fork session in worktree"
                 : "Open worktree"}
-            </h2>
+            </DialogTitle>
             {worktreeCreateDialog.action.kind === "open" ? (
               <>
                 <label className="confirm-dialog-field-label" htmlFor="create-worktree-start">
                   Start at
                 </label>
-                <CustomSelect
+                <Select
                   id="create-worktree-start"
                   className="create-worktree-start-select"
                   value={worktreeCreateDialog.startRef ?? ""}
@@ -18625,10 +18629,10 @@ function MainApp() {
             <label className="confirm-dialog-field-label" htmlFor="create-worktree-name">
               Worktree name
             </label>
-            <input
+            <Input
               ref={worktreeNameInputRef}
               id="create-worktree-name"
-              className="form-field rename-dialog-input"
+              className="rename-dialog-input"
               value={worktreeCreateDialog.name}
               disabled={worktreeCreateDialog.creating}
               spellCheck={false}
@@ -18657,15 +18661,13 @@ function MainApp() {
                 {worktreeCreateDialog.error}
               </p>
             ) : null}
-            <div className="confirm-dialog-actions">
-              <button
-                className="control-button"
-                type="button"
+            <DialogActions>
+              <Button
                 disabled={worktreeCreateDialog.creating}
                 onClick={() => dismissWorktreeCreateDialog(false)}
               >
                 Cancel
-              </button>
+              </Button>
               <ConfirmDialogActionButton
                 type="submit"
                 disabled={!worktreeCreateDialog.name.trim() || worktreeCreateDialog.creating}
@@ -18676,9 +18678,9 @@ function MainApp() {
               >
                 {worktreeCreateDialog.action.kind === "fork" ? "Fork session" : "Open worktree"}
               </ConfirmDialogActionButton>
-            </div>
-          </form>
-        </div>
+            </DialogActions>
+          </DialogForm>
+        </DialogBackdrop>
       ) : null}
 
       {remoteDeleteConfirm ? (
@@ -19021,9 +19023,9 @@ function MainApp() {
                   ? "Rename group"
                   : "Rename tab"}
             </h2>
-            <input
+            <Input
               ref={renameInputRef}
-              className="form-field rename-dialog-input"
+              className="rename-dialog-input"
               value={renameValue}
               onChange={(event) => setRenameValue(event.currentTarget.value)}
               onKeyDown={(event) => {

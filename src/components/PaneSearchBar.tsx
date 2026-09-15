@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from "react";
+import { Input } from "./ui";
 
 // The find bar shared by native terminal search and DOM-range search in
 // transcripts and research documents. It owns only presentation and the
@@ -105,10 +106,10 @@ export default function PaneSearchBar({
         onFocusLeave?.();
       }}
     >
-      <input
+      <Input
         ref={inputRef}
         type="text"
-        className="form-field pane-search-input"
+        className="pane-search-input"
         value={term}
         placeholder={placeholder}
         spellCheck={false}

@@ -5,9 +5,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { createPortal } from "react-dom";
 import { Check, ChevronDown, Minus } from "lucide-react";
 import { placePanePopover } from "../lib/appHelpers";
+import { Button, Menu, MenuItem, PopoverPortal } from "./ui";
 
 export interface HomeGroupTerminal {
   agentId: string;
@@ -133,11 +133,10 @@ function HomeGroupChip({
         checkState === "mixed" ? " is-mixed" : ""
       }`}
     >
-      <button
-        type="button"
+      <Button
         role="checkbox"
         aria-checked={checkState}
-        className="control-button home-group-toggle"
+        className="home-group-toggle"
         onClick={toggleGroup}
       >
         <span className="home-group-checkbox" aria-hidden="true">
@@ -151,11 +150,10 @@ function HomeGroupChip({
         <span className="home-group-count">
           {visibleCount}/{agentIds.length}
         </span>
-      </button>
-      <button
+      </Button>
+      <Button
         ref={caretRef}
-        type="button"
-        className={`control-button home-group-caret${open ? " is-open" : ""}`}
+        className={`home-group-caret${open ? " is-open" : ""}`}
         title={`Choose terminals in ${group.name}`}
         aria-label={`Choose terminals in ${group.name}`}
         aria-haspopup="menu"
@@ -166,51 +164,49 @@ function HomeGroupChip({
         }}
       >
         <ChevronDown size={13} aria-hidden="true" />
-      </button>
-      {open
-        ? createPortal(
-            <div
-              ref={menuRef}
-              className="popover-surface popover-surface--context home-group-menu"
-              role="menu"
-              aria-label={`Terminals in ${group.name}`}
-              style={
-                pos
-                  ? {
-                      left: pos.left,
-                      top: pos.top,
-                      maxHeight: pos.maxHeight,
-                      width: Math.min(HOME_GROUP_MENU_WIDTH, pos.maxWidth),
-                      maxWidth: pos.maxWidth,
-                    }
-                  : { left: -9999, top: -9999 }
-              }
-            >
-              {group.terminals.map((terminal) => {
-                const shown = !hiddenTerminalIds.has(terminal.agentId);
-                return (
-                  <button
-                    key={terminal.agentId}
-                    type="button"
-                    role="menuitemcheckbox"
-                    aria-checked={shown}
-                    className={`menu-item home-group-menu-item${shown ? " is-shown" : ""}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onToggleTerminal(terminal.agentId);
-                    }}
-                  >
-                    <span className="home-group-checkbox" aria-hidden="true">
-                      {shown ? <Check size={10} strokeWidth={3} /> : null}
-                    </span>
-                    <span className="home-group-menu-item-name">{terminal.title}</span>
-                  </button>
-                );
-              })}
-            </div>,
-            document.body,
-          )
-        : null}
+      </Button>
+      {open ? (
+        <PopoverPortal>
+          <Menu
+            ref={menuRef}
+            className="home-group-menu"
+            role="menu"
+            aria-label={`Terminals in ${group.name}`}
+            style={
+              pos
+                ? {
+                    left: pos.left,
+                    top: pos.top,
+                    maxHeight: pos.maxHeight,
+                    width: Math.min(HOME_GROUP_MENU_WIDTH, pos.maxWidth),
+                    maxWidth: pos.maxWidth,
+                  }
+                : { left: -9999, top: -9999 }
+            }
+          >
+            {group.terminals.map((terminal) => {
+              const shown = !hiddenTerminalIds.has(terminal.agentId);
+              return (
+                <MenuItem
+                  key={terminal.agentId}
+                  role="menuitemcheckbox"
+                  aria-checked={shown}
+                  className={`home-group-menu-item${shown ? " is-shown" : ""}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onToggleTerminal(terminal.agentId);
+                  }}
+                >
+                  <span className="home-group-checkbox" aria-hidden="true">
+                    {shown ? <Check size={10} strokeWidth={3} /> : null}
+                  </span>
+                  <span className="home-group-menu-item-name">{terminal.title}</span>
+                </MenuItem>
+              );
+            })}
+          </Menu>
+        </PopoverPortal>
+      ) : null}
     </div>
   );
 }

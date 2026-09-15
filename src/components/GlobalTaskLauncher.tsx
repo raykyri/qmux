@@ -1,4 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Input } from "./ui";
 import { ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getAgentUiAdapter } from "../adapters";
@@ -701,9 +702,9 @@ export default function GlobalTaskLauncher() {
           Send task to
         </div>
         {filterActive ? (
-          <input
+          <Input
             ref={filterInputRef}
-            className="form-field global-task-launcher-filter"
+            className="global-task-launcher-filter"
             type="text"
             placeholder="Filter tabs…"
             aria-label="Filter agent tabs"

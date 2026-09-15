@@ -16,6 +16,7 @@ import type {
   PointerEvent as ReactPointerEvent,
 } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { Input } from "./ui";
 import type {
   BrowserOverlayMode,
   BrowserOverlaySize,
@@ -952,10 +953,10 @@ export default function BrowserOverlay({
             event.currentTarget.querySelector("input")?.blur();
           }}
         >
-          <input
+          <Input
             ref={addressInputRef}
             type="text"
-            className="form-field browser-overlay-url"
+            className="browser-overlay-url"
             value={draft}
             onChange={(event) => setDraft(event.currentTarget.value)}
             onBlur={() => setDraft(displayedUrl ?? "")}

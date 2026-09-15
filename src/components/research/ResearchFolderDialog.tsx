@@ -1,4 +1,12 @@
 import { useEffect, useState } from "react";
+import {
+  Button,
+  DialogActions,
+  DialogBackdrop,
+  DialogForm,
+  DialogTitle,
+  Input,
+} from "../ui";
 
 interface ResearchFolderDialogProps {
   open: boolean;
@@ -27,20 +35,11 @@ export default function ResearchFolderDialog({
 
   const trimmedName = name.trim();
   return (
-    <div
-      className="confirm-dialog-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          onClose();
-        }
-      }}
-    >
-      <form
-        className="confirm-dialog rename-dialog"
-        role="dialog"
-        aria-modal="true"
+    <DialogBackdrop onDismiss={onClose}>
+      <DialogForm
+        className="rename-dialog"
         aria-labelledby="create-research-folder-dialog-title"
+        onDismiss={onClose}
         onSubmit={(event) => {
           event.preventDefault();
           if (trimmedName) {
@@ -48,7 +47,7 @@ export default function ResearchFolderDialog({
           }
         }}
       >
-        <h2 id="create-research-folder-dialog-title">New folder</h2>
+        <DialogTitle id="create-research-folder-dialog-title">New folder</DialogTitle>
         <p>
           {itemCount > 0
             ? `Name the folder before moving ${itemCount} selected ${
@@ -56,28 +55,20 @@ export default function ResearchFolderDialog({
               } into it.`
             : "Create an empty folder for research you want to organize later."}
         </p>
-        <input
-          className="form-field rename-dialog-input"
+        <Input
+          className="rename-dialog-input"
           value={name}
           aria-label="Folder name"
           autoFocus
           onChange={(event) => setName(event.currentTarget.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              onClose();
-            }
-          }}
         />
-        <div className="confirm-dialog-actions">
-          <button className="control-button" type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="control-button" type="submit" disabled={!trimmedName}>
+        <DialogActions>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" disabled={!trimmedName}>
             {itemCount > 0 ? "Create and move" : "Create folder"}
-          </button>
-        </div>
-      </form>
-    </div>
+          </Button>
+        </DialogActions>
+      </DialogForm>
+    </DialogBackdrop>
   );
 }

@@ -17,3 +17,19 @@ qmux classifiers before Ghostty can capture them. System
 window-management chords (Cmd-H hide, Cmd-Option-H hide others, Cmd-M
 minimize) are exempted in that override so they fall through to the
 app menu instead of dying in Ghostty's catch-all.
+
+Before implementing a button, form field, menu, popover, dialog, or
+select, check `src/components/ui`, `src/styles/primitives.css`, and
+`src/styles/components` for an existing implementation. Import shared
+components from `src/components/ui` rather than rebuilding their markup.
+
+Shared visual primitives belong in `src/styles/primitives.css`.
+Complete reusable component styles belong in `src/styles/components`
+and must be imported through the components CSS layer. Feature
+stylesheets should contain feature layout and explicit component
+modifiers, not duplicate control chrome.
+
+Custom interactive controls must support keyboard navigation, visible
+focus, disabled states, Escape and Tab dismissal, focus restoration,
+and appropriate ARIA roles. App-level Command shortcuts must continue
+to work while a native Ghostty terminal is focused.

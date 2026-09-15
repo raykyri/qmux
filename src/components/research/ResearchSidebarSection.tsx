@@ -22,6 +22,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { ResearchTreeSummary } from "../../types";
+import { Input } from "../ui";
 import { moveResearchTreeIdToGap } from "../../lib/researchOrder";
 import {
   addTreesToResearchFolder,
@@ -1744,9 +1745,9 @@ function ResearchSidebarSection({
                 <h2 id="rename-research-dialog-title">
                   {renamingFolder ? "Rename folder" : "Rename research"}
                 </h2>
-                <input
+                <Input
                   ref={renameInputRef}
-                  className="form-field rename-dialog-input"
+                  className="rename-dialog-input"
                   value={renameDraft}
                   aria-label={renamingFolder ? "Folder name" : "Research title"}
                   onChange={(event) => setRenameDraft(event.currentTarget.value)}

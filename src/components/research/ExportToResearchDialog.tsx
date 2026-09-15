@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { GroupInfo } from "../../types";
+import {
+  Button,
+  DialogActions,
+  DialogBackdrop,
+  DialogForm,
+  Input,
+  NativeSelect,
+} from "../ui";
 
 // Confirmation for "Export to Research": pick the destination Research
 // folder, optionally name the tree, and state plainly what the export does —
@@ -89,27 +97,12 @@ export default function ExportToResearchDialog({
   }
 
   return (
-    <div
-      className="confirm-dialog-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !submitting) {
-          onClose();
-        }
-      }}
-    >
-      <form
-        className="confirm-dialog export-research-dialog"
-        role="dialog"
-        aria-modal="true"
+    <DialogBackdrop onDismiss={onClose} dismissDisabled={submitting}>
+      <DialogForm
+        className="export-research-dialog"
         aria-label={`Export ${paneTitle} to Research`}
-        onKeyDown={(event) => {
-          if (event.key === "Escape" && !submitting) {
-            event.preventDefault();
-            event.stopPropagation();
-            onClose();
-          }
-        }}
+        onDismiss={onClose}
+        dismissDisabled={submitting}
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -127,7 +120,7 @@ export default function ExportToResearchDialog({
         {folders.length > 1 ? (
           <label className="export-research-field">
             <span>Research folder</span>
-            <select
+            <NativeSelect
               value={workspaceId ?? ""}
               aria-label="Research folder"
               onChange={(event) => setWorkspaceId(event.currentTarget.value || null)}
@@ -137,12 +130,12 @@ export default function ExportToResearchDialog({
                   {folder.name}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </label>
         ) : null}
         <label className="export-research-field">
           <span>Title</span>
-          <input
+          <Input
             ref={titleInputRef}
             className="export-research-input"
             type="text"
@@ -158,20 +151,15 @@ export default function ExportToResearchDialog({
             {error}
           </p>
         ) : null}
-        <div className="confirm-dialog-actions">
-          <button
-            className="control-button"
-            type="button"
-            disabled={submitting}
-            onClick={onClose}
-          >
+        <DialogActions>
+          <Button disabled={submitting} onClick={onClose}>
             Cancel
-          </button>
-          <button className="control-button" type="submit" disabled={submitting}>
+          </Button>
+          <Button type="submit" disabled={submitting}>
             {submitting ? "Exporting…" : "Export"}
-          </button>
-        </div>
-      </form>
-    </div>
+          </Button>
+        </DialogActions>
+      </DialogForm>
+    </DialogBackdrop>
   );
 }

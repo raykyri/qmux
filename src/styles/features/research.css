@@ -1193,9 +1193,6 @@
   width: 100%;
   min-height: var(--control-h-lg);
   padding: 0 10px;
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-md);
-  background: var(--field-bg);
   color: var(--text-strong);
   font-size: var(--fs-input);
 }

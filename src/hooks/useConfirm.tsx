@@ -1,6 +1,7 @@
 import { useCallback, useLayoutEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
+import { Button, Dialog, DialogActions, DialogBackdrop } from "../components/ui";
 
 // A promise-based in-app confirmation, used in place of window.confirm (which is a
 // no-op in the Tauri webview). A component renders the returned `dialog` and calls
@@ -53,39 +54,17 @@ export function useConfirm(): {
   }, [open]);
 
   const dialog = state ? (
-    <div
-      className="confirm-dialog-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          settle(false);
-        }
-      }}
-    >
-      <div
-        className="confirm-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label={state.message}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            event.stopPropagation();
-            settle(false);
-          }
-        }}
-      >
+    <DialogBackdrop onDismiss={() => settle(false)}>
+      <Dialog aria-label={state.message} onDismiss={() => settle(false)}>
         <p>{state.message}</p>
-        <div className="confirm-dialog-actions">
-          <button className="control-button" type="button" onClick={() => settle(false)}>
-            {state.cancelLabel ?? "Cancel"}
-          </button>
-          <button className="control-button" type="button" autoFocus onClick={() => settle(true)}>
+        <DialogActions>
+          <Button onClick={() => settle(false)}>{state.cancelLabel ?? "Cancel"}</Button>
+          <Button autoFocus onClick={() => settle(true)}>
             {state.confirmLabel ?? "OK"}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </DialogBackdrop>
   ) : null;
 
   return { confirm, dialog };
