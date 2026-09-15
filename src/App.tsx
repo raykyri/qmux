@@ -294,10 +294,14 @@ import { requestComposerInsert } from "./lib/promptLibrary";
 import { nativeHumanBrowserOwnerIds } from "./lib/humanBrowserState";
 import {
   anyBrowserOverlayOpen,
+  browserPreviewScrollFor,
   browserOverlayShowsLink,
   closeAllBrowserOverlaysState,
   closeBrowserOverlayState,
+  pruneBrowserPreviewScroll,
+  rememberBrowserPreviewScroll,
   resolveTranscriptOrBrowserToggle,
+  type BrowserPreviewScrollCache,
 } from "./lib/browserOverlay";
 import { artifactTrayVisible, isArtifactBrowserOpen } from "./lib/artifacts";
 import { createTranscriptScrollCaptureSlot } from "./lib/transcriptScroll";
@@ -1862,6 +1866,7 @@ function MainApp() {
   const groupPointerDragRef = useRef<GroupPointerDrag | null>(null);
   const suppressGroupMenuButtonClickRef = useRef(false);
   const browserOverlayByPaneRef = useRef<Record<string, BrowserOverlayState>>({});
+  const browserPreviewScrollByOwnerRef = useRef<BrowserPreviewScrollCache>(new Map());
   const nativeHumanBrowserOwnerIdsRef = useRef<Set<string>>(new Set());
   const activeBrowserOwnerIdRef = useRef<string | null>(null);
   const toggleActiveBrowserOverlayRef = useRef<() => void>(() => {});
@@ -5085,6 +5090,7 @@ function MainApp() {
     for (const tree of [...researchTrees, ...archivedResearchTrees]) {
       browserOwnerIds.add(researchBrowserOwnerId(tree.id));
     }
+    pruneBrowserPreviewScroll(browserPreviewScrollByOwnerRef.current, browserOwnerIds);
     setTerminalTitleByPane((current) => {
       const next = Object.fromEntries(
         Object.entries(current).filter(([paneId]) => ids.has(paneId)),
@@ -19474,6 +19480,11 @@ function MainApp() {
           sandbox={activeBrowserOverlay.sandbox}
           mode={activeBrowserOverlay.mode}
           bodyFontId={settings.bodyFontId}
+          initialPreviewScroll={browserPreviewScrollFor(
+            browserPreviewScrollByOwnerRef.current,
+            activeBrowserOwnerId,
+            activeBrowserOverlay.url,
+          )}
           size={activeBrowserOverlay.size}
           fullWidth={activeBrowserOverlay.fullWidth ?? false}
           toggleShortcutLabel={activePaneHasTurnPaneHeader ? null : EXPAND_TOGGLE_SHORTCUT_LABEL}
@@ -19481,6 +19492,13 @@ function MainApp() {
           geometryRevision={nativeBrowserGeometryRevision}
           onNavigate={navigateActiveBrowserOverlay}
           onLocationChange={(url) => setHumanBrowserLocation(activeBrowserOwnerId, url)}
+          onPreviewScroll={(position) =>
+            rememberBrowserPreviewScroll(
+              browserPreviewScrollByOwnerRef.current,
+              activeBrowserOwnerId,
+              position,
+            )
+          }
           onRefresh={refreshActiveBrowserOverlay}
           onOpenExternal={(currentUrl) => {
             if (!currentUrl) {

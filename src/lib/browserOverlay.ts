@@ -1,6 +1,36 @@
-import type { BrowserOverlayState } from "../appTypes";
+import type { BrowserOverlayState, BrowserPreviewScrollPosition } from "../appTypes";
 import { displayPathsReferToSameDirectory } from "./appHelpers";
 import { pathFromFileServerUrl } from "./links";
+
+export type BrowserPreviewScrollCache = Map<string, BrowserPreviewScrollPosition>;
+
+export function rememberBrowserPreviewScroll(
+  cache: BrowserPreviewScrollCache,
+  ownerId: string,
+  position: BrowserPreviewScrollPosition,
+) {
+  cache.set(ownerId, position);
+}
+
+export function browserPreviewScrollFor(
+  cache: BrowserPreviewScrollCache,
+  ownerId: string,
+  url: string | null,
+): BrowserPreviewScrollPosition | null {
+  const position = cache.get(ownerId);
+  return position && position.url === url ? position : null;
+}
+
+export function pruneBrowserPreviewScroll(
+  cache: BrowserPreviewScrollCache,
+  retainedOwnerIds: ReadonlySet<string>,
+) {
+  for (const ownerId of cache.keys()) {
+    if (!retainedOwnerIds.has(ownerId)) {
+      cache.delete(ownerId);
+    }
+  }
+}
 
 export function browserOverlayIsOpen(
   state: BrowserOverlayState | undefined,

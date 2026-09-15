@@ -35,3 +35,11 @@ test("owner transitions identify children retired by close and mode changes", ()
   });
   assert.deepEqual([...owners], ["open"]);
 });
+
+test("inactive open owners retain native children for hide-show restoration", () => {
+  const owners = nativeHumanBrowserOwnerIds({
+    active: overlay({ url: "https://active.example/" }),
+    inactive: overlay({ url: "https://inactive.example/" }),
+  });
+  assert.deepEqual([...owners], ["active", "inactive"]);
+});

@@ -16,7 +16,11 @@ import type {
   PointerEvent as ReactPointerEvent,
 } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import type { BrowserOverlayMode, BrowserOverlaySize } from "../appTypes";
+import type {
+  BrowserOverlayMode,
+  BrowserOverlaySize,
+  BrowserPreviewScrollPosition,
+} from "../appTypes";
 import {
   claimNativeTerminalPointerForWebDrag,
   getHumanBrowserSnapshot,
@@ -107,6 +111,7 @@ interface BrowserOverlayProps {
   // this isolated frame use the same body font as the application. Arbitrary
   // localhost pages remain untouched.
   bodyFontId: string;
+  initialPreviewScroll: BrowserPreviewScrollPosition | null;
   size?: BrowserOverlaySize | null;
   fullWidth: boolean;
   toggleShortcutLabel?: string | null;
@@ -120,6 +125,7 @@ interface BrowserOverlayProps {
   onNavigate: (rawInput: string) => void;
   // Redirects and in-page navigation update the per-pane address state.
   onLocationChange: (url: string) => void;
+  onPreviewScroll: (position: BrowserPreviewScrollPosition) => void;
   // Reload the current page.
   onRefresh: () => void;
   // Open the current page, or a protected preview's source file, externally.
@@ -141,6 +147,7 @@ export default function BrowserOverlay({
   sandbox,
   mode,
   bodyFontId,
+  initialPreviewScroll,
   size,
   fullWidth,
   toggleShortcutLabel,
@@ -148,6 +155,7 @@ export default function BrowserOverlay({
   geometryRevision,
   onNavigate,
   onLocationChange,
+  onPreviewScroll,
   onRefresh,
   onOpenExternal,
   onClose,
@@ -174,7 +182,7 @@ export default function BrowserOverlay({
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const addressInputRef = useRef<HTMLInputElement | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
-  const frameScrollRef = useRef<{ url: string; x: number; y: number } | null>(null);
+  const frameScrollRef = useRef<BrowserPreviewScrollPosition | null>(initialPreviewScroll);
   const lastAutomationMoveRef = useRef(0);
   const cleanupResizeRef = useRef<(() => void) | null>(null);
   const humanBrowserUrlRef = useRef(url);
@@ -182,6 +190,7 @@ export default function BrowserOverlay({
   const humanBrowserNavigationRevisionRef = useRef(reloadNonce);
   const onLocationChangeRef = useRef(onLocationChange);
   const onNavigateRef = useRef(onNavigate);
+  const onPreviewScrollRef = useRef(onPreviewScroll);
   const syncHumanBrowserSlotRef = useRef<() => void>(() => undefined);
 
   const automated = mode === "agent" && !sandbox;
@@ -206,6 +215,12 @@ export default function BrowserOverlay({
   humanBrowserNavigationRevisionRef.current = reloadNonce;
   onLocationChangeRef.current = onLocationChange;
   onNavigateRef.current = onNavigate;
+  onPreviewScrollRef.current = onPreviewScroll;
+
+  useEffect(() => {
+    frameScrollRef.current =
+      initialPreviewScroll?.url === url ? initialPreviewScroll : null;
+  }, [initialPreviewScroll, url]);
 
   useEffect(() => {
     if (document.activeElement !== addressInputRef.current) {
@@ -214,7 +229,7 @@ export default function BrowserOverlay({
   }, [displayedUrl]);
 
   useEffect(() => {
-    if (!sandbox || !frameUrl) {
+    if (!sandbox || !frameUrl || !url) {
       return;
     }
     const rememberScroll = (event: MessageEvent) => {
@@ -231,11 +246,13 @@ export default function BrowserOverlay({
       ) {
         return;
       }
-      frameScrollRef.current = { url: frameUrl, x: message.x, y: message.y };
+      const position = { url, x: message.x, y: message.y };
+      frameScrollRef.current = position;
+      onPreviewScrollRef.current(position);
     };
     window.addEventListener("message", rememberScroll);
     return () => window.removeEventListener("message", rememberScroll);
-  }, [frameUrl, sandbox]);
+  }, [frameUrl, sandbox, url]);
 
   useLayoutEffect(() => {
     if (!humanBrowser) {
@@ -1160,7 +1177,7 @@ export default function BrowserOverlay({
             referrerPolicy="no-referrer"
             onLoad={() => {
               const scroll = frameScrollRef.current;
-              if (scroll?.url === frameUrl) {
+              if (scroll?.url === url) {
                 frameRef.current?.contentWindow?.postMessage(
                   { type: "qmux-preview-scroll-restore", x: scroll.x, y: scroll.y },
                   "*",

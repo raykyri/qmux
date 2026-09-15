@@ -3,11 +3,15 @@ import test from "node:test";
 import type { BrowserOverlayState } from "../src/appTypes";
 import {
   anyBrowserOverlayOpen,
+  browserPreviewScrollFor,
   browserOverlayIsOpen,
   browserOverlayShowsLink,
   closeAllBrowserOverlaysState,
   closeBrowserOverlayState,
+  pruneBrowserPreviewScroll,
+  rememberBrowserPreviewScroll,
   resolveTranscriptOrBrowserToggle,
+  type BrowserPreviewScrollCache,
 } from "../src/lib/browserOverlay";
 
 function overlay(overrides: Partial<BrowserOverlayState> = {}): BrowserOverlayState {
@@ -78,6 +82,19 @@ test("closeBrowserOverlayState closes only the requested owner", () => {
   assert.equal(closed.a.open, false);
   assert.equal(closed.b.open, true);
   assert.equal(closeBrowserOverlayState({ a: overlay({ open: false }) }, "a").a.open, false);
+});
+
+test("browser preview scroll survives owner switches without crossing URLs", () => {
+  const cache: BrowserPreviewScrollCache = new Map();
+  const position = { url: "http://127.0.0.1/doc.md", x: 12, y: 480 };
+  rememberBrowserPreviewScroll(cache, "pane-a", position);
+
+  assert.equal(browserPreviewScrollFor(cache, "pane-a", position.url), position);
+  assert.equal(browserPreviewScrollFor(cache, "pane-b", position.url), null);
+  assert.equal(browserPreviewScrollFor(cache, "pane-a", "http://127.0.0.1/other.md"), null);
+
+  pruneBrowserPreviewScroll(cache, new Set(["pane-b"]));
+  assert.equal(cache.size, 0);
 });
 
 test("⌘⇧E closes a live browser instead of expanding the transcript", () => {

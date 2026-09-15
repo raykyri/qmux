@@ -97,6 +97,12 @@ export type BrowserOverlaySize = {
   height: number;
 };
 
+export type BrowserPreviewScrollPosition = {
+  url: string;
+  x: number;
+  y: number;
+};
+
 export type BrowserOverlayMode = "webkit" | "agent";
 
 // Per-pane browser overlay: the URL it's showing, whether it's visible, a nonce
