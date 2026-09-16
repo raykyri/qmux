@@ -524,7 +524,7 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
     let is_head = head.method == "HEAD";
 
     // Split the query string off the target (dropping any fragment) before routing.
-    // `?raw=1` opts a Markdown file out of the HTML rendering below.
+    // `?raw=1` opts Markdown and JSON files out of the HTML rendering below.
     let without_fragment = head.target.split('#').next().unwrap_or("");
     let (path, query) = match without_fragment.split_once('?') {
         Some((path, query)) => (path, Some(query)),
@@ -658,6 +658,26 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
         // Markdown passes through the renderer verbatim, so a hostile file could embed
         // `<script>`/`onerror` — dropping script execution entirely makes that inert
         // instead of relying solely on the overlay's opaque-origin sandbox.
+        if let Some(port) = state.file_server_port() {
+            response.header("Content-Security-Policy", &markdown_page_csp(port));
+        }
+        if !is_head {
+            response.body = page.into_bytes();
+        }
+        return response;
+    }
+
+    // WebKit's native JSON document does not provide a themed preview. Serve an
+    // escaped source page, preserving numbers, key order, and even malformed JSON.
+    // As with Markdown, transformed responses ignore source byte ranges.
+    if !raw_requested && content_type.starts_with("application/json") && total <= MAX_INLINE_BYTES {
+        let Ok(source) = read_slice(file, 0, total) else {
+            return Response::error(500, "Internal Server Error");
+        };
+        let page = render_json_page(&canonical, &String::from_utf8_lossy(&source));
+        let mut response = Response::new(200, "OK");
+        response.header("Content-Type", "text/html; charset=utf-8");
+        response.header("Content-Length", &page.len().to_string());
         if let Some(port) = state.file_server_port() {
             response.header("Content-Security-Policy", &markdown_page_csp(port));
         }
@@ -1138,7 +1158,29 @@ fn render_markdown_page(
     )
 }
 
-/// Escapes text for interpolation into HTML (the page `<title>`).
+fn render_json_page(path: &Path, source: &str) -> String {
+    let title = escape_html(
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("JSON"),
+    );
+    let body = escape_html(source);
+    let scroll_bridge = html_preview_scroll_bridge();
+    format!(
+        "<!doctype html>\n<html><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+         <title>{title}</title><style>\
+         :root {{ color-scheme: light dark; }}\
+         body {{ margin: 0; background: #ffffff; color: #1f2328; }}\
+         @media (prefers-color-scheme: dark) {{ body {{ background: #1e2227; color: #e2e6ea; }} }}\
+         pre {{ margin: 0; padding: 1.5rem; white-space: pre-wrap; overflow-wrap: anywhere; \
+         font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }}\
+         </style></head><body><main><pre><code>{body}</code></pre></main>\
+         {scroll_bridge}</body></html>\n"
+    )
+}
+
+/// Escapes text for interpolation into HTML.
 fn escape_html(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
@@ -1729,6 +1771,68 @@ mod tests {
         assert!(body.contains("<p>hello</p>"));
         assert!(body.contains("qmux-preview-scroll"));
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn json_preview_escapes_source_without_reparsing() {
+        for source in [
+            "\n{\"z\":9007199254740993,\"z\":1e999,\"html\":\"</code></pre><script>alert(1)</script>&\"}",
+            "{ incomplete JSON",
+            "",
+        ] {
+            let page = render_json_page(Path::new("<data>.JSON"), source);
+            assert!(page.contains("<title>&lt;data&gt;.JSON</title>"));
+            assert!(page.contains(&format!("<code>{}</code>", escape_html(source))));
+            assert!(!page.contains("<script>alert(1)</script>"));
+            assert!(page.contains("prefers-color-scheme: dark"));
+            assert!(page.contains("qmux-preview-scroll"));
+        }
+    }
+
+    #[test]
+    fn json_preview_supports_raw_ranges_and_head() {
+        let base = std::env::temp_dir().join(format!("qmux-fs-json-{}", std::process::id()));
+        let root = base.join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        let source = b"{\"hello\": \"world\"}";
+        let file = root.join("data.JSON");
+        std::fs::write(&file, source).unwrap();
+        let state = test_state(&root, &base, "pane-json");
+        let token = state.pane_file_token("pane-json").unwrap();
+        let path = url_path(0, &token, &std::fs::canonicalize(&file).unwrap());
+        let mut request = RequestHead {
+            method: "GET".into(),
+            target: path.clone(),
+            range: Some("bytes=0-4".into()),
+            host: None,
+            fetch_dest: Some("iframe".into()),
+        };
+        let preview = build_response(&state, &request);
+        assert_eq!(preview.status, 200);
+        assert!(
+            preview
+                .headers
+                .contains(&("Content-Type".into(), "text/html; charset=utf-8".into()))
+        );
+        assert!(String::from_utf8_lossy(&preview.body).contains("&quot;hello&quot;"));
+        request.method = "HEAD".into();
+        let head = build_response(&state, &request);
+        assert_eq!(head.headers, preview.headers);
+        assert!(head.body.is_empty());
+        request.method = "GET".into();
+        request.target = format!("{path}?raw=1");
+        let range = build_response(&state, &request);
+        assert_eq!(range.status, 206);
+        assert_eq!(range.body, &source[..5]);
+        request.range = None;
+        let raw = build_response(&state, &request);
+        assert_eq!(raw.status, 200);
+        assert!(raw.headers.contains(&(
+            "Content-Type".into(),
+            "application/json; charset=utf-8".into()
+        )));
+        assert_eq!(raw.body, source);
         let _ = std::fs::remove_dir_all(&base);
     }
 
