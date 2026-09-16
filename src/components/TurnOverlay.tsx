@@ -1508,9 +1508,11 @@ export default function TurnOverlay({
       ) : null}
       {!readerMode && displayedTimelineItems.some(item => item.role === "user") ? (
         <div
-          className="turn-message-navigation"
+          className={`turn-message-navigation${jumpToLatestVisible ? " is-visible" : ""}`}
           role="group"
           aria-label="Navigate user messages"
+          aria-hidden={!jumpToLatestVisible}
+          inert={!jumpToLatestVisible}
           style={{ bottom: jumpToLatestBottom }}
         >
           <button

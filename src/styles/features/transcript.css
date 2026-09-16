@@ -96,6 +96,7 @@
    while older turns move beneath it. Its live bottom offset is set by
    TurnOverlay from the already-measured composer/split height. */
 .turn-jump-to-latest {
+  --turn-floating-control-x: -50%;
   appearance: none;
   position: absolute;
   left: 50%;
@@ -114,23 +115,28 @@
   font-weight: 400;
   line-height: 1;
   white-space: nowrap;
+  backdrop-filter: blur(10px) saturate(120%);
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
+}
+
+.turn-jump-to-latest,
+.turn-message-navigation {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transform: translate(-50%, 10px) scale(0.92);
-  backdrop-filter: blur(10px) saturate(120%);
-  -webkit-backdrop-filter: blur(10px) saturate(120%);
+  transform: translate(var(--turn-floating-control-x, 0px), 10px) scale(0.92);
   transition:
     opacity 150ms ease,
     visibility 0s 150ms,
     transform 150ms ease-in;
 }
 
-.turn-jump-to-latest.is-visible {
+.turn-jump-to-latest.is-visible,
+.turn-message-navigation.is-visible {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
-  transform: translate(-50%, 0) scale(1);
+  transform: translate(var(--turn-floating-control-x, 0px), 0) scale(1);
   transition:
     opacity 170ms ease,
     visibility 0s,

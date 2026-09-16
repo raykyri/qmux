@@ -20,8 +20,10 @@
 }
 
 .app-shell.reduce-motion .turn-jump-to-latest,
-.app-shell.reduce-motion .turn-jump-to-latest.is-visible {
-  transform: translateX(-50%);
+.app-shell.reduce-motion .turn-jump-to-latest.is-visible,
+.app-shell.reduce-motion .turn-message-navigation,
+.app-shell.reduce-motion .turn-message-navigation.is-visible {
+  transform: translateX(var(--turn-floating-control-x, 0px));
 }
 
 .app-shell.reduce-motion .user-notification,
@@ -50,8 +52,10 @@
   }
 
   .turn-jump-to-latest,
-  .turn-jump-to-latest.is-visible {
-    transform: translateX(-50%);
+  .turn-jump-to-latest.is-visible,
+  .turn-message-navigation,
+  .turn-message-navigation.is-visible {
+    transform: translateX(var(--turn-floating-control-x, 0px));
   }
 
   .user-notification,
