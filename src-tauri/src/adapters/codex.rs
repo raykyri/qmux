@@ -1329,7 +1329,7 @@ fn push_codex_hook_integration(args: &mut Vec<String>, remote_hook_cli: Option<&
         let command = toml_string(&format!("{command_prefix} notify {event}"));
         let entry = if *event == "SessionStart" {
             format!(
-                "hooks.{event}=[{{matcher=\"startup|resume\",hooks=[{{type=\"command\",command={command},timeout=5}}]}}]"
+                "hooks.{event}=[{{matcher=\"startup|resume|clear\",hooks=[{{type=\"command\",command={command},timeout=5}}]}}]"
             )
         } else {
             format!("hooks.{event}=[{{hooks=[{{type=\"command\",command={command},timeout=5}}]}}]")
@@ -1744,7 +1744,7 @@ fn codex_profile_toml(shim_path: &Path, qmux_cli: &Path, existing_profile: Optio
     for event in CODEX_HOOK_EVENTS {
         if *event == "SessionStart" {
             raw.push_str("[[hooks.SessionStart]]\n");
-            raw.push_str("matcher = \"startup|resume\"\n");
+            raw.push_str("matcher = \"startup|resume|clear\"\n");
         } else {
             raw.push_str(&format!("[[hooks.{event}]]\n"));
         }
@@ -3364,7 +3364,7 @@ mod tests {
         );
         assert!(args.iter().any(|arg| {
             arg.starts_with("hooks.SessionStart=")
-                && arg.contains("matcher=\"startup|resume\"")
+                && arg.contains("matcher=\"startup|resume|clear\"")
                 && arg.contains("'/opt/qmux tools/qmux-cli' notify SessionStart")
         }));
         assert!(args.iter().any(|arg| {
@@ -3757,7 +3757,7 @@ mod tests {
         assert!(profile.contains("[features]"));
         assert!(profile.contains("hooks = true"));
         assert!(profile.contains("[[hooks.SessionStart]]"));
-        assert!(profile.contains("matcher = \"startup|resume\""));
+        assert!(profile.contains("matcher = \"startup|resume|clear\""));
         for event in CODEX_HOOK_EVENTS {
             assert!(
                 profile.contains(&format!("[[hooks.{event}]]")),
@@ -4046,6 +4046,95 @@ trusted_hash = "sha256:trusted"
             agent.transcript_path.as_deref(),
             Some(transcript_path.to_str().unwrap())
         );
+    }
+
+    #[test]
+    fn clear_session_replaces_old_turns_and_preserves_the_old_rollout() {
+        let state = test_state();
+        let dir = temp_dir();
+        let old_path = dir.join("old.jsonl");
+        let new_path = dir.join("new.jsonl");
+        let old_source = format!(
+            "{}\n{}\n",
+            json!({"type": "session_meta", "payload": {"id": "old-session"}}),
+            codex_user_message_line("old-turn", "old conversation")
+        );
+        fs::write(&old_path, &old_source).unwrap();
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Idle;
+        agent.session_id = Some("old-session".into());
+        agent.transcript_path = Some(old_path.display().to_string());
+        state.insert_agent(agent).unwrap();
+        let old_turns = resolve_transcript_turns(
+            "agent-1",
+            &old_source.lines().map(str::to_string).collect::<Vec<_>>(),
+        );
+        assert_eq!(old_turns.len(), 1);
+        state.replace_turns("agent-1", old_turns.clone()).unwrap();
+        let clear = || {
+            hook_for_agent(
+                "SessionStart",
+                "agent-1",
+                json!({"source": "clear", "session_id": "new-session",
+                "transcript_path": new_path.display().to_string()}),
+            )
+        };
+
+        // The hook can precede the rollout. Keep the old binding until validated.
+        ingest(&state, clear());
+        assert_eq!(
+            state
+                .agent("agent-1")
+                .unwrap()
+                .unwrap()
+                .session_id
+                .as_deref(),
+            Some("old-session")
+        );
+        assert_eq!(state.list_turns(Some("agent-1")).unwrap().len(), 1);
+        fs::write(
+            &new_path,
+            format!(
+                "{}\n",
+                json!({"type": "session_meta", "payload": {"id": "new-session"}})
+            ),
+        )
+        .unwrap();
+        let bound = wait_for_agent_transcript_path(&state, "agent-1", &new_path);
+        assert_eq!(bound.session_id.as_deref(), Some("new-session"));
+        assert_eq!(bound.pane_id.as_deref(), Some("pane-1"));
+        assert!(matches!(bound.status, AgentStatus::Idle));
+        wait_for_codex_turn_count(&state, 0);
+        assert_eq!(fs::read_to_string(&old_path).unwrap(), old_source);
+        assert!(
+            !state
+                .replace_turns_for_transcript("agent-1", old_path.to_str().unwrap(), old_turns)
+                .unwrap()
+        );
+
+        // New messages survive a duplicate clear notification for this session.
+        use std::io::Write;
+        writeln!(
+            fs::OpenOptions::new().append(true).open(&new_path).unwrap(),
+            "{}",
+            codex_user_message_line("new-turn", "new conversation")
+        )
+        .unwrap();
+        wait_for_codex_turn_count(&state, 1);
+        ingest(&state, clear());
+        let turns = state.list_turns(Some("agent-1")).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_text_block(&turns[0].blocks[0], "new conversation");
+    }
+
+    fn wait_for_codex_turn_count(state: &AppState, count: usize) {
+        for _ in 0..40 {
+            if state.list_turns(Some("agent-1")).unwrap().len() == count {
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        panic!("Codex transcript did not reach {count} turns");
     }
 
     #[test]
@@ -5197,6 +5286,33 @@ trusted_hash = "sha256:trusted"
             state.agent("agent-1").unwrap().unwrap().status,
             AgentStatus::Running
         ));
+    }
+
+    #[test]
+    fn remote_clear_records_new_identity_without_opening_remote_path() {
+        let state = test_state();
+        install_remote_agent_pane(&state);
+        record_remote_codex_session_id(
+            &state,
+            &state.agent("agent-1").unwrap().unwrap(),
+            "old-session".into(),
+        )
+        .unwrap();
+        ingest(
+            &state,
+            hook_for_agent(
+                "SessionStart",
+                "agent-1",
+                json!({
+                    "source": "clear", "session_id": "new-session",
+                    "transcript_path": "/home/remote/.codex/sessions/new.jsonl"
+                }),
+            ),
+        );
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(agent.session_id.as_deref(), Some("new-session"));
+        assert_eq!(agent.transcript_path, None);
+        assert_eq!(agent.pane_id.as_deref(), Some("pane-1"));
     }
 
     #[test]
