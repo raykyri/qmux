@@ -952,8 +952,17 @@ header + .turn-blocks {
 }
 
 .diagram-lightbox-canvas {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
+}
+
+/* Auto margins center diagrams that fit and collapse when they overflow,
+   keeping the top and left edges reachable by scrolling. */
+.diagram-lightbox-canvas > svg {
+  flex-shrink: 0;
+  margin: auto;
 }
 
 /* The shared .turn-diagram-svg rule advertises click-to-expand with a zoom-in
