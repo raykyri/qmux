@@ -171,6 +171,10 @@
   -webkit-backdrop-filter: blur(10px) saturate(120%);
 }
 
+.turn-pane.is-expanded .turn-message-navigation {
+  display: none;
+}
+
 .turn-message-navigation button {
   appearance: none;
   display: inline-flex;
