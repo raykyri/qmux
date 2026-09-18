@@ -308,6 +308,7 @@ import {
   anyBrowserOverlayOpen,
   browserPreviewScrollFor,
   browserOverlayShowsLink,
+  browserOverlayTerminalFocusTarget,
   closeAllBrowserOverlaysState,
   closeBrowserOverlayState,
   pruneBrowserPreviewScroll,
@@ -5453,6 +5454,27 @@ function MainApp() {
     [],
   );
 
+  function focusTerminalAfterBrowserClose(ownerId: string | null | undefined) {
+    const paneId = browserOverlayTerminalFocusTarget(
+      browserOverlayByPaneRef.current,
+      ownerId,
+      new Set(terminalPaneRefs.current.keys()),
+    );
+    if (!paneId) {
+      return;
+    }
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && focused.closest(".browser-overlay")) {
+      focused.blur();
+    }
+    requestAnimationFrame(() => focusTerminalPaneAfterChromeChange(paneId));
+  }
+
+  function closeBrowserOverlayForPane(paneId: string) {
+    setBrowserOverlayByPane((current) => closeBrowserOverlayState(current, paneId));
+    focusTerminalAfterBrowserClose(paneId);
+  }
+
   const openLinkForPane = useCallback(
     (paneId: string | null | undefined, url: string) => {
       const localPath = pathFromQmuxFileHref(url);
@@ -5471,7 +5493,7 @@ function MainApp() {
             fileServerPort,
           )
         ) {
-          setBrowserOverlayByPane((current) => closeBrowserOverlayState(current, paneId));
+          closeBrowserOverlayForPane(paneId);
           return;
         }
         // Absolute filesystem paths from transcript markdown (e.g. an agent
@@ -5491,7 +5513,7 @@ function MainApp() {
             fileServerPort,
           )
         ) {
-          setBrowserOverlayByPane((current) => closeBrowserOverlayState(current, paneId));
+          closeBrowserOverlayForPane(paneId);
           return;
         }
         openBrowserOverlay(paneId, url);
@@ -5524,7 +5546,7 @@ function MainApp() {
           configRef.current?.fileServerPort ?? null,
         )
       ) {
-        setBrowserOverlayByPane((current) => closeBrowserOverlayState(current, paneId));
+        closeBrowserOverlayForPane(paneId);
         return;
       }
       void browserOpenTerminalPath(paneId, target.path).catch((err) => {
@@ -5567,9 +5589,16 @@ function MainApp() {
     });
   }
 
-  function closeAllBrowserOverlays() {
+  function focusActiveTerminalAfterHiddenBrowserClose() {
+    focusTerminalPaneAfterChromeChange(
+      activeSurfaceRef.current === "pane" ? activePaneIdRef.current : null,
+    );
+  }
+
+  function closeAllBrowserOverlays(ownerId = activeBrowserOwnerIdRef.current) {
     setBrowserOverlayByPane((current) => closeAllBrowserOverlaysState(current));
     void hideEveryHumanBrowser();
+    focusTerminalAfterBrowserClose(ownerId);
   }
 
   function toggleActiveBrowserOverlay() {
@@ -5579,6 +5608,7 @@ function MainApp() {
     }
     void hideEveryHumanBrowser().then((hidden) => {
       if (hidden > 0) {
+        focusActiveTerminalAfterHiddenBrowserClose();
         return;
       }
       const ownerId = activeBrowserOwnerIdRef.current;
@@ -5588,12 +5618,16 @@ function MainApp() {
     });
   }
 
-  function closeActiveBrowserOverlay() {
+  function closeActiveBrowserOverlay(ownerId = activeBrowserOwnerIdRef.current) {
     if (anyBrowserOverlayOpen(browserOverlayByPaneRef.current)) {
-      closeAllBrowserOverlays();
+      closeAllBrowserOverlays(ownerId);
       return;
     }
-    void hideEveryHumanBrowser();
+    void hideEveryHumanBrowser().then((hidden) => {
+      if (hidden > 0) {
+        focusActiveTerminalAfterHiddenBrowserClose();
+      }
+    });
   }
 
   function setBrowserOverlaySize(paneId: string, size: BrowserOverlaySize) {
@@ -8652,6 +8686,7 @@ function MainApp() {
           }
           return closeBrowserOverlayState(current, targetPaneId);
         });
+        focusTerminalAfterBrowserClose(targetPaneId);
         return;
       }
       if (artifact.path) {
@@ -14338,6 +14373,7 @@ function MainApp() {
           }
           void hideEveryHumanBrowser().then((hidden) => {
             if (hidden > 0) {
+              focusActiveTerminalAfterHiddenBrowserClose();
               return;
             }
             if (action.type === "toggle-transcript") {
@@ -15681,9 +15717,11 @@ function MainApp() {
               artifactCount={artifactsForGroup(surface.pane.groupId).length}
               artifactTrayOpen={!artifactTrayUiByWorkspace[surface.pane.groupId]?.closed}
               onToggleArtifactTray={() =>
-                patchArtifactTrayUi(surface.pane.groupId, {
-                  closed: !artifactTrayUiByWorkspace[surface.pane.groupId]?.closed,
-                })
+                setArtifactTrayClosed(
+                  surface.pane.groupId,
+                  surface.pane.id,
+                  !artifactTrayUiByWorkspace[surface.pane.groupId]?.closed,
+                )
               }
               transcriptExpanded={activeTranscriptExpanded}
               showTerminalPipToggle={terminalPipToggleVisible}
@@ -15885,6 +15923,13 @@ function MainApp() {
     }));
   }
 
+  function setArtifactTrayClosed(workspaceId: string, paneId: string, closed: boolean) {
+    patchArtifactTrayUi(workspaceId, { closed });
+    if (closed) {
+      focusTerminalPaneAfterChromeChange(paneId);
+    }
+  }
+
   // The floating artifact tray for a workspace. A single pane and the top
   // visible split host the shared tray; lower split cells never repeat it.
   // Column splits parent it on the terminal stage so it stays visible without
@@ -15912,7 +15957,9 @@ function MainApp() {
         onSetCollapsed={(collapsed) =>
           patchArtifactTrayUi(surface.pane.groupId, { collapsed })
         }
-        onClose={() => patchArtifactTrayUi(surface.pane.groupId, { closed: true })}
+        onClose={() =>
+          setArtifactTrayClosed(surface.pane.groupId, surface.pane.id, true)
+        }
         onOpen={(artifact) => openArtifact(artifact, surface.pane.id)}
         onOpenExternal={openArtifactExternally}
         onReveal={revealArtifact}
@@ -19432,7 +19479,7 @@ function MainApp() {
             }
             void openExternalUrl(currentUrl);
           }}
-          onClose={closeActiveBrowserOverlay}
+          onClose={() => closeActiveBrowserOverlay(activeBrowserOwnerId)}
           onModeChange={(mode, currentUrl) =>
             setBrowserOverlayMode(activeBrowserOwnerId, mode, currentUrl)
           }

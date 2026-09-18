@@ -38,6 +38,14 @@ export function browserOverlayIsOpen(
   return state?.open === true;
 }
 
+export function browserOverlayTerminalFocusTarget(
+  overlays: Record<string, BrowserOverlayState>,
+  ownerId: string | null | undefined,
+  terminalPaneIds: ReadonlySet<string>,
+): string | null {
+  return ownerId && overlays[ownerId]?.open && terminalPaneIds.has(ownerId) ? ownerId : null;
+}
+
 function documentHref(url: string): string | undefined {
   try {
     const parsed = new URL(url);

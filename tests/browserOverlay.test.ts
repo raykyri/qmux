@@ -6,6 +6,7 @@ import {
   browserPreviewScrollFor,
   browserOverlayIsOpen,
   browserOverlayShowsLink,
+  browserOverlayTerminalFocusTarget,
   closeAllBrowserOverlaysState,
   closeBrowserOverlayState,
   pruneBrowserPreviewScroll,
@@ -82,6 +83,19 @@ test("closeBrowserOverlayState closes only the requested owner", () => {
   assert.equal(closed.a.open, false);
   assert.equal(closed.b.open, true);
   assert.equal(closeBrowserOverlayState({ a: overlay({ open: false }) }, "a").a.open, false);
+});
+
+test("browser close focuses only an open terminal owner", () => {
+  const overlays = {
+    "pane-a": overlay(),
+    "pane-closed": overlay({ open: false }),
+    "research-tree": overlay(),
+  };
+  const terminalPaneIds = new Set(["pane-a", "pane-closed"]);
+  assert.equal(browserOverlayTerminalFocusTarget(overlays, "pane-a", terminalPaneIds), "pane-a");
+  assert.equal(browserOverlayTerminalFocusTarget(overlays, "pane-closed", terminalPaneIds), null);
+  assert.equal(browserOverlayTerminalFocusTarget(overlays, "research-tree", terminalPaneIds), null);
+  assert.equal(browserOverlayTerminalFocusTarget(overlays, null, terminalPaneIds), null);
 });
 
 test("browser preview scroll survives owner switches without crossing URLs", () => {
