@@ -16,6 +16,7 @@
 use crate::persistence;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,8 @@ const PROMPTS_DIR: &str = "prompts";
 const PROJECTS_DIR: &str = "projects";
 const META_FILE: &str = "meta.json";
 const PROMPT_EXTENSION: &str = "md";
+const PROMPT_NAMES_MIGRATION_FILE: &str = ".prompt-names-v1.json";
+const RESERVED_PROMPT_NAMES: &[&str] = &["fork", "worktree"];
 /// Filenames land in menus and Finder; anything longer is a paragraph, not a name.
 const MAX_NAME_CHARS: usize = 120;
 /// Store dir names stay scannable in Finder: a readable basename prefix plus the
@@ -66,6 +69,18 @@ pub struct SavedPrompt {
 pub struct PromptLibrary {
     pub prompts: Vec<SavedPrompt>,
     pub has_project_scope: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PromptNameMigration {
+    completed: bool,
+    renames: Vec<PromptNameRename>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PromptNameRename {
+    from: String,
+    to: String,
 }
 
 /// Recorded next to each project's prompts so the hashed dir name can be mapped
@@ -201,29 +216,32 @@ pub fn materialize_scope_dir(
     Ok(dir)
 }
 
-/// Validates a prompt name and returns it trimmed. Names become filename stems,
-/// so path separators, traversal dots, and control characters are rejected rather
-/// than escaped — the stored name should read back exactly as typed.
+/// Validates a prompt name and returns it unchanged. Names are lowercase slugs
+/// because they double as composer slash commands and filesystem stems.
 fn validated_name(name: &str) -> Result<String, String> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
+    if name.is_empty() {
         return Err("prompt name is empty".to_string());
     }
-    if trimmed.chars().count() > MAX_NAME_CHARS {
+    if name.chars().count() > MAX_NAME_CHARS {
         return Err(format!(
             "prompt name is longer than {MAX_NAME_CHARS} characters"
         ));
     }
-    if trimmed.starts_with('.') {
-        return Err("prompt name can't start with a dot".to_string());
+    if RESERVED_PROMPT_NAMES.contains(&name) {
+        return Err(format!("/{name} is reserved by qMux"));
     }
-    if trimmed
-        .chars()
-        .any(|c| c == '/' || c == '\\' || c == ':' || c.is_control())
+    if name.starts_with('-')
+        || name.ends_with('-')
+        || name.contains("--")
+        || name
+            .chars()
+            .any(|c| !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '-')
     {
-        return Err("prompt name can't contain /, \\, : or control characters".to_string());
+        return Err(
+            "prompt name must be a lowercase slug using letters, numbers, and hyphens".to_string(),
+        );
     }
-    Ok(trimmed.to_string())
+    Ok(name.to_string())
 }
 
 fn prompt_path(dir: &Path, name: &str) -> Result<PathBuf, String> {
@@ -238,6 +256,129 @@ fn modified_ms(path: &Path) -> u64 {
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
+}
+
+fn legacy_saved_index(name: &str) -> Option<u64> {
+    let suffix = name.strip_prefix("saved")?;
+    let index = suffix.parse::<u64>().ok()?;
+    (index > 0 && name == format!("saved{index}")).then_some(index)
+}
+
+fn write_name_migration(path: &Path, migration: &PromptNameMigration) -> Result<(), String> {
+    let raw = serde_json::to_vec_pretty(migration)
+        .map_err(|err| format!("failed to serialize prompt name migration: {err}"))?;
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
+    persistence::write_synced(&tmp, &raw)
+        .map_err(|err| format!("failed to write {}: {err}", tmp.display()))?;
+    fs::rename(&tmp, path).map_err(|err| {
+        let _ = fs::remove_file(&tmp);
+        format!("failed to commit {}: {err}", path.display())
+    })
+}
+
+fn prompt_file_names(dir: &Path) -> Result<Vec<String>, String> {
+    let entries = fs::read_dir(dir)
+        .map_err(|err| format!("failed to read prompts dir {}: {err}", dir.display()))?;
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.extension().and_then(|ext| ext.to_str()) == Some(PROMPT_EXTENSION))
+                .then(|| path.file_stem()?.to_str().map(str::to_string))?
+        })
+        .collect();
+    names.sort_by(|a, b| {
+        a.to_lowercase()
+            .cmp(&b.to_lowercase())
+            .then_with(|| a.cmp(b))
+    });
+    Ok(names)
+}
+
+fn migrate_scope_names(dir: &Path, taken_names: &HashSet<String>) -> Result<(), String> {
+    fs::create_dir_all(dir)
+        .map_err(|err| format!("failed to create prompts dir {}: {err}", dir.display()))?;
+    let marker = dir.join(PROMPT_NAMES_MIGRATION_FILE);
+    let mut migration = if marker.exists() {
+        serde_json::from_str::<PromptNameMigration>(
+            &fs::read_to_string(&marker)
+                .map_err(|err| format!("failed to read {}: {err}", marker.display()))?,
+        )
+        .map_err(|err| format!("failed to parse {}: {err}", marker.display()))?
+    } else {
+        let names = prompt_file_names(dir)?;
+        let occupied: HashSet<String> = names.iter().map(|name| name.to_lowercase()).collect();
+        let mut used = taken_names.clone();
+        used.extend(RESERVED_PROMPT_NAMES.iter().map(|name| (*name).to_string()));
+        let mut preserved = HashSet::new();
+        for name in &names {
+            if legacy_saved_index(name).is_some() && used.insert(name.clone()) {
+                preserved.insert(name.clone());
+            }
+        }
+        let mut next = 1_u64;
+        let renames = names
+            .into_iter()
+            .map(|from| {
+                let to = if preserved.contains(&from) {
+                    from.clone()
+                } else {
+                    loop {
+                        let candidate = format!("saved{next}");
+                        next += 1;
+                        if !occupied.contains(&candidate) && used.insert(candidate.clone()) {
+                            break candidate;
+                        }
+                    }
+                };
+                PromptNameRename { from, to }
+            })
+            .collect();
+        let migration = PromptNameMigration {
+            completed: false,
+            renames,
+        };
+        write_name_migration(&marker, &migration)?;
+        migration
+    };
+    if migration.completed {
+        return Ok(());
+    }
+
+    for rename in &migration.renames {
+        if rename.from == rename.to {
+            continue;
+        }
+        let source = dir.join(format!("{}.{}", rename.from, PROMPT_EXTENSION));
+        let target = dir.join(format!("{}.{}", rename.to, PROMPT_EXTENSION));
+        match (source.exists(), target.exists()) {
+            (true, false) => fs::rename(&source, &target).map_err(|err| {
+                format!(
+                    "failed to migrate prompt {} to {}: {err}",
+                    source.display(),
+                    target.display()
+                )
+            })?,
+            (false, true) => {}
+            (true, true) => {
+                return Err(format!(
+                    "prompt name migration found both {} and {}",
+                    source.display(),
+                    target.display()
+                ));
+            }
+            (false, false) => {
+                return Err(format!(
+                    "prompt name migration couldn't find {} or {}",
+                    source.display(),
+                    target.display()
+                ));
+            }
+        }
+    }
+    migration.completed = true;
+    write_name_migration(&marker, &migration)
 }
 
 /// Lists every readable `.md` prompt in `dir`, tagged with `scope` and sorted by
@@ -297,6 +438,27 @@ pub fn list(project: Option<&Path>) -> Result<PromptLibrary, String> {
             &project_prompts_dir(project)?,
             PromptScope::Project,
         )?);
+    }
+    Ok(PromptLibrary {
+        prompts,
+        has_project_scope,
+    })
+}
+
+pub fn list_and_migrate(project: Option<&Path>) -> Result<PromptLibrary, String> {
+    let _guard = LIBRARY_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let global = global_dir()?;
+    migrate_scope_names(&global, &HashSet::new())?;
+    let mut prompts = list_dir(&global, PromptScope::Global)?;
+    let has_project_scope = project.is_some();
+    if let Some(project) = project {
+        let store = ProjectStore::resolve(project)?;
+        store.ensure_meta();
+        let taken = prompts.iter().map(|prompt| prompt.name.clone()).collect();
+        migrate_scope_names(&store.prompts_dir(), &taken)?;
+        prompts.extend(list_dir(&store.prompts_dir(), PromptScope::Project)?);
     }
     Ok(PromptLibrary {
         prompts,
@@ -374,6 +536,7 @@ fn remove_prompt_file(path: &Path) -> Result<(), String> {
 /// mtime to still equal `expected_modified_ms` (the value the caller loaded).
 /// `expected_modified_ms` is `None` for a fresh create, which has nothing to
 /// compare against.
+#[cfg(test)]
 pub fn save(
     project: Option<&Path>,
     scope: PromptScope,
@@ -385,7 +548,53 @@ pub fn save(
     let _guard = LIBRARY_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    save_locked(
+        project,
+        scope,
+        name,
+        content,
+        previous,
+        expected_modified_ms,
+    )
+}
 
+pub fn save_unique(
+    project: Option<&Path>,
+    scope: PromptScope,
+    name: &str,
+    content: &str,
+    previous: Option<(PromptScope, &str)>,
+    expected_modified_ms: Option<u64>,
+) -> Result<SavedPrompt, String> {
+    let _guard = LIBRARY_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if list(project)?.prompts.iter().any(|prompt| {
+        prompt.name == name
+            && previous.is_none_or(|(previous_scope, previous_name)| {
+                prompt.scope != previous_scope || prompt.name != previous_name
+            })
+    }) {
+        return Err(format!("/{name} is already used by another prompt"));
+    }
+    save_locked(
+        project,
+        scope,
+        name,
+        content,
+        previous,
+        expected_modified_ms,
+    )
+}
+
+fn save_locked(
+    project: Option<&Path>,
+    scope: PromptScope,
+    name: &str,
+    content: &str,
+    previous: Option<(PromptScope, &str)>,
+    expected_modified_ms: Option<u64>,
+) -> Result<SavedPrompt, String> {
     // Resolve the project store once: canonicalize + hash would otherwise run
     // for the write, the meta check, and again for a same-scope rename.
     let needs_project = scope == PromptScope::Project
@@ -549,7 +758,7 @@ mod tests {
         save(
             Some(&project),
             PromptScope::Project,
-            "Review checklist",
+            "review-checklist",
             "Review {target} for bugs.",
             None,
             None,
@@ -564,13 +773,13 @@ mod tests {
         let dir = store.prompts_dir();
         let prompts = list_dir(&dir, PromptScope::Project).unwrap();
         assert_eq!(prompts.len(), 1);
-        assert_eq!(prompts[0].name, "Review checklist");
+        assert_eq!(prompts[0].name, "review-checklist");
         assert_eq!(prompts[0].content, "Review {target} for bugs.");
 
         delete(
             Some(&project),
             PromptScope::Project,
-            "Review checklist",
+            "review-checklist",
             None,
         )
         .unwrap();
@@ -579,7 +788,7 @@ mod tests {
         delete(
             Some(&project),
             PromptScope::Project,
-            "Review checklist",
+            "review-checklist",
             None,
         )
         .unwrap();
@@ -606,7 +815,7 @@ mod tests {
         save(
             Some(&project),
             PromptScope::Project,
-            "old name",
+            "old-name",
             "body",
             None,
             None,
@@ -615,9 +824,9 @@ mod tests {
         save(
             Some(&project),
             PromptScope::Project,
-            "new name",
+            "new-name",
             "body v2",
-            Some((PromptScope::Project, "old name")),
+            Some((PromptScope::Project, "old-name")),
             None,
         )
         .unwrap();
@@ -625,7 +834,7 @@ mod tests {
         let store = ProjectStore::resolve(&project).unwrap();
         let prompts = list_dir(&store.prompts_dir(), PromptScope::Project).unwrap();
         assert_eq!(prompts.len(), 1);
-        assert_eq!(prompts[0].name, "new name");
+        assert_eq!(prompts[0].name, "new-name");
         assert_eq!(prompts[0].content, "body v2");
 
         let _ = fs::remove_dir_all(store.dir);
@@ -675,6 +884,11 @@ mod tests {
             ".hidden",
             "a:b",
             "a\nb",
+            "Upper",
+            "two words",
+            "double--dash",
+            "fork",
+            "worktree",
         ] {
             assert!(
                 save(
@@ -850,5 +1064,59 @@ mod tests {
         )
         .unwrap();
         let _ = fs::remove_dir_all(store.dir);
+    }
+
+    #[test]
+    fn migrates_legacy_prompt_names_deterministically() {
+        let dir = temp_dir("migrate");
+        fs::write(dir.join("Alpha prompt.md"), "alpha").unwrap();
+        fs::write(dir.join("Saved1.md"), "case collision").unwrap();
+        fs::write(dir.join("fork.md"), "reserved").unwrap();
+        fs::write(dir.join("saved2.md"), "existing saved name").unwrap();
+        let taken = HashSet::from(["saved1".to_string()]);
+
+        migrate_scope_names(&dir, &taken).unwrap();
+
+        let prompts = list_dir(&dir, PromptScope::Global).unwrap();
+        assert_eq!(
+            prompts
+                .iter()
+                .map(|prompt| (prompt.name.as_str(), prompt.content.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("saved2", "existing saved name"),
+                ("saved3", "alpha"),
+                ("saved4", "reserved"),
+                ("saved5", "case collision"),
+            ]
+        );
+        assert!(dir.join(PROMPT_NAMES_MIGRATION_FILE).exists());
+
+        migrate_scope_names(&dir, &taken).unwrap();
+        assert_eq!(list_dir(&dir, PromptScope::Global).unwrap().len(), 4);
+        fs::remove_file(dir.join("saved3.md")).unwrap();
+        migrate_scope_names(&dir, &taken).unwrap();
+        assert_eq!(list_dir(&dir, PromptScope::Global).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn resumes_an_interrupted_prompt_name_migration() {
+        let dir = temp_dir("resume-migration");
+        let migration = PromptNameMigration {
+            completed: false,
+            renames: vec![PromptNameRename {
+                from: "legacy".to_string(),
+                to: "saved1".to_string(),
+            }],
+        };
+        write_name_migration(&dir.join(PROMPT_NAMES_MIGRATION_FILE), &migration).unwrap();
+        fs::write(dir.join("saved1.md"), "body").unwrap();
+
+        migrate_scope_names(&dir, &HashSet::new()).unwrap();
+
+        let prompts = list_dir(&dir, PromptScope::Global).unwrap();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].name, "saved1");
+        assert_eq!(prompts[0].content, "body");
     }
 }

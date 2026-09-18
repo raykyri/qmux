@@ -3,12 +3,27 @@ import test from "node:test";
 import {
   completeComposerSlashCommand,
   matchingComposerSlashCommands,
+  nextComposerSlashSelectionIndex,
   parseComposerSlashCommand,
 } from "../src/lib/composerSlashCommands";
 import {
   composerSlashCommandSubmitLabels,
   planComposerSubmission,
 } from "../src/lib/composerActions";
+import {
+  completeSavedPromptSlashCommand,
+  matchingSavedPromptSlashCommands,
+  promptNameError,
+  savedPromptForExactSlashCommand,
+  shouldExpandExactSavedPromptOnKey,
+  slugifyPromptName,
+  slugifyPromptNameInput,
+} from "../src/lib/promptLibrary";
+import type { PromptScope, SavedPrompt } from "../src/types";
+
+function savedPrompt(name: string, content: string, scope: PromptScope = "global"): SavedPrompt {
+  return { name, content, scope, modifiedMs: 1 };
+}
 
 test("matches command prefixes only in the first unfinished token", () => {
   assert.deepEqual(
@@ -101,4 +116,79 @@ test("leaves unknown, embedded, and lookalike slash commands alone", () => {
   ]) {
     assert.deepEqual(parseComposerSlashCommand(value), { kind: "none" }, value);
   }
+});
+
+test("slugifies prompt names while preserving a trailing typing separator", () => {
+  assert.equal(slugifyPromptNameInput("  Résumé Review  "), "resume-review-");
+  assert.equal(slugifyPromptNameInput("API---Audit"), "api-audit");
+  assert.equal(slugifyPromptName("  Résumé Review  "), "resume-review");
+  assert.equal(slugifyPromptName("---"), "");
+});
+
+test("rejects empty, reserved, and duplicate prompt names", () => {
+  const prompts = [
+    savedPrompt("review", "global"),
+    savedPrompt("deploy", "project", "project"),
+  ];
+  assert.equal(promptNameError("", prompts), "Enter a prompt name");
+  assert.equal(promptNameError("fork", prompts), "/fork is reserved by qMux");
+  assert.equal(
+    promptNameError("deploy", prompts),
+    "/deploy is already used by another prompt",
+  );
+  assert.equal(promptNameError("review", prompts, prompts[0]), null);
+  assert.equal(promptNameError("new-prompt", prompts), null);
+});
+
+test("matches saved prompts only in the leading unfinished slash token", () => {
+  const prompts = [
+    savedPrompt("review", "Review changes"),
+    savedPrompt("review-tests", "Review tests"),
+    savedPrompt("deploy", "Deploy"),
+  ];
+  assert.deepEqual(
+    matchingSavedPromptSlashCommands("/rev", prompts).map((prompt) => prompt.name),
+    ["review", "review-tests"],
+  );
+  assert.deepEqual(
+    matchingSavedPromptSlashCommands("/review", prompts).map((prompt) => prompt.name),
+    ["review", "review-tests"],
+  );
+  assert.deepEqual(matchingSavedPromptSlashCommands("/review ", prompts), []);
+  assert.deepEqual(matchingSavedPromptSlashCommands("prefix /review", prompts), []);
+});
+
+test("saved prompt selection completes a partial name before expanding an exact name", () => {
+  const prompt = savedPrompt("review-changes", "Review all changed files");
+  assert.equal(completeSavedPromptSlashCommand("/rev", prompt), "/review-changes");
+  assert.equal(
+    completeSavedPromptSlashCommand("/review-changes", prompt),
+    "Review all changed files",
+  );
+});
+
+test("exact saved prompt lookup excludes ambiguous and reserved names", () => {
+  const review = savedPrompt("review", "Review changes");
+  assert.equal(savedPromptForExactSlashCommand("/review", [review]), review);
+  assert.equal(savedPromptForExactSlashCommand("/rev", [review]), null);
+  assert.equal(savedPromptForExactSlashCommand("/review ", [review]), null);
+  assert.equal(
+    savedPromptForExactSlashCommand("/review", [review, savedPrompt("review", "Other")]),
+    null,
+  );
+  assert.equal(savedPromptForExactSlashCommand("/fork", [savedPrompt("fork", "Prompt")]), null);
+});
+
+test("open slash menu selection wins over exact prompt expansion on Enter", () => {
+  assert.equal(shouldExpandExactSavedPromptOnKey("Enter", true), false);
+  assert.equal(shouldExpandExactSavedPromptOnKey("Enter", false), true);
+  assert.equal(shouldExpandExactSavedPromptOnKey(" ", true), true);
+  assert.equal(shouldExpandExactSavedPromptOnKey("Tab", false), false);
+});
+
+test("slash selection navigation ignores a status-only menu and wraps options", () => {
+  assert.equal(nextComposerSlashSelectionIndex(0, 1, 0), null);
+  assert.equal(nextComposerSlashSelectionIndex(0, 1, 2), 1);
+  assert.equal(nextComposerSlashSelectionIndex(1, 1, 2), 0);
+  assert.equal(nextComposerSlashSelectionIndex(0, -1, 2), 1);
 });

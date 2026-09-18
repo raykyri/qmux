@@ -11586,8 +11586,7 @@ function MainApp() {
         commands.push({
           id: `prompt:${prompt.scope}:${prompt.name}`,
           section: "Insert prompt",
-          // Prompts are titleless; their first line stands in for a name.
-          title: prompt.content.trim().split("\n", 1)[0] || "(empty prompt)",
+          title: `/${prompt.name}`,
           hint: prompt.scope === "global" ? "Global" : "Project",
           action: () => requestComposerInsert(visibleAgent.id, prompt.content),
         });
@@ -15756,6 +15755,7 @@ function MainApp() {
               <NativeInput
                 pane={surface.pane}
                 agent={agent}
+                projectDir={promptProjectDirForPane(surface.pane)}
                 agentMayBeBackgrounded={
                   shellJobByAgent[agent.id]?.paneId === surface.pane.id &&
                   (shellJobByAgent[agent.id]?.state === "backgrounded" ||

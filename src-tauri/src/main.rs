@@ -751,7 +751,7 @@ fn prompt_project_path(project_dir: &Option<String>) -> Option<&std::path::Path>
 fn prompt_library_list(
     project_dir: Option<String>,
 ) -> Result<prompt_library::PromptLibrary, String> {
-    prompt_library::list(prompt_project_path(&project_dir))
+    prompt_library::list_and_migrate(prompt_project_path(&project_dir))
 }
 
 /// Creates or overwrites a saved prompt in `scope`. `previous_scope`/`previous_name`,
@@ -774,8 +774,10 @@ fn prompt_library_save(
         (None, None) => None,
         _ => return Err("previousScope and previousName must be passed together".to_string()),
     };
-    prompt_library::save(
-        prompt_project_path(&project_dir),
+    let project = prompt_project_path(&project_dir);
+    prompt_library::list_and_migrate(project)?;
+    prompt_library::save_unique(
+        project,
         scope,
         &name,
         &content,

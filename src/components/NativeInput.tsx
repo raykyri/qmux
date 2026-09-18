@@ -11,6 +11,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
+  BookMarked,
   ChevronDown,
   EllipsisVertical,
   FolderGit2,
@@ -19,6 +20,7 @@ import {
 } from "lucide-react";
 import {
   listAgentTurnQueue,
+  listSavedPrompts,
   queueDeliveryAgentTurn,
   queueWaitAgentTurn,
   removeQueuedAgentTurn,
@@ -36,6 +38,7 @@ import { growComposerTextarea } from "../lib/composerTextarea";
 import {
   completeComposerSlashCommand,
   matchingComposerSlashCommands,
+  nextComposerSlashSelectionIndex,
   parseComposerSlashCommand,
   type ComposerSlashCommand,
   type ComposerSlashCommandName,
@@ -52,10 +55,19 @@ import {
   waitTargetStatusLabel,
 } from "../lib/composerActions";
 import { useConfirm } from "../hooks/useConfirm";
-import { listenToComposerInsert, requestSaveDraftAsPrompt } from "../lib/promptLibrary";
+import {
+  completeSavedPromptSlashCommand,
+  listenToComposerInsert,
+  listenToPromptLibraryChanged,
+  matchingSavedPromptSlashCommands,
+  requestSaveDraftAsPrompt,
+  savedPromptForExactSlashCommand,
+  shouldExpandExactSavedPromptOnKey,
+} from "../lib/promptLibrary";
 import type {
   AgentInfo,
   PaneInfo,
+  SavedPrompt,
   QueuedTurn,
   QueuedTurnDelivery,
   SubmitAgentTurnMode,
@@ -93,6 +105,10 @@ const SLASH_COMMAND_PRESENTATION: Record<
   worktree: { Icon: FolderGit2, summary: "Fork into a new worktree" },
 };
 
+type ComposerSlashMatch =
+  | { kind: "command"; command: ComposerSlashCommand }
+  | { kind: "prompt"; prompt: SavedPrompt };
+
 type QueuePointerDrag = {
   pointerId: number;
   from: number;
@@ -108,6 +124,7 @@ type QueuePointerDrag = {
 interface NativeInputProps {
   pane: PaneInfo;
   agent: AgentInfo;
+  projectDir?: string | null;
   agentMayBeBackgrounded: boolean;
   // The app's copy of the composer text, keyed by agent so it survives tab
   // switches. The live value while typing is component-local (a keystroke must
@@ -184,6 +201,7 @@ function readFileAsDataUrl(file: Blob): Promise<string> {
 export default function NativeInput({
   pane,
   agent,
+  projectDir,
   agentMayBeBackgrounded,
   draft,
   queuedTurns,
@@ -351,6 +369,10 @@ export default function NativeInput({
   const [textareaFocused, setTextareaFocused] = useState(false);
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
   const [slashDismissedValue, setSlashDismissedValue] = useState<string | null>(null);
+  const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
+  const [savedPromptsLoading, setSavedPromptsLoading] = useState(false);
+  const [savedPromptsError, setSavedPromptsError] = useState<string | null>(null);
+  const promptLoadSequenceRef = useRef(0);
   const [slashPos, setSlashPos] = useState<{
     left: number;
     top: number;
@@ -445,13 +467,27 @@ export default function NativeInput({
   // so the queue dropdown no longer requires wait targets to exist.
   const canQueueFork = agentCanFork(agent);
   const parsedSlashCommand = useMemo(() => parseComposerSlashCommand(value), [value]);
-  const slashMatches = useMemo(() => matchingComposerSlashCommands(value), [value]);
+  const slashLookupActive = /^\/[^\s]*$/.test(value);
+  const slashMatches = useMemo<ComposerSlashMatch[]>(
+    () => [
+      ...matchingComposerSlashCommands(value).map(
+        (command): ComposerSlashMatch => ({ kind: "command", command }),
+      ),
+      ...matchingSavedPromptSlashCommands(value, savedPrompts).map(
+        (prompt): ComposerSlashMatch => ({ kind: "prompt", prompt }),
+      ),
+    ],
+    [savedPrompts, value],
+  );
   const activeSlashIndex = Math.min(
     slashSelectedIndex,
     Math.max(0, slashMatches.length - 1),
   );
   const slashMenuOpen =
-    textareaFocused && slashMatches.length > 0 && slashDismissedValue !== value;
+    textareaFocused &&
+    slashLookupActive &&
+    (slashMatches.length > 0 || savedPromptsLoading || savedPromptsError !== null) &&
+    slashDismissedValue !== value;
   const waitDisabled = submitting || agent.status === "failed" || !hasSubmitValue;
   const submitShortcutTargetsSend = submitShortcutWouldTargetSend && hasSubmitValue;
   const submitShortcutTargetsQueue = submitShortcutWouldTargetQueue && hasSubmitValue;
@@ -479,6 +515,40 @@ export default function NativeInput({
   useEffect(() => {
     setSlashDismissedValue(null);
   }, [agent.id]);
+
+  const loadSavedPromptSuggestions = useCallback(() => {
+    const sequence = ++promptLoadSequenceRef.current;
+    setSavedPromptsLoading(true);
+    setSavedPromptsError(null);
+    void listSavedPrompts(projectDir)
+      .then((library) => {
+        if (promptLoadSequenceRef.current === sequence) {
+          setSavedPrompts(library.prompts);
+        }
+      })
+      .catch((error) => {
+        if (promptLoadSequenceRef.current === sequence) {
+          setSavedPrompts([]);
+          setSavedPromptsError(error instanceof Error ? error.message : String(error));
+        }
+      })
+      .finally(() => {
+        if (promptLoadSequenceRef.current === sequence) {
+          setSavedPromptsLoading(false);
+        }
+      });
+  }, [projectDir]);
+
+  useEffect(() => {
+    setSavedPrompts([]);
+    setSavedPromptsError(null);
+    loadSavedPromptSuggestions();
+    const stopListening = listenToPromptLibraryChanged(loadSavedPromptSuggestions);
+    return () => {
+      promptLoadSequenceRef.current += 1;
+      stopListening();
+    };
+  }, [agent.id, loadSavedPromptSuggestions]);
 
   function waitLabelWithShortcut(label: string, shortcutLabel?: string | null) {
     return shortcutLabel ? `${label} (${shortcutLabel})` : label;
@@ -639,7 +709,13 @@ export default function NativeInput({
       window.removeEventListener("resize", onReflow);
       window.removeEventListener("scroll", onReflow, true);
     };
-  }, [positionSlashMenu, slashMenuOpen, slashMatches.length]);
+  }, [
+    positionSlashMenu,
+    savedPromptsError,
+    savedPromptsLoading,
+    slashMenuOpen,
+    slashMatches.length,
+  ]);
 
   // Grow the textarea to fit its content (capped, then it scrolls). Runs whenever
   // the value changes, including programmatic resets and queued-turn edits.
@@ -695,18 +771,35 @@ export default function NativeInput({
     [onQueueDropTargetChange],
   );
 
-  function completeSlashCommand(command: ComposerSlashCommand) {
-    const completed = completeComposerSlashCommand(command);
+  function replaceComposerValue(next: string) {
     setSlashDismissedValue(null);
-    setValue(completed);
+    setValue(next);
+    onUserInput(agent.id);
     requestAnimationFrame(() => {
       const textarea = textareaRef.current;
       if (!textarea) {
         return;
       }
       textarea.focus();
-      textarea.setSelectionRange(completed.length, completed.length);
+      textarea.setSelectionRange(next.length, next.length);
     });
+  }
+
+  function completeSlashCommand(command: ComposerSlashCommand) {
+    replaceComposerValue(completeComposerSlashCommand(command));
+  }
+
+  function completeSlashMatch(match: ComposerSlashMatch) {
+    if (match.kind === "command") {
+      const blocked = slashCommandBlockedReason(match.command);
+      if (blocked) {
+        onError(blocked);
+      } else {
+        completeSlashCommand(match.command);
+      }
+      return;
+    }
+    replaceComposerValue(completeSavedPromptSlashCommand(value, match.prompt));
   }
 
   async function submitTurn(text: string, mode: SubmitAgentTurnMode) {
@@ -1318,7 +1411,9 @@ export default function NativeInput({
           aria-controls={slashMenuOpen ? slashListId : undefined}
           aria-expanded={slashMenuOpen}
           aria-activedescendant={
-            slashMenuOpen ? `${slashListId}-option-${activeSlashIndex}` : undefined
+            slashMenuOpen && slashMatches.length > 0
+              ? `${slashListId}-option-${activeSlashIndex}`
+              : undefined
           }
           onFocus={() => setTextareaFocused(true)}
           onBlur={() => setTextareaFocused(false)}
@@ -1370,6 +1465,21 @@ export default function NativeInput({
             });
           }}
           onKeyDown={(event) => {
+            if (
+              !event.nativeEvent.isComposing &&
+              shouldExpandExactSavedPromptOnKey(event.key, slashMenuOpen) &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.altKey &&
+              !event.shiftKey
+            ) {
+              const prompt = savedPromptForExactSlashCommand(value, savedPrompts);
+              if (prompt) {
+                event.preventDefault();
+                replaceComposerValue(prompt.content);
+                return;
+              }
+            }
             if (slashMenuOpen && !event.nativeEvent.isComposing) {
               if (
                 (event.key === "ArrowDown" || event.key === "ArrowUp") &&
@@ -1378,12 +1488,17 @@ export default function NativeInput({
                 !event.altKey &&
                 !event.shiftKey
               ) {
-                event.preventDefault();
                 const step = event.key === "ArrowDown" ? 1 : -1;
-                setSlashSelectedIndex(
-                  (activeSlashIndex + step + slashMatches.length) % slashMatches.length,
+                const nextIndex = nextComposerSlashSelectionIndex(
+                  activeSlashIndex,
+                  step,
+                  slashMatches.length,
                 );
-                return;
+                if (nextIndex !== null) {
+                  event.preventDefault();
+                  setSlashSelectedIndex(nextIndex);
+                  return;
+                }
               }
               if (event.key === "Escape") {
                 event.preventDefault();
@@ -1398,38 +1513,22 @@ export default function NativeInput({
                   !event.altKey &&
                   !event.shiftKey);
               if (acceptsSelection) {
-                const command = slashMatches[activeSlashIndex];
-                if (command) {
+                const match = slashMatches[activeSlashIndex];
+                if (match) {
                   event.preventDefault();
-                  const blocked = slashCommandBlockedReason(command);
-                  if (blocked) {
-                    onError(blocked);
-                  } else {
-                    completeSlashCommand(command);
-                  }
+                  completeSlashMatch(match);
                   return;
                 }
-                if (event.key === "Enter") {
-                  // Keep a disabled typeahead from submitting a partial command;
-                  // Tab remains native so keyboard users can leave the field.
-                  event.preventDefault();
-                }
-                return;
               }
             }
             if (isComposerSubmitShortcut(event, requireCmdEnterToSend)) {
               event.preventDefault();
-              if (slashMenuOpen) {
-                const command = slashMatches[activeSlashIndex];
-                if (!command) {
+              if (slashMenuOpen && slashMatches.length > 0) {
+                const match = slashMatches[activeSlashIndex];
+                if (!match) {
                   return;
                 }
-                const blocked = slashCommandBlockedReason(command);
-                if (blocked) {
-                  onError(blocked);
-                } else {
-                  completeSlashCommand(command);
-                }
+                completeSlashMatch(match);
               } else if (parsedSlashCommand.kind !== "none") {
                 void submitTurn(value, slashCanQueue ? "queue" : "send");
               } else if (submitShortcutTargetsSend) {
@@ -1481,18 +1580,38 @@ export default function NativeInput({
                     : { left: -9999, top: -9999 }
                 }
               >
+                {savedPromptsLoading ? (
+                  <div className="composer-slash-status" role="status">
+                    Loading saved prompts…
+                  </div>
+                ) : null}
+                {savedPromptsError ? (
+                  <div className="composer-slash-status is-error" role="alert">
+                    Saved prompts unavailable: {savedPromptsError}
+                  </div>
+                ) : null}
                 <div
                   id={slashListId}
                   className="composer-slash-list"
                   role="listbox"
-                  aria-label="qMux slash commands"
+                  aria-label="qMux slash commands and saved prompts"
                 >
-                  {slashMatches.map((command, index) => {
-                    const { Icon, summary } = SLASH_COMMAND_PRESENTATION[command.name];
-                    const blocked = slashCommandBlockedReason(command);
+                  {slashMatches.map((match, index) => {
+                    const command = match.kind === "command" ? match.command : null;
+                    const prompt = match.kind === "prompt" ? match.prompt : null;
+                    const presentation = command
+                      ? SLASH_COMMAND_PRESENTATION[command.name]
+                      : null;
+                    const blocked = command ? slashCommandBlockedReason(command) : null;
+                    const Icon = presentation?.Icon ?? BookMarked;
+                    const summary =
+                      presentation?.summary ??
+                      prompt?.content.trim().split("\n", 1)[0] ??
+                      "Saved prompt";
+                    const token = command?.token ?? `/${prompt?.name ?? ""}`;
                     return (
                       <button
-                        key={command.name}
+                        key={command ? `command:${command.name}` : `prompt:${prompt?.scope}:${prompt?.name}`}
                         id={`${slashListId}-option-${index}`}
                         type="button"
                         role="option"
@@ -1501,15 +1620,15 @@ export default function NativeInput({
                           index === activeSlashIndex ? " is-selected" : ""
                         }`}
                         disabled={Boolean(blocked)}
-                        title={blocked ?? command.description}
+                        title={blocked ?? command?.description ?? summary}
                         onMouseDown={(event) => event.preventDefault()}
                         onMouseMove={() => setSlashSelectedIndex(index)}
-                        onClick={() => completeSlashCommand(command)}
+                        onClick={() => completeSlashMatch(match)}
                       >
                         <span className="composer-slash-icon" aria-hidden="true">
                           <Icon size={12} strokeWidth={1.75} />
                         </span>
-                        <span className="composer-slash-token">{command.token}</span>
+                        <span className="composer-slash-token">{token}</span>
                         <span className="composer-slash-summary">{summary}</span>
                       </button>
                     );

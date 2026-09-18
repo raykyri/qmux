@@ -77,3 +77,14 @@ export function matchingComposerSlashCommands(
 export function completeComposerSlashCommand(command: ComposerSlashCommand): string {
   return `${command.token} `;
 }
+
+export function nextComposerSlashSelectionIndex(
+  currentIndex: number,
+  step: -1 | 1,
+  optionCount: number,
+): number | null {
+  if (optionCount <= 0) {
+    return null;
+  }
+  return (currentIndex + step + optionCount) % optionCount;
+}

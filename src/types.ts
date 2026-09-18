@@ -798,9 +798,8 @@ export interface TranscriptOption {
 export type PromptScope = "global" | "project";
 
 // A reusable composer message from the prompt library. Backed by a markdown file
-// whose filename stem is the name; see PromptScope for where it lives. Prompts
-// are titleless in the UI — the name is derived from the content's first line
-// and only surfaces as the filename on disk.
+// whose filename stem is its explicit slash-command-safe name; see PromptScope
+// for where it lives.
 export interface SavedPrompt {
   name: string;
   content: string;

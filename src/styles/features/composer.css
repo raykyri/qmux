@@ -339,6 +339,16 @@
   overflow-y: auto;
 }
 
+.composer-slash-status {
+  padding: 6px 8px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.composer-slash-status.is-error {
+  color: var(--danger-fg-muted);
+}
+
 /* A row reads like a regular app menu item: uniform --control-h-md height, the
    same hover fill, and a single --fs-base type size shared by the command token
    and its summary — the token only distinguished by the mono face and accent
@@ -346,7 +356,7 @@
 .composer-slash-option {
   appearance: none;
   display: grid;
-  grid-template-columns: auto 76px minmax(0, 1fr);
+  grid-template-columns: auto minmax(76px, 132px) minmax(0, 1fr);
   gap: 8px;
   align-items: center;
   width: 100%;
@@ -382,10 +392,12 @@
 }
 
 .composer-slash-token {
+  overflow: hidden;
   color: var(--accent-color);
   font-family: var(--font-mono);
   font-size: calc(var(--fs-base) - 1px);
   font-weight: 500;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

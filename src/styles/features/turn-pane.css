@@ -439,10 +439,12 @@
 
 .prompt-library-item-main {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 30px;
+  flex-direction: column;
+  gap: 2px;
   padding: 5px 30px 5px 9px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
@@ -461,9 +463,19 @@
   cursor: default;
 }
 
-/* Prompts are titleless: show enough source text to identify the prompt while
-   keeping long entries bounded. The row-menu gutter above keeps its trigger
-   from covering the clamped text or final ellipsis. */
+.prompt-library-item-name {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--fs-base);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Show enough source text to identify the prompt while keeping long entries
+   bounded. The row-menu gutter above keeps its trigger from covering the
+   clamped text or final ellipsis. */
 .prompt-library-item-text {
   display: -webkit-box;
   overflow: hidden;
@@ -689,6 +701,24 @@
   color: var(--text-muted);
   font-size: var(--fs-xs);
   font-weight: 600;
+}
+
+.prompt-library-field-error {
+  color: var(--danger-fg-muted);
+  font-size: var(--fs-xs);
+}
+
+.prompt-library-fill-snippet {
+  overflow: hidden;
+  padding: 0 2px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-library-name-input {
+  font-family: var(--font-mono);
 }
 
 .prompt-library-editor {
