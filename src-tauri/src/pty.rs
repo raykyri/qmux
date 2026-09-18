@@ -15,8 +15,8 @@ use crate::state::{
 };
 use crate::turn_queue::{abort_fork_barrier_for_child, release_waiters_for_agent};
 use crate::workspace::{
-    ActiveWorkspace, CreateGroupRequest, RemoteRef, WorkspaceScope,
-    capture_agent_worktree_removal, create_group, group_recoverable_dir, remove_captured_worktree,
+    ActiveWorkspace, CreateGroupRequest, RemoteRef, WorkspaceScope, capture_agent_worktree_removal,
+    create_group, group_recoverable_dir, remove_captured_worktree,
 };
 use portable_pty::PtySize;
 use portable_pty::{CommandBuilder, native_pty_system};

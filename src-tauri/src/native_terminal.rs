@@ -1707,12 +1707,9 @@ pub extern "C" fn qmux_native_terminal_did_receive_shortcut(
                 // closes the pane outright instead of parking it on the
                 // reconnect banner for an exit the user typed on purpose.
                 record_remote_ctrl_d(&pane_id);
-                let closeable = pane
-                    .remote_connection
-                    .as_ref()
-                    .is_none_or(|connection| {
-                        connection.state != crate::state::RemoteConnectionState::Connected
-                    });
+                let closeable = pane.remote_connection.as_ref().is_none_or(|connection| {
+                    connection.state != crate::state::RemoteConnectionState::Connected
+                });
                 if closeable && events_listener_ready() {
                     state.emit(QmuxEvent::new(
                         "terminal.shortcut",
