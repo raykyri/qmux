@@ -21,10 +21,11 @@ export const RESEARCH_JOURNAL_VIEWS: readonly ResearchJournalView[] = [
   "highlights",
 ];
 
-// Empty on purpose. A tab id only enters this list when `focusResearchTabById`
-// in App.tsx has a dispatch arm for it: P8 adds Home, P11 adds Bookmarks and
-// Highlights.
-export const RESEARCH_JOURNAL_TAB_IDS: readonly string[] = [];
+// A tab id only belongs here once `focusResearchTabById` in App.tsx has a
+// dispatch arm for it; otherwise cycling onto it would call `focusPaneTab` with
+// a pane id that does not exist. Home has one; Bookmarks and Highlights join it
+// when the surface can show them.
+export const RESEARCH_JOURNAL_TAB_IDS: readonly string[] = [RESEARCH_HOME_TAB_ID];
 
 export function researchJournalTabId(view: ResearchJournalView): string {
   switch (view) {

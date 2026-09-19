@@ -10,6 +10,7 @@ import {
   replaceScopedGroupOrder,
 } from "../src/lib/workspaceScope";
 import {
+  RESEARCH_HOME_TAB_ID,
   RESEARCH_JOURNAL_TAB_IDS,
   parseSidebarMode,
   researchCycleTabIds,
@@ -227,9 +228,13 @@ test("research cycling stays on the document when no research terminals are visi
     research.id,
   );
 
-  assert.deepEqual(ids, [treeTabId]);
-  assert.equal(cycleTabId(ids, treeTabId, 1), treeTabId);
-  assert.equal(cycleTabId(ids, treeTabId, -1), treeTabId);
+  // Home is always in the cycle, so a lone document cycles between itself and
+  // Home rather than standing still.
+  assert.deepEqual(ids, [RESEARCH_HOME_TAB_ID, treeTabId]);
+  assert.equal(cycleTabId(ids, treeTabId, 1), RESEARCH_HOME_TAB_ID);
+  assert.equal(cycleTabId(ids, treeTabId, -1), RESEARCH_HOME_TAB_ID);
+  assert.equal(cycleTabId(ids, RESEARCH_HOME_TAB_ID, 1), treeTabId);
+  assert.equal(cycleTabId(ids, RESEARCH_HOME_TAB_ID, -1), treeTabId);
 });
 
 test("research cycling wraps between documents and visible research terminals", () => {
@@ -251,12 +256,20 @@ test("research cycling wraps between documents and visible research terminals", 
 
   const treeOneTabId = researchTreeTabId("tree-one");
   const treeTwoTabId = researchTreeTabId("tree-two");
-  assert.deepEqual(ids, [treeOneTabId, treeTwoTabId, "research-one", "research-two"]);
+  assert.deepEqual(ids, [
+    RESEARCH_HOME_TAB_ID,
+    treeOneTabId,
+    treeTwoTabId,
+    "research-one",
+    "research-two",
+  ]);
+  assert.equal(cycleTabId(ids, RESEARCH_HOME_TAB_ID, 1), treeOneTabId);
   assert.equal(cycleTabId(ids, treeOneTabId, 1), treeTwoTabId);
   assert.equal(cycleTabId(ids, treeTwoTabId, 1), "research-one");
   assert.equal(cycleTabId(ids, "research-one", 1), "research-two");
-  assert.equal(cycleTabId(ids, "research-two", 1), treeOneTabId);
-  assert.equal(cycleTabId(ids, treeOneTabId, -1), "research-two");
+  // Home leads the list, so the tail wraps onto it, not onto the first tree.
+  assert.equal(cycleTabId(ids, "research-two", 1), RESEARCH_HOME_TAB_ID);
+  assert.equal(cycleTabId(ids, treeOneTabId, -1), RESEARCH_HOME_TAB_ID);
   assert.equal(cycleTabId(ids, "research-one", -1), treeTwoTabId);
   assert.equal(researchTreeIdFromTabId(treeTwoTabId), "tree-two");
   assert.equal(researchTreeIdFromTabId("research-one"), null);
@@ -279,7 +292,7 @@ test("research cycling honours the folder scope the sidebar is filtered to", () 
       [treeSummary("tree-a", researchA.id), treeSummary("tree-b", researchB.id)],
       researchA.id,
     ),
-    [researchTreeTabId("tree-a"), "pane-a"],
+    [RESEARCH_HOME_TAB_ID, researchTreeTabId("tree-a"), "pane-a"],
   );
   assert.deepEqual(
     researchCycleTabIds(
@@ -288,7 +301,8 @@ test("research cycling honours the folder scope the sidebar is filtered to", () 
       [treeSummary("tree-a", researchA.id), treeSummary("tree-b", researchB.id)],
       researchB.id,
     ),
-    [researchTreeTabId("tree-b"), "pane-b"],
+    // Home is not folder-scoped: every folder's cycle starts there.
+    [RESEARCH_HOME_TAB_ID, researchTreeTabId("tree-b"), "pane-b"],
   );
 });
 
@@ -299,10 +313,10 @@ test("research cycling leads with the journal pages and the scoped encyclopedia 
   const groups = [researchA, researchB];
   const trees = [treeSummary("tree-a", researchA.id)];
 
-  // With no journal pages wired up yet the cycle is unchanged: scoped trees
-  // first, live research panes as the tail.
-  assert.deepEqual(RESEARCH_JOURNAL_TAB_IDS, []);
+  // Home leads, then the scoped trees, with live research panes as the tail.
+  assert.deepEqual(RESEARCH_JOURNAL_TAB_IDS, [RESEARCH_HOME_TAB_ID]);
   assert.deepEqual(researchCycleTabIds(panes, groups, trees, researchA.id), [
+    RESEARCH_HOME_TAB_ID,
     researchTreeTabId("tree-a"),
     "pane-a",
   ]);

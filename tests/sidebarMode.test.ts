@@ -50,8 +50,12 @@ test("non-encyclopedia ids yield no slug, and an empty slug is rejected", () => 
   assert.equal(researchTreeIdFromTabId(researchEncyclopediaTabId("alpha")), null);
 });
 
-test("the journal cycle list stays empty until App.tsx can dispatch its ids", () => {
-  // P8 adds Home and its dispatch arm; P11 adds Bookmarks and Highlights.
-  // Until then an id here would make Ctrl-Tab focus a pane that does not exist.
-  assert.deepEqual(RESEARCH_JOURNAL_TAB_IDS, []);
+test("the journal cycle list holds only ids App.tsx can dispatch", () => {
+  // Home has a dispatch arm in focusResearchTabById; Bookmarks and Highlights
+  // join it once the surface can show them. An id here without an arm would
+  // make Ctrl-Tab focus a pane that does not exist.
+  assert.deepEqual(RESEARCH_JOURNAL_TAB_IDS, [RESEARCH_HOME_TAB_ID]);
+  for (const tabId of RESEARCH_JOURNAL_TAB_IDS) {
+    assert.ok(researchJournalViewFromTabId(tabId));
+  }
 });

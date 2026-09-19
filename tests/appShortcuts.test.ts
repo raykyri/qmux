@@ -5,6 +5,7 @@ import {
   appShortcutTargetsActivePane,
   contextualizeAppShortcut,
   parseAppShortcutCommand,
+  RESEARCH_HOME_SHORTCUT_LABEL,
   resolveAppShortcut,
   showHideShortcutConflict,
   type AppShortcutInput,
@@ -362,4 +363,62 @@ test("only pane-targeted commands are withheld from an unknown origin pane", () 
     appShortcutTargetsActivePane({ type: "cyclePaneTab", direction: 1 }),
     false,
   );
+});
+
+test("both cycle chords step the research list in research mode", () => {
+  // Ctrl-Tab is already the pane cycle; ⌘⇧[ / ⌘⇧] normally step every tab and
+  // collapse onto the same research cycle, so both reach Home and the research
+  // documents. Terminal mode keeps the two chords distinct.
+  const controlTab = resolveAppShortcut(shortcut({ key: "Tab", ctrlKey: true }));
+  assert.deepEqual(controlTab, { type: "cyclePaneTab", direction: 1 });
+  assert.deepEqual(contextualizeAppShortcut(controlTab!, "research"), {
+    type: "cyclePaneTab",
+    direction: 1,
+  });
+
+  const bracket = resolveAppShortcut(
+    shortcut({ key: "]", metaKey: true, shiftKey: true }),
+  );
+  assert.deepEqual(bracket, { type: "cycleAllTab", direction: 1 });
+  assert.deepEqual(contextualizeAppShortcut(bracket!, "research"), {
+    type: "cyclePaneTab",
+    direction: 1,
+  });
+  assert.deepEqual(contextualizeAppShortcut(bracket!, "terminal"), {
+    type: "cycleAllTab",
+    direction: 1,
+  });
+
+  const bracketBack = resolveAppShortcut(
+    shortcut({ key: "[", metaKey: true, shiftKey: true }),
+  );
+  assert.deepEqual(contextualizeAppShortcut(bracketBack!, "research"), {
+    type: "cyclePaneTab",
+    direction: -1,
+  });
+});
+
+test("the Home shortcut label names the chord that opens Home", () => {
+  assert.equal(RESEARCH_HOME_SHORTCUT_LABEL, "⌘N");
+  const command = resolveAppShortcut(shortcut({ key: "n", metaKey: true }));
+  assert.deepEqual(contextualizeAppShortcut(command!, "research"), {
+    type: "focusResearchHome",
+  });
+});
+
+test("research mode leaves every terminal-only command alone", () => {
+  // Contextualization is additive: nothing that only makes sense for a terminal
+  // may be rewritten out from under the terminal surface.
+  for (const command of [
+    { type: "closePane" },
+    { type: "closeUnavailableRemotePane" },
+    { type: "newGroup" },
+    { type: "splitPaneRight" },
+    { type: "focusHome" },
+    { type: "openConversationHistory" },
+    { type: "toggleTranscriptOrBrowser" },
+    { type: "fontZoomIn" },
+  ] as const) {
+    assert.deepEqual(contextualizeAppShortcut(command, "research"), command);
+  }
 });

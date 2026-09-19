@@ -51,6 +51,11 @@ function normalizedKey(key: string): string {
   }
 }
 
+/** The chord that brings the research Home page forward (⌘N in research mode,
+ * where the launcher chord has no terminal launcher to open). Shown in the
+ * sidebar row's tooltip and keycap hint. */
+export const RESEARCH_HOME_SHORTCUT_LABEL = "⌘N";
+
 export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand | null {
   const key = normalizedKey(input.key);
   const command = input.metaKey;

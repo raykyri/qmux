@@ -298,6 +298,7 @@ import {
   appShortcutAllowsRepeat,
   appShortcutTargetsActivePane,
   contextualizeAppShortcut,
+  RESEARCH_HOME_SHORTCUT_LABEL,
   resolveAppShortcut,
   showHideShortcutConflict,
   type AppShortcutCommand,
@@ -448,7 +449,9 @@ import {
 } from "./lib/workspaceScope";
 import {
   parseSidebarMode,
+  RESEARCH_HOME_TAB_ID,
   researchCycleTabIds,
+  researchJournalViewFromTabId,
   researchTreeIdFromTabId,
   researchTreeTabId,
   SIDEBAR_MODE_STORAGE_KEY,
@@ -3568,22 +3571,24 @@ function MainApp() {
     [researchMultiSelectIds, scopedResearchTrees],
   );
   // The single source of truth for what the research surface shows. Every
-  // stage branch keys off this one value, so precedence (composer page over
-  // multi-select over document over home) lives here instead of being
-  // re-derived — and kept consistent — inside each render condition. The
-  // composer additionally renders while this is null (another surface is
-  // forward) as a hidden keep-alive for its draft.
+  // stage branch keys off this one value, so precedence (document composer page
+  // over multi-select over Home over a research document) lives here instead of
+  // being re-derived — and kept consistent — inside each render condition. The
+  // document composer additionally renders while this is null (another surface
+  // is forward) as a hidden keep-alive for its draft. There is no empty
+  // placeholder stage: with no tree selected the surface shows Home, whose own
+  // composer is where a new query starts.
   const researchStageView = !researchSurfaceActive
     ? null
     : newDocumentOpen
       ? ("composer" as const)
       : researchMultiSelection.length > 1
         ? ("multi-select" as const)
-        : journalOpen
+        : journalOpen || !activeResearchTreeId
           ? ("journal" as const)
-          : activeResearchTreeId
-            ? ("document" as const)
-            : ("home" as const);
+          : ("document" as const);
+  const researchStageViewRef = useRef(researchStageView);
+  researchStageViewRef.current = researchStageView;
   // Whether the Home page is the forward research view. The inline composer
   // and everything that used to hang off the research modal's open flag key
   // off this instead: Home is a page, not a modal.
@@ -14302,6 +14307,15 @@ function MainApp() {
     };
 
     const focusResearchTabById = (tabId: string) => {
+      // Journal pages come first in the cycle list, so they are dispatched
+      // first here too: without this arm Ctrl-Tab onto Home would fall through
+      // to focusPaneTab with a pane id that does not exist. Only Home is in
+      // RESEARCH_JOURNAL_TAB_IDS so far; Bookmarks and Highlights join it once
+      // the surface can show them.
+      if (researchJournalViewFromTabId(tabId)) {
+        openJournal();
+        return;
+      }
       const treeId = researchTreeIdFromTabId(tabId);
       if (treeId) {
         void selectResearchTree(treeId);
@@ -14323,10 +14337,16 @@ function MainApp() {
     const cycleResearchTab = (direction: -1 | 1) => {
       const currentResearchTreeId = activeResearchTreeIdRef.current;
       const currentResearchSurfaceActive = activeSurfaceRef.current === "research";
-      const activeTabId =
-        currentResearchSurfaceActive && currentResearchTreeId
-          ? researchTreeTabId(currentResearchTreeId)
-          : activePaneIdRef.current;
+      // A forward Home page is the current tab even while a tree stays selected
+      // behind it, so the cycle steps from the page the user sees rather than
+      // from the hidden document.
+      const activeTabId = !currentResearchSurfaceActive
+        ? activePaneIdRef.current
+        : researchStageViewRef.current === "journal"
+          ? RESEARCH_HOME_TAB_ID
+          : currentResearchTreeId
+            ? researchTreeTabId(currentResearchTreeId)
+            : RESEARCH_HOME_TAB_ID;
       const researchTabIds = cycleableResearchTabIds;
       const nextTabId = cycleTabId(
         researchTabIds,
@@ -14632,6 +14652,7 @@ function MainApp() {
     activeResearchTreeId,
     createResearchFromSidebar,
     createDocumentFromSidebar,
+    openJournal,
     moveActiveResearchTree,
     selectResearchTree,
     sidebarMode,
@@ -16283,28 +16304,33 @@ function MainApp() {
           className={`pane-list${draggingPaneId || draggingGroupId ? " is-dragging" : ""}`}
           aria-label={sidebarMode === "terminal" ? "Terminal tabs" : "Research"}
         >
-          {/* Recent Activity uses the same row/select/copy nesting every
-              research row uses. Its fixed-row inset mirrors the scrollable
-              research section below. */}
+          {/* Home uses the same row/select/copy nesting every research row
+              uses. Its fixed-row inset mirrors the scrollable research section
+              below. */}
           {sidebarMode === "research" ? (
             <div
               className={`research-sidebar-row journal-sidebar-row${
-                researchStageView === "journal" ? " is-selected" : ""
+                researchHomeVisible ? " is-selected" : ""
               }`}
             >
               <button
                 type="button"
                 className="control-button research-sidebar-select"
-                aria-current={researchStageView === "journal" ? "page" : undefined}
-                title="Recent Activity"
+                aria-current={researchHomeVisible ? "page" : undefined}
+                title={`Home (${RESEARCH_HOME_SHORTCUT_LABEL})`}
                 onClick={openJournal}
               >
                 <span className="research-sidebar-copy">
                   <span className="research-sidebar-title">
-                    <span className="research-sidebar-title-text">Recent Activity</span>
+                    <span className="research-sidebar-title-text">Home</span>
                   </span>
                 </span>
               </button>
+              {shortcutHintsShown ? (
+                <span className="pane-tab-shortcut-hint" aria-hidden="true">
+                  {RESEARCH_HOME_SHORTCUT_LABEL}
+                </span>
+              ) : null}
             </div>
           ) : null}
           {sidebarMode === "research" ? (
@@ -19173,10 +19199,22 @@ function MainApp() {
               <span>{researchMultiSelection.length} research items selected</span>
             </div>
           ) : null}
-          {researchStageView === "journal" ? (
+          {researchStageView === "journal" && config ? (
             <ResearchActivityFeed
-              composer={null}
+              composer={
+                <ResearchQueryComposer
+                  adapters={config.adapters}
+                  requireCmdEnterToSend={settings.requireCmdEnterToSend}
+                  workspaceId={researchScope}
+                  onOpenAgentSettings={() => {
+                    setSettingsTab("agents");
+                    setSettingsOpen(true);
+                  }}
+                  onCreate={submitNewResearch}
+                />
+              }
               items={recentActivityItems}
+              recapPendingNodeIds={recapPendingNodeIds}
               researchTrees={[...researchTrees, ...archivedResearchTrees]}
               nextCursor={recentActivityCursor}
               loadingOlder={loadingOlderActivity}
@@ -19190,7 +19228,16 @@ function MainApp() {
               onOpenResearchQuery={openRecentResearchQuery}
               onSetResearchFollowed={setResearchTreeFollowedFlag}
               onSetResearchBookmarked={setResearchTreeBookmarkedFlag}
+              folderState={researchFolderState}
+              onRenameResearch={renameResearchTreeTitle}
+              onArchiveResearch={archiveResearchTreeFromSidebar}
+              onRestoreResearch={restoreResearchTreeFromSidebar}
+              onRemoveResearch={removeResearchTreeFromSidebar}
+              onToggleResearchStar={toggleResearchStarFromSidebar}
+              onRequestCreateFolder={requestResearchFolderCreation}
+              onRemoveFromFolder={removeResearchTreesFromFolder}
               onLoadOlder={loadOlderActivity}
+              onRefresh={() => void refreshResearchNavigation()}
               canGoBack={canGoWorkspaceBack(researchWorkspaceHistory)}
               canGoForward={canGoWorkspaceForward(researchWorkspaceHistory)}
               onBack={goResearchWorkspaceBack}
