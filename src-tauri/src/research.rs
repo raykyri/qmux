@@ -18,7 +18,10 @@ pub const MAX_RESEARCH_DOCUMENT_WORDS: usize = 10_000;
 /// Backstop for word-sparse documents (one giant token counts as one word).
 /// Imports and the composer both advertise this exact limit.
 pub const MAX_RESEARCH_DOCUMENT_BYTES: usize = 10 * 1024 * 1024;
-pub const DETACHED_RESEARCH_ARCHIVE_VERSION: u32 = 6;
+pub const DETACHED_RESEARCH_ARCHIVE_VERSION: u32 = 7;
+/// Written when the newest feature in an archive is inline follow-ups or
+/// conversation highlights, but no research message carries attachments.
+const DETACHED_RESEARCH_ARCHIVE_VERSION_PRE_ATTACHMENTS: u32 = 6;
 /// Written for archives whose newest feature is conversation nodes (no
 /// inline follow-ups), so they stay readable by pre-inline builds (which
 /// accept versions 1–5). Builds that predate the `inline` field would
@@ -760,6 +763,13 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
                 node.id
             ));
         }
+        if !node.attachments.is_empty() && archive.version < DETACHED_RESEARCH_ARCHIVE_VERSION {
+            return Err(format!(
+                "research node {} contains attachments that require archive version {}",
+                node.id, DETACHED_RESEARCH_ARCHIVE_VERSION
+            ));
+        }
+        crate::tweets::validate_research_message_attachments(&node.attachments)?;
         validate_highlight_collection(&node.highlights)?;
         highlight_bytes_total = highlight_bytes_total
             .saturating_add(highlight_collection_storage_bytes(&node.highlights));
@@ -852,10 +862,12 @@ fn validate_detached_archive(archive: &DetachedResearchArchive) -> Result<(), St
 /// raises. Pre-conversations builds refuse anything above 4, and
 /// pre-documents builds anything above 3, the same way.
 pub fn detached_archive_version(nodes: &[ResearchNode]) -> u32 {
-    if nodes.iter().any(|node| {
+    if nodes.iter().any(|node| !node.attachments.is_empty()) {
+        DETACHED_RESEARCH_ARCHIVE_VERSION
+    } else if nodes.iter().any(|node| {
         node.inline || (node.kind == ResearchNodeKind::Conversation && !node.highlights.is_empty())
     }) {
-        DETACHED_RESEARCH_ARCHIVE_VERSION
+        DETACHED_RESEARCH_ARCHIVE_VERSION_PRE_ATTACHMENTS
     } else if nodes
         .iter()
         .any(|node| node.kind == ResearchNodeKind::Conversation)
@@ -3319,11 +3331,11 @@ mod tests {
         inline_child.inline = true;
         inline_child.created_at = 5;
         archive.nodes.push(inline_child);
-        // An inline thread needs the newest readers even in a runs-only tree:
-        // older builds would silently drop the flag, not fail.
+        // An inline thread needs readers from the inline schema generation even
+        // in a runs-only tree; attachments alone require the next generation.
         assert_eq!(
             detached_archive_version(&archive.nodes),
-            DETACHED_RESEARCH_ARCHIVE_VERSION
+            DETACHED_RESEARCH_ARCHIVE_VERSION_PRE_ATTACHMENTS
         );
         validate_detached_archive(&archive).unwrap();
 
@@ -3339,6 +3351,35 @@ mod tests {
         assert!(!nodes[0].inline, "roots never hold an inline flag");
         assert!(!nodes[1].inline, "the newer duplicate loses the slot");
         assert!(nodes[2].inline, "the oldest inline child keeps the slot");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn research_message_attachments_use_the_newest_archive_version() {
+        let folder = temp_workspace();
+        let mut archive = sample_detached_archive(&folder);
+        archive.nodes[0].attachments = vec![crate::tweets::ResearchMessageAttachment::Tweet {
+            schema_version: crate::tweets::TWEET_ATTACHMENT_SCHEMA_VERSION,
+            source_url: "https://x.com/example/status/20".to_string(),
+            tweet_id: "20".to_string(),
+            placement: crate::tweets::TweetAttachmentPlacement::Trailing,
+            provider: "xSyndication".to_string(),
+            status: crate::tweets::TweetAttachmentStatus::Unavailable,
+            attempted_at: 1,
+            fetched_at: None,
+            tweet: None,
+            failure: Some(crate::tweets::TweetAttachmentFailure::Network),
+        }];
+
+        assert_eq!(
+            detached_archive_version(&archive.nodes),
+            DETACHED_RESEARCH_ARCHIVE_VERSION
+        );
+        archive.version = detached_archive_version(&archive.nodes);
+        validate_detached_archive(&archive).unwrap();
+        archive.version = DETACHED_RESEARCH_ARCHIVE_VERSION_PRE_ATTACHMENTS;
+        let error = validate_detached_archive(&archive).unwrap_err();
+        assert!(error.contains("attachments that require archive version"));
         std::fs::remove_dir_all(folder).unwrap();
     }
 
@@ -4083,12 +4124,12 @@ mod tests {
         }];
         validate_detached_archive(&archive).unwrap();
         // Builds that predate conversation highlights reject the archive, so it
-        // must claim the newest version rather than the conversations one —
-        // otherwise such a build accepts the version and then fails validation,
-        // blaming the archive instead of its own age.
+        // must claim the pre-attachments feature version rather than the
+        // conversations one — otherwise such a build accepts the version and
+        // then fails validation, blaming the archive instead of its own age.
         assert_eq!(
             detached_archive_version(&archive.nodes),
-            DETACHED_RESEARCH_ARCHIVE_VERSION
+            DETACHED_RESEARCH_ARCHIVE_VERSION_PRE_ATTACHMENTS
         );
         let mut unhighlighted = archive.nodes.clone();
         unhighlighted[0].highlights.clear();

@@ -7,7 +7,7 @@ use crate::journal::{
     JOURNAL_ACTIVITY_SOURCE_RANK, RESEARCH_ACTIVITY_SOURCE_RANK, RecentActivityCursor,
     RecentActivityItem, RecentActivityPage,
 };
-use crate::persistence::{self, PersistedState, STATE_VERSION};
+use crate::persistence::{self, PersistedState};
 use crate::remote_terminal::{RemoteAttachmentController, RemoteHistoryCheckpoint};
 use crate::research::{
     self, CreateResearchDocumentRequest, CreateResearchTreeRequest, RecentResearchQuery,
@@ -2563,6 +2563,13 @@ impl AppState {
             .map(|(tree_id, tree)| (tree_id.clone(), tree.workspace_id.clone()))
             .collect::<HashMap<_, _>>();
         for node in persisted.research_nodes.values_mut() {
+            // Attachment snapshots are an external-data cache. A malformed or
+            // hand-edited cache must not make the underlying research prompt
+            // unrestorable; discard it so the original permalink stays visible.
+            if crate::tweets::validate_research_message_attachments(&node.attachments).is_err() {
+                node.attachments.clear();
+                research_reconciled = true;
+            }
             if let Some(workspace_id) = tree_workspaces
                 .get(&node.tree_id)
                 .filter(|workspace_id| !workspace_id.trim().is_empty())
@@ -3104,9 +3111,15 @@ impl AppState {
                 version: if model
                     .research_nodes
                     .values()
+                    .any(|node| !node.attachments.is_empty())
+                {
+                    persistence::STATE_VERSION
+                } else if model
+                    .research_nodes
+                    .values()
                     .any(|node| node.kind == ResearchNodeKind::Conversation)
                 {
-                    STATE_VERSION
+                    persistence::STATE_VERSION_PRE_ATTACHMENTS
                 } else {
                     persistence::STATE_VERSION_PRE_CONVERSATIONS
                 },
@@ -14867,6 +14880,111 @@ mod tests {
             Some(ResearchNodeOrigin::TerminalExport)
         );
         assert_eq!(restored_node.status, ResearchNodeStatus::Complete);
+    }
+
+    fn sample_tweet_attachment(provider: &str) -> crate::tweets::ResearchMessageAttachment {
+        crate::tweets::ResearchMessageAttachment::Tweet {
+            schema_version: crate::tweets::TWEET_ATTACHMENT_SCHEMA_VERSION,
+            source_url: "https://x.com/example/status/20".to_string(),
+            tweet_id: "20".to_string(),
+            placement: crate::tweets::TweetAttachmentPlacement::Trailing,
+            provider: provider.to_string(),
+            status: crate::tweets::TweetAttachmentStatus::Unavailable,
+            attempted_at: 1,
+            fetched_at: None,
+            tweet: None,
+            failure: Some(crate::tweets::TweetAttachmentFailure::Network),
+        }
+    }
+
+    fn persisted_state_version(workspace: &PathBuf) -> u64 {
+        let raw = std::fs::read(persistence::state_path(workspace)).unwrap();
+        serde_json::from_slice::<serde_json::Value>(&raw).unwrap()["version"]
+            .as_u64()
+            .unwrap()
+    }
+
+    fn set_node_attachments(
+        state: &AppState,
+        node_id: &str,
+        attachments: Vec<crate::tweets::ResearchMessageAttachment>,
+    ) {
+        state
+            .inner
+            .model
+            .lock()
+            .unwrap()
+            .research_nodes
+            .get_mut(node_id)
+            .unwrap()
+            .attachments = attachments;
+    }
+
+    #[test]
+    fn state_with_a_conversation_and_no_attachments_still_serialises_version_5() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        assert!(state.restore_session().is_empty());
+        exportable_terminal_setup(&state, AgentStatus::Idle);
+        append_terminal_exchange(&state, 0, "Question", "Answer");
+        state.persist();
+        // Neither conversation nodes nor attachments: the widest downgrade
+        // window older builds can still read.
+        assert_eq!(
+            persisted_state_version(&workspace),
+            u64::from(persistence::STATE_VERSION_PRE_CONVERSATIONS)
+        );
+
+        let detail = export_pane(&state, "pane-1", "group-1", None).unwrap();
+        let node_id = detail.nodes[0].id.clone();
+        state.persist();
+        // A conversation node alone stays on the pre-attachments version, so a
+        // build that understands conversations keeps loading the file.
+        assert_eq!(
+            persisted_state_version(&workspace),
+            u64::from(persistence::STATE_VERSION_PRE_ATTACHMENTS)
+        );
+
+        set_node_attachments(
+            &state,
+            &node_id,
+            vec![sample_tweet_attachment("xSyndication")],
+        );
+        state.persist();
+        assert_eq!(
+            persisted_state_version(&workspace),
+            u64::from(persistence::STATE_VERSION)
+        );
+
+        let restored = AppState::new(test_config(workspace));
+        restored.restore_session();
+        assert_eq!(
+            restored.research_node(&node_id).unwrap().attachments,
+            vec![sample_tweet_attachment("xSyndication")]
+        );
+    }
+
+    #[test]
+    fn restore_discards_an_invalid_attachment_cache_and_keeps_the_prompt() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        assert!(state.restore_session().is_empty());
+        exportable_terminal_setup(&state, AgentStatus::Idle);
+        append_terminal_exchange(&state, 0, "Question", "Answer");
+        let detail = export_pane(&state, "pane-1", "group-1", None).unwrap();
+        let node_id = detail.nodes[0].id.clone();
+        set_node_attachments(
+            &state,
+            &node_id,
+            vec![sample_tweet_attachment("arbitraryProvider")],
+        );
+        state.persist();
+
+        let restored = AppState::new(test_config(workspace));
+        restored.restore_session();
+        let node = restored.research_node(&node_id).unwrap();
+        assert!(node.attachments.is_empty());
+        assert_eq!(node.prompt, "Question");
     }
 
     #[test]
