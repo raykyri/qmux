@@ -45,14 +45,16 @@ export type RecentActivityEvent = ActivityEvent<RecentActivitySource>;
 
 export function recentResearchQueryFromNode(
   node: import("../types").ResearchNode,
+  includeFollowUps = false,
 ): RecentResearchQuery | null {
-  if (node.kind && node.kind !== "run") return null;
+  if ((node.kind && node.kind !== "run") || (!includeFollowUps && node.parentNodeId)) return null;
   return {
     nodeId: node.id,
     treeId: node.treeId,
     parentNodeId: node.parentNodeId,
     inline: Boolean(node.inline),
     prompt: node.prompt,
+    queryTarget: node.queryAnchor?.exact,
     attachments: node.attachments,
     title: node.title,
     adapter: node.adapter,
@@ -61,6 +63,39 @@ export function recentResearchQueryFromNode(
     createdAt: node.createdAt,
     recap: node.recap?.text.trim() || undefined,
   };
+}
+
+/** Live node events update children within their loaded root, without changing feed order. */
+export function upsertRecentActivityResearchNode(
+  items: RecentActivityItem[],
+  node: import("../types").ResearchNode,
+): RecentActivityItem[] {
+  const query = recentResearchQueryFromNode(node, true);
+  if (!query) return items;
+  if (query.parentNodeId) {
+    return items.map((item) => {
+      if (
+        item.kind !== "research-query" ||
+        item.query.nodeId !== query.parentNodeId ||
+        item.query.treeId !== query.treeId
+      ) {
+        return item;
+      }
+      const children = [
+        ...(item.query.children ?? []).filter((child) => child.nodeId !== query.nodeId),
+        query,
+      ].sort(
+        (left, right) =>
+          left.createdAt - right.createdAt || left.nodeId.localeCompare(right.nodeId),
+      );
+      return { ...item, query: { ...item.query, children } };
+    });
+  }
+  const existing = items.find(
+    (item) => item.kind === "research-query" && item.query.nodeId === query.nodeId,
+  );
+  if (existing?.kind === "research-query") query.children = existing.query.children;
+  return upsertRecentActivityItem(items, recentActivityItemFromResearchQuery(query));
 }
 
 export function upsertRecentResearchQuery(
@@ -227,6 +262,9 @@ export function buildRecentActivityFromItems(
 ): RecentActivityEvent[] {
   const treeById = new Map(trees.map((tree) => [tree.id, tree]));
   return items
+    .filter(
+      (item) => item.kind === "journal" || treeById.get(item.query.treeId)?.archivedAt == null,
+    )
     .map((item) =>
       item.kind === "journal"
         ? activityEventFromJournalEntry(item.entry)

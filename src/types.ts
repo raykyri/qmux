@@ -495,11 +495,15 @@ export interface ResearchRecapCandidate {
 
 /** Compact research-run history returned to Recent Activity. */
 export interface RecentResearchQuery {
+  /** Direct follow-up questions, attached by the feed query. */
+  children?: RecentResearchQuery[];
   nodeId: string;
   treeId: string;
   parentNodeId?: string | null;
   inline: boolean;
   prompt: string;
+  /** Selected parent-answer text this follow-up replies to. */
+  queryTarget?: string | null;
   attachments?: ResearchMessageAttachment[];
   title?: string | null;
   adapter: string;

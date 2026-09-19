@@ -434,9 +434,8 @@ import {
   mergeRecentActivityItems,
   reconcileRecentActivityHead,
   recentActivityItemFromJournalEntry,
-  recentActivityItemFromResearchQuery,
-  recentResearchQueryFromNode,
   upsertRecentActivityItem,
+  upsertRecentActivityResearchNode,
 } from "./lib/activity";
 import { isActiveResearchStatus } from "./lib/researchThreads";
 import {
@@ -8730,9 +8729,9 @@ function MainApp() {
     setResearchTrees((current) => clearResearchTreeAttention(current, treeId));
     setArchivedResearchTrees((current) => clearResearchTreeAttention(current, treeId));
   }, []);
-  const refreshResearchNavigation = useCallback(async (): Promise<
-    ResearchTreeSummary[] | null
-  > => {
+  const refreshResearchNavigation = useCallback(async (
+    options: { resetLoadedTail?: boolean } = {},
+  ): Promise<ResearchTreeSummary[] | null> => {
     // Bump-and-check like every other refetch here (agents, panes, groups,
     // the research detail): refreshes overlap — the debounced event refresh
     // races the direct calls from archive/remove/submit — and the two list
@@ -8768,7 +8767,11 @@ function MainApp() {
       setResearchActivity((current) => reconcileResearchActivity(current, activity));
       if (recentActivityHeadRequestSeqRef.current === activityRequestSeq) {
         const headCursor = recentActivity.nextCursor ?? null;
+        // Archived trees are omitted from activity queries. Restoring a tree
+        // only refetches the head, so drop the tail to let older pagination
+        // re-fetch the rows that fell inside it.
         const preserveLoadedTail =
+          !options.resetLoadedTail &&
           headCursor !== null &&
           recentActivityItemsRef.current.some((item) =>
             activityCursorIsBefore(recentActivityItemCursor(item), headCursor),
@@ -8784,7 +8787,11 @@ function MainApp() {
               pendingJournalMutationsRef.current.get(item.entry.id)?.intent === "present",
           );
           const next = mergeRecentActivityItems(
-            reconcileRecentActivityHead(current, authoritativeHead, headCursor),
+            reconcileRecentActivityHead(
+              current,
+              authoritativeHead,
+              preserveLoadedTail ? headCursor : null,
+            ),
             pendingPresent,
           );
           recentActivityItemsRef.current = next;
@@ -9707,6 +9714,7 @@ function MainApp() {
   // unknown/malformed event or a rare collection-order transition. Ordinary
   // research events carry enough state to patch locally below.
   const researchRefreshTimerRef = useRef<number | null>(null);
+  const researchRefreshResetTailRef = useRef(false);
   const researchNavigationRecoveryTimerRef = useRef<number | null>(null);
   const researchTreeRecoveryTimersRef = useRef(new Map<string, number>());
   const researchTreeEventVersionRef = useRef(new Map<string, number>());
@@ -9726,13 +9734,19 @@ function MainApp() {
     },
     [],
   );
-  const scheduleResearchRefresh = useCallback(() => {
+  const scheduleResearchRefresh = useCallback((options: { resetLoadedTail?: boolean } = {}) => {
+    // Coalesce tail reset requests across callers during the debounce window.
+    if (options.resetLoadedTail) {
+      researchRefreshResetTailRef.current = true;
+    }
     if (researchRefreshTimerRef.current !== null) {
       return;
     }
     researchRefreshTimerRef.current = window.setTimeout(() => {
       researchRefreshTimerRef.current = null;
-      void refreshResearchNavigation()
+      const resetLoadedTail = researchRefreshResetTailRef.current;
+      researchRefreshResetTailRef.current = false;
+      void refreshResearchNavigation({ resetLoadedTail })
         .then((trees) => {
           const treeId = activeResearchTreeIdRef.current;
           const tree = treeId ? trees?.find((candidate) => candidate.id === treeId) : null;
@@ -9942,17 +9956,11 @@ function MainApp() {
         invalidateVisibleDetailSnapshot(node.treeId);
         setActiveResearchDetail((current) => patchResearchDetailNode(current, node));
         setResearchActivity((current) => upsertResearchActivity(current, node));
-        const recentQuery = recentResearchQueryFromNode(node);
-        if (recentQuery) {
-          setRecentActivityItems((current) => {
-            const next = upsertRecentActivityItem(
-              current,
-              recentActivityItemFromResearchQuery(recentQuery),
-            );
-            recentActivityItemsRef.current = next;
-            return next;
-          });
-        }
+        setRecentActivityItems((current) => {
+          const next = upsertRecentActivityResearchNode(current, node);
+          recentActivityItemsRef.current = next;
+          return next;
+        });
         if (previous) {
           const patchSummary = (summary: ResearchTreeSummary) =>
             patchResearchSummaryForNode(summary, previous, node, timestamp);
@@ -9975,17 +9983,11 @@ function MainApp() {
             );
           }
           setResearchActivity((current) => upsertResearchActivity(current, event.node));
-          const recentQuery = recentResearchQueryFromNode(event.node);
-          if (recentQuery) {
-            setRecentActivityItems((current) => {
-              const next = upsertRecentActivityItem(
-                current,
-                recentActivityItemFromResearchQuery(recentQuery),
-              );
-              recentActivityItemsRef.current = next;
-              return next;
-            });
-          }
+          setRecentActivityItems((current) => {
+            const next = upsertRecentActivityResearchNode(current, event.node);
+            recentActivityItemsRef.current = next;
+            return next;
+          });
           break;
         }
         case "research.document.updated": {
@@ -10064,8 +10066,11 @@ function MainApp() {
           setActiveResearchDetail((current) => patchResearchDetailTree(current, event.tree));
           // The event carries tree metadata, but not its stable position in the
           // opposite collection. This user-scale transition takes the rare full
-          // path so custom sidebar ordering remains exact.
-          scheduleResearchRefresh();
+          // path so custom sidebar ordering remains exact. Restoring a tree also
+          // resets the loaded tail so its activity rows are refetched.
+          scheduleResearchRefresh({
+            resetLoadedTail: event.type === "research.tree.restored",
+          });
           break;
         }
         case "research.highlight.created": {
