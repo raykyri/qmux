@@ -187,6 +187,11 @@ fn fs_metadata_stamp(path: &Path) -> String {
 }
 
 fn prepare_patched_ghostty_dependency(source: &Path, destination: &Path, patch: &Path) -> PathBuf {
+    assert!(
+        source.join("Package.swift").is_file() && source.join("Sources").is_dir(),
+        "Ghostty submodule is missing or incomplete at {}. Run `git submodule update --init --recursive` from the repository root before building qmux.",
+        source.display()
+    );
     if destination.exists() {
         std::fs::remove_dir_all(destination).unwrap_or_else(|err| {
             panic!(
@@ -200,6 +205,7 @@ fn prepare_patched_ghostty_dependency(source: &Path, destination: &Path, patch: 
         .current_dir(destination)
         .arg("-p1")
         .arg("--forward")
+        .arg("--batch")
         .arg("-V")
         .arg("none")
         .arg("--input")
