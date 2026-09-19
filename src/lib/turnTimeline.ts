@@ -14,6 +14,7 @@ import {
   stripTaggedUserInstructionBlocks,
   taggedUserInstructionDetails,
 } from "./taggedInstructions";
+import { stripWikilinks } from "./wikilinks";
 
 export type TextBlock = Extract<TurnBlock, { type: "text" }>;
 export type ToolUseBlock = Extract<TurnBlock, { type: "toolUse" }>;
@@ -163,8 +164,12 @@ function plainTextMessageItemText(item: MessageItem) {
   const text = item.blocks
     .flatMap((block) => (block.type === "text" ? [block.text] : []))
     .join("\n\n");
+  // Assistant prose carries `[[Term]]` markers for the renderer; plain text
+  // keeps only the display words.
   const stripped =
-    item.role === "user" ? stripTaggedUserInstructionBlocks(text) : text;
+    item.role === "user"
+      ? stripTaggedUserInstructionBlocks(text)
+      : stripWikilinks(text);
   const trimmed = stripped.trim();
   return trimmed ? trimmed : null;
 }
@@ -897,7 +902,7 @@ export function messageItemCopyText(item: MessageItem): string | null {
   const stripped =
     item.role === "user"
       ? stripTaggedUserInstructionBlocks(text)
-      : stripTaggedInstructionBlocks(text);
+      : stripWikilinks(stripTaggedInstructionBlocks(text));
   return stripped.trim() ? stripped : null;
 }
 

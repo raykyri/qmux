@@ -1179,6 +1179,25 @@ header + .turn-blocks {
   text-decoration: underline;
 }
 
+/* Wikilinks: key terms the agent marked as [[Term]]. None point to an existing
+   page yet, so they use a slightly muted tint of the base text color rather
+   than the accent color, with a dotted underline to separate them from
+   navigable URLs. */
+.turn-markdown a.research-wikilink {
+  cursor: pointer;
+  color: color-mix(in srgb, var(--text-strong) 90%, transparent);
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in srgb, var(--text-strong) 40%, transparent);
+  text-underline-offset: 2px;
+}
+
+.turn-markdown a.research-wikilink:hover,
+.turn-markdown a.research-wikilink:focus-visible {
+  color: var(--text-strong);
+  text-decoration-style: solid;
+  text-decoration-color: color-mix(in srgb, var(--text-strong) 60%, transparent);
+}
+
 /* Explicit launch affordance for localhost HTML and Codex visualization
    directives. The button contains no text node and is excluded from selection,
    so copying across it preserves exactly the transcript source. */

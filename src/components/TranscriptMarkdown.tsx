@@ -31,6 +31,7 @@ import {
   safeHref,
 } from "../lib/links";
 import { normalizeLatexMathDelimiters } from "../lib/markdownMathDelimiters";
+import { escapeWikilinkTablePipes, remarkWikilinks } from "../lib/wikilinks";
 import DiagramBlock, { diagramLangFromClassName, nodeText } from "./DiagramBlock";
 
 // The TeX pipeline (remark-math + rehype-mathjax) weighs a couple of
@@ -194,7 +195,9 @@ interface MathPlugins {
   rehype: MarkdownPluginList;
 }
 
-const baseRemarkPlugins: MarkdownPluginList = [remarkGfm, remarkBreaks];
+// The wikilink transform rides in both lists so key terms render as links from
+// the first paint instead of appearing once the math chunk swaps in.
+const baseRemarkPlugins: MarkdownPluginList = [remarkGfm, remarkBreaks, remarkWikilinks];
 const baseRehypePlugins: MarkdownPluginList = [rehypeTranscriptArtifacts];
 
 let mathPlugins: MathPlugins | null = null;
@@ -292,6 +295,25 @@ function MarkdownLink({
 }: ComponentPropsWithoutRef<"a"> & { node?: TranscriptHastNode }) {
   const { openLink, openLinkMenu } = useContext(LinkActionsContext);
   const artifactLinks = useContext(TranscriptArtifactLinksContext);
+  // A wikilink (`[[Term]]` in the source, marked by the remark transform) has
+  // no destination yet: it renders as a focusable link that goes nowhere, so
+  // the term reads as linked and the DOM text projection highlights anchor to
+  // is the display text alone. Checked before href handling because the node
+  // carries no href.
+  const wikilinkTerm = node?.properties?.dataWikilink;
+  if (typeof wikilinkTerm === "string") {
+    return (
+      <a
+        {...props}
+        role="link"
+        tabIndex={0}
+        data-wikilink={wikilinkTerm}
+        onClick={(event) => {
+          event.preventDefault();
+        }}
+      />
+    );
+  }
   const safe = safeHref(href);
   if (!safe) {
     return <span {...props} />;
@@ -799,7 +821,9 @@ export default memo(function TranscriptMarkdown({
   artifactLinks = false,
 }: TranscriptMarkdownProps) {
   const math = useSyncExternalStore(subscribeToMathPlugins, readMathPlugins, readMathPlugins);
-  const source = rewriteDevinFileRefs(text);
+  // Alias wikilinks on table rows must have their pipe escaped before
+  // parsing, or GFM splits the cell; see `escapeWikilinkTablePipes`.
+  const source = escapeWikilinkTablePipes(rewriteDevinFileRefs(text));
   if (oversizedContent && source.length > oversizedContent.maxCharacters) {
     const displayLimit = oversizedContent.maxDisplayCharacters;
     const shown =

@@ -541,6 +541,45 @@ test("research answer publications detach the selected result from private ances
   assert.deepEqual(Object.keys(draft.publicNodeIds), [child.id]);
 });
 
+// The encyclopedia the markers point at is local to the workspace, so a
+// published page has nothing to resolve them against: publishing keeps the
+// display text and drops the markers.
+test("published research markdown keeps wikilink display text without markers", async () => {
+  const root = researchNode("private-root-wikilink", null, "Root?", "Root");
+  const detail: ResearchTreeDetail = {
+    tree: {
+      id: "private-wikilink-tree",
+      title: "Wikilink tree",
+      rootNodeId: root.id,
+      workspaceId: "private-workspace",
+      createdAt: 1,
+      updatedAt: 2,
+    },
+    nodes: [root],
+  };
+  const draft = await createResearchPublicationDraft({
+    title: "Linked answer",
+    detail,
+    selectedNodeId: root.id,
+    mode: "answer",
+    publicationId: "pub_wikilink12",
+    createdAt: "2026-07-16T12:00:00.000Z",
+    contents: [
+      researchContent(root, "Use [[Foo|bar]] with [[Rust]].", "d".repeat(64)),
+    ],
+  });
+
+  for (const [name, contents] of Object.entries(draft.files)) {
+    assert.equal(contents.includes("[["), false, name);
+  }
+  const markdown = Object.entries(draft.files).find(([name]) =>
+    name.endsWith(".md") && name !== PUBLICATION_README_FILE,
+  );
+  assert.ok(markdown, "expected a published answer markdown file");
+  assert.equal(markdown[1].includes("Use bar with Rust."), true, markdown[1]);
+  assert.equal(draft.previewText.includes("[["), false);
+});
+
 test("generated transcripts are schema-validated before upload", async () => {
   const turns = Array.from({ length: 10_001 }, (_, index) =>
     turn(`turn-${index + 1}`, index % 2 === 0 ? "user" : "assistant", [

@@ -31,6 +31,7 @@ import {
   timelineItemsAfterLastToolCall,
 } from "./turnTimeline";
 import { getAgentUiAdapter } from "../adapters";
+import { stripWikilinks } from "./wikilinks";
 
 interface TranscriptPublicationInput {
   title: string;
@@ -307,8 +308,13 @@ function markdownHeading(value: string) {
 }
 
 function researchAnswerMarkdown(content: ResearchNodeContent) {
-  return assistantTextFromTimelineItems(
-    timelineItemsAfterLastToolCall(buildTimelineItems(content.turns)),
+  // `[[Term]]` markers are local renderer machinery: the encyclopedia they
+  // point at never leaves the workspace, so published markdown carries the
+  // display text alone.
+  return stripWikilinks(
+    assistantTextFromTimelineItems(
+      timelineItemsAfterLastToolCall(buildTimelineItems(content.turns)),
+    ),
   ).trim();
 }
 
@@ -370,7 +376,9 @@ function publishedConversationTurns(
   return plainTextTranscriptMessages(content.turns, assistantLabel).map((message) => ({
     role: message.role,
     label: message.label,
-    text: message.text.trim(),
+    // plainTextTranscriptMessages already drops the markers; strip again so
+    // the published turn text does not depend on that projection's details.
+    text: stripWikilinks(message.text).trim(),
   }));
 }
 
@@ -379,7 +387,7 @@ function publishedConversationTurns(
 // count, and the public page's fallback — display renders the structured turns.
 function conversationTurnsMarkdown(turns: PublishedConversationTurn[]) {
   return turns
-    .map((turn) => `**${markdownHeading(turn.label)}**\n\n${turn.text}`)
+    .map((turn) => `**${markdownHeading(turn.label)}**\n\n${stripWikilinks(turn.text)}`)
     .join("\n\n")
     .trim();
 }

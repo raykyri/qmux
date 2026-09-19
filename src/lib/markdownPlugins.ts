@@ -3,6 +3,7 @@ import rehypeMathjax from "rehype-mathjax/svg";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import { remarkWikilinks } from "./wikilinks";
 
 type PluginList = NonNullable<Options["remarkPlugins"]>;
 
@@ -95,6 +96,7 @@ export const transcriptRemarkPlugins: PluginList = [
   remarkTranscriptMathTweaks,
   remarkGfm,
   remarkBreaks,
+  remarkWikilinks,
 ];
 
 export const transcriptRehypePlugins: PluginList = [rehypeMathjax];
