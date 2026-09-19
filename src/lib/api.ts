@@ -27,6 +27,9 @@ import type {
   ClaudeSkill,
   ConversationHistoryEntry,
   ConversationHistoryLaunchRequest,
+  EncyclopediaPage,
+  EncyclopediaPageRequest,
+  EncyclopediaPageSummary,
   GlobalDraft,
   GlobalTaskLauncherHotkey,
   GlobalTaskLauncherSetting,
@@ -618,6 +621,28 @@ export function applyResearchRecapCandidate(request: {
   candidate: ResearchRecapCandidate;
 }) {
   return invoke<ResearchNode>("apply_research_recap_candidate", { request });
+}
+
+export function listEncyclopediaPages(workspaceId: string) {
+  return invoke<EncyclopediaPageSummary[]>("encyclopedia_list_pages", { workspaceId });
+}
+
+export function getEncyclopediaPage(workspaceId: string, slug: string) {
+  return invoke<EncyclopediaPage | null>("encyclopedia_get_page", { workspaceId, slug });
+}
+
+/** Returns the page for the term, creating it and starting generation when it
+ * does not exist yet. An existing page records the new source as a backlink. */
+export function requestEncyclopediaPage(request: EncyclopediaPageRequest) {
+  return invoke<EncyclopediaPage>("encyclopedia_request_page", { request });
+}
+
+export function regenerateEncyclopediaPage(workspaceId: string, slug: string) {
+  return invoke<EncyclopediaPage>("encyclopedia_regenerate_page", { workspaceId, slug });
+}
+
+export function deleteEncyclopediaPage(workspaceId: string, slug: string) {
+  return invoke<void>("encyclopedia_delete_page", { workspaceId, slug });
 }
 
 export function createResearchDocument(request: {

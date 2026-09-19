@@ -146,6 +146,7 @@ export interface UseQmuxEventsHandlers {
   ) => void;
   onTerminalTitleChanged?: (paneId: string, title: string) => void;
   onResearchChanged?: (event: QmuxEvent) => void;
+  onEncyclopediaChanged?: (event: QmuxEvent) => void;
   onUserNotificationRequested?: (event: QmuxEvent) => void;
   onNotificationLogChanged?: (event: QmuxEvent) => void;
   onNotificationOpenPane?: (paneId: string) => void;
@@ -205,6 +206,7 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     onTerminalOpenUrl,
     onTerminalTitleChanged,
     onResearchChanged,
+    onEncyclopediaChanged,
     onUserNotificationRequested,
     onNotificationLogChanged,
     onNotificationOpenPane,
@@ -252,6 +254,9 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
       }
       if (event.type.startsWith("research.")) {
         onResearchChanged?.(event);
+      }
+      if (event.type.startsWith("encyclopedia.")) {
+        onEncyclopediaChanged?.(event);
       }
       if (event.type === "app.notification_requested") {
         onUserNotificationRequested?.(event);
