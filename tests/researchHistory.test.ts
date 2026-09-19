@@ -11,6 +11,7 @@ import {
   pushResearchHistory,
   pushResearchWorkspaceHistory,
   pruneResearchHistory,
+  pruneResearchWorkspaceHistory,
   researchHistoryBack,
   researchHistoryForward,
   researchSwipeDirection,
@@ -141,4 +142,40 @@ test("opening a document from Recent Activity pushes a return visit", () => {
 test("re-opening the current workspace page does not grow the stack", () => {
   const history = initResearchWorkspaceHistory({ kind: "journal" });
   assert.equal(pushResearchWorkspaceHistory(history, { kind: "journal" }), history);
+});
+
+test("pruning removed trees from workspace history keeps the cursor on the current page", () => {
+  const journal = { kind: "journal" } as const;
+  const docA = { kind: "document", treeId: "tree-a" } as const;
+  const docB = { kind: "document", treeId: "tree-b" } as const;
+  // Home -> A -> Home (via a shortcut) -> B, then A is archived.
+  const history = { entries: [journal, docA, journal, docB], index: 3 };
+  const pruned = pruneResearchWorkspaceHistory(history, (treeId) => treeId !== "tree-a");
+  assert.deepEqual(pruned, { entries: [journal, docB], index: 1 });
+  const back = researchWorkspaceHistoryBack(pruned);
+  assert.ok(back);
+  assert.deepEqual(back.visit, journal);
+});
+
+test("pruning collapses duplicate pages when an intermediate visit is removed", () => {
+  const journal = { kind: "journal" } as const;
+  const docA = { kind: "document", treeId: "tree-a" } as const;
+  const history = { entries: [journal, docA, journal], index: 2 };
+  assert.deepEqual(pruneResearchWorkspaceHistory(history, () => false), {
+    entries: [journal],
+    index: 0,
+  });
+});
+
+test("pruning preserves the current visit and returns the same stack when unchanged", () => {
+  const journal = { kind: "journal" } as const;
+  const docA = { kind: "document", treeId: "tree-a" } as const;
+  const history = { entries: [journal, docA], index: 1 };
+  assert.equal(pruneResearchWorkspaceHistory(history, () => true), history);
+  assert.deepEqual(pruneResearchWorkspaceHistory(history, () => false), history);
+  const forwardStack = { entries: [journal, docA], index: 0 };
+  assert.deepEqual(pruneResearchWorkspaceHistory(forwardStack, () => false), {
+    entries: [journal],
+    index: 0,
+  });
 });
