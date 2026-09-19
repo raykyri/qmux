@@ -431,6 +431,9 @@ pub struct RecentResearchQuery {
     pub model: Option<String>,
     pub status: ResearchNodeStatus,
     pub created_at: u128,
+    /// Current answer recap, when one has been generated for this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recap: Option<String>,
 }
 
 impl From<&ResearchNode> for RecentResearchQuery {
@@ -447,6 +450,10 @@ impl From<&ResearchNode> for RecentResearchQuery {
             model: node.model.clone(),
             status: node.status,
             created_at: node.created_at,
+            recap: node.recap.as_ref().and_then(|recap| {
+                let text = recap.text.trim();
+                (!text.is_empty()).then(|| text.to_string())
+            }),
         }
     }
 }
