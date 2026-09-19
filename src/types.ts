@@ -545,6 +545,21 @@ export interface ResearchHighlightAnchor {
   suffix: string;
 }
 
+/** One saved highlight with its thread context, for the Highlights feed. */
+export interface ResearchHighlightFeedItem {
+  highlightId: string;
+  nodeId: string;
+  treeId: string;
+  treeTitle: string;
+  /** The highlighted node's title or prompt; the tree title for documents. */
+  nodeLabel: string;
+  exact: string;
+  /** Surrounding context captured with the anchor, for excerpt display. */
+  prefix: string;
+  suffix: string;
+  createdAt: number;
+}
+
 export interface ResearchTreeSummary {
   id: string;
   title: string;

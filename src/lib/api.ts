@@ -53,6 +53,7 @@ import type {
   RecentResearchQueryPage,
   ResearchHighlight,
   ResearchHighlightAnchor,
+  ResearchHighlightFeedItem,
   ResearchTree,
   ResearchTreeDetail,
   ResearchTreeSummary,
@@ -685,6 +686,10 @@ export function cancelResearchNode(nodeId: string) {
 
 export function renameResearchTree(treeId: string, title: string) {
   return invoke<ResearchTree>("rename_research_tree", { treeId, title });
+}
+
+export function listResearchHighlights() {
+  return invoke<ResearchHighlightFeedItem[]>("list_research_highlights");
 }
 
 export function setResearchTreeFollowed(treeId: string, followed: boolean) {

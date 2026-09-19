@@ -493,6 +493,23 @@ pub struct ResearchHighlight {
     pub created_at: u128,
 }
 
+/// One saved highlight with the thread context the Highlights feed shows.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchHighlightFeedItem {
+    pub highlight_id: String,
+    pub node_id: String,
+    pub tree_id: String,
+    pub tree_title: String,
+    /// The highlighted node's title, or its prompt when untitled.
+    pub node_label: String,
+    pub exact: String,
+    /// Surrounding context captured with the anchor, for excerpt display.
+    pub prefix: String,
+    pub suffix: String,
+    pub created_at: u128,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchHighlightAnchor {

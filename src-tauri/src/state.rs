@@ -12,10 +12,10 @@ use crate::remote_terminal::{RemoteAttachmentController, RemoteHistoryCheckpoint
 use crate::research::{
     self, CreateResearchDocumentRequest, CreateResearchTreeRequest, RecentResearchQuery,
     RecentResearchQueryCursor, RecentResearchQueryPage, ResearchBranchRemoval, ResearchHighlight,
-    ResearchHighlightAnchor, ResearchNode, ResearchNodeCard, ResearchNodeContent, ResearchNodeKind,
-    ResearchNodeOrigin, ResearchNodeStatus, ResearchPublicationProposal, ResearchRuntime,
-    ResearchTree, ResearchTreeDetail, ResearchTreeSummary, UpdateResearchDocumentRequest,
-    UpdateResearchDocumentResult,
+    ResearchHighlightAnchor, ResearchHighlightFeedItem, ResearchNode, ResearchNodeCard,
+    ResearchNodeContent, ResearchNodeKind, ResearchNodeOrigin, ResearchNodeStatus,
+    ResearchPublicationProposal, ResearchRuntime, ResearchTree, ResearchTreeDetail,
+    ResearchTreeSummary, UpdateResearchDocumentRequest, UpdateResearchDocumentResult,
 };
 use crate::scrollback::{bounded_undo_scrollback, read_pane_scrollback, remove_pane_scrollback};
 use crate::thread_graph;
@@ -4564,6 +4564,56 @@ impl AppState {
             }
         });
         Ok(RecentResearchQueryPage { items, next_cursor })
+    }
+
+    /// Every highlight on a non-archived thread, newest first, for the
+    /// sidebar's Highlights feed.
+    pub fn list_research_highlights(&self) -> Result<Vec<ResearchHighlightFeedItem>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        let mut items = model
+            .research_nodes
+            .values()
+            .filter_map(|node| {
+                let tree = model.research_trees.get(&node.tree_id)?;
+                if tree.archived_at.is_some() {
+                    return None;
+                }
+                // Documents carry their title on the tree and have no prompt.
+                let node_label = [node.title.as_deref(), Some(node.prompt.as_str())]
+                    .into_iter()
+                    .flatten()
+                    .find(|label| !label.trim().is_empty())
+                    .unwrap_or(tree.title.as_str())
+                    .to_string();
+                Some(
+                    node.highlights
+                        .iter()
+                        .map(move |highlight| ResearchHighlightFeedItem {
+                            highlight_id: highlight.id.clone(),
+                            node_id: node.id.clone(),
+                            tree_id: tree.id.clone(),
+                            tree_title: tree.title.clone(),
+                            node_label: node_label.clone(),
+                            exact: highlight.anchor.exact.clone(),
+                            prefix: highlight.anchor.prefix.clone(),
+                            suffix: highlight.anchor.suffix.clone(),
+                            created_at: highlight.created_at,
+                        }),
+                )
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.highlight_id.cmp(&left.highlight_id))
+        });
+        Ok(items)
     }
 
     pub fn research_tree(&self, tree_id: &str) -> Result<ResearchTreeDetail, String> {
@@ -16775,6 +16825,80 @@ mod tests {
         .unwrap();
         assert_eq!(snapshot.len(), 1);
         assert!(node.response_snapshot_at.is_some());
+    }
+
+    #[test]
+    fn highlights_feed_lists_saved_highlights_newest_first_with_thread_context() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.restore_session();
+        let mut group = sample_group();
+        group.dir = workspace.display().to_string();
+        group.managed_dir = workspace.join("managed").display().to_string();
+        group.agents.clear();
+        state.insert_group_after(group, None).unwrap();
+        assert!(state.list_research_highlights().unwrap().is_empty());
+        let detail = state
+            .create_research_document(CreateResearchDocumentRequest {
+                markdown: "# Original\n\nBody".to_string(),
+                title: Some("Original title".to_string()),
+                group_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let node_id = detail.tree.root_node_id.clone();
+        let snapshot = research::read_response_snapshot_with_revision(&workspace, &node_id)
+            .unwrap()
+            .unwrap();
+        let anchor = |start: usize, end: usize, exact: &str| ResearchHighlightAnchor {
+            version: 1,
+            projection: "answer-v1".to_string(),
+            response_revision: snapshot.revision.clone(),
+            start,
+            end,
+            exact: exact.to_string(),
+            prefix: "# Original\n\n".chars().take(start).collect(),
+            suffix: String::new(),
+        };
+        let first = state
+            .create_research_highlight(&node_id, anchor(0, 10, "# Original"))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        let second = state
+            .create_research_highlight(&node_id, anchor(12, 16, "Body"))
+            .unwrap();
+
+        let items = state.list_research_highlights().unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.highlight_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![second.id.as_str(), first.id.as_str()]
+        );
+        assert_eq!(items[0].exact, "Body");
+        assert_eq!(items[0].prefix, "# Original\n\n");
+        assert_eq!(items[0].suffix, "");
+        assert_eq!(items[0].node_id, node_id);
+        assert_eq!(items[0].tree_id, detail.tree.id);
+        assert_eq!(items[0].tree_title, detail.tree.title);
+        // Documents label by their tree title (no node title or prompt).
+        assert_eq!(items[0].node_label, "Original title");
+        assert_eq!(detail.tree.title, "Original title");
+        assert_eq!(items[0].created_at, second.created_at);
+
+        state
+            .remove_research_highlight(&node_id, &second.id)
+            .unwrap();
+        let items = state.list_research_highlights().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].highlight_id, first.id);
+
+        // Archived threads leave the feed and return on restore.
+        state.archive_research_tree(&detail.tree.id).unwrap();
+        assert!(state.list_research_highlights().unwrap().is_empty());
+        state.restore_research_tree(&detail.tree.id).unwrap();
+        assert_eq!(state.list_research_highlights().unwrap().len(), 1);
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]
