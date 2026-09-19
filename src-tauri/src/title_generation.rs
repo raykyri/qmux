@@ -162,6 +162,28 @@ pub fn generate_research_recap_with(
     )
 }
 
+/// Writes one encyclopedia page body through the requesting agent's CLI, on
+/// the same tool-less structured-output path titles and recaps use.
+pub fn generate_encyclopedia_page(
+    config: &QmuxConfig,
+    job_id: &str,
+    adapter: &str,
+    model: Option<&str>,
+    workspace: &GroupInfo,
+    prompt: &str,
+) -> Result<String, String> {
+    generate_research_metadata(
+        config,
+        job_id,
+        adapter,
+        model,
+        workspace,
+        prompt,
+        "page",
+        PAGE_SCHEMA,
+    )
+}
+
 fn generate_research_metadata(
     config: &QmuxConfig,
     node_id: &str,
@@ -383,16 +405,10 @@ fn run_research_metadata_process(
     let raw = candidate.as_deref().unwrap_or("");
     let result = match field {
         "recap" => crate::research_recap::normalize_recap(raw),
-        "page" => normalize_page_stub(raw),
+        "page" => crate::encyclopedia::normalize_page(raw),
         _ => sanitize_research_title(raw),
     };
     result.ok_or_else(|| format!("{} returned no research {field}", flavor.label()))
-}
-
-/// TODO(P12): replace with crate::encyclopedia::normalize_page. Without
-/// encyclopedia.rs no caller asks for the "page" field, so this arm is inert.
-fn normalize_page_stub(raw: &str) -> Option<String> {
-    (!raw.trim().is_empty()).then(|| raw.to_string())
 }
 
 fn metadata_candidate_from_value(value: &Value, field: &str) -> Option<String> {

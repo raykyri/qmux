@@ -7,6 +7,7 @@ mod config;
 mod connection_limit;
 mod control;
 mod control_socket;
+mod encyclopedia;
 mod events;
 mod file_server;
 mod global_task_launcher;
