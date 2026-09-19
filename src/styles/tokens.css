@@ -145,6 +145,9 @@
   --control-h-md: 30px;
   --control-h-lg: 34px;
 
+  /* Shared maximum for Home activity and tweet embeds on wider surfaces. */
+  --research-feed-max-width: 540px;
+
   /* Corner radii. */
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -184,6 +187,20 @@
   --text-faint: #6f7773;
   --text-disabled: #797d80;
   --placeholder-color: #6b726d;
+  /* Extended text ramp. --text-max is the maximum-contrast state text used by
+     selected rows and hovered actions; tertiary sits between secondary and
+     muted; dim/ghost are for hints that should barely register. */
+  --text-max: #ffffff;
+  --text-tertiary: #aab1ad;
+  --text-dim: #5a615e;
+  --text-ghost: #4b524e;
+  --text-on-accent: #0f1413;
+
+  /* Per-adapter identity colors in history and activity rows. */
+  --agent-claude-fg: #d9a07d;
+  --agent-codex-fg: #8fc7a6;
+  /* Brand-blue link color for external embeds (tweets). */
+  --link-external-fg: #1d9bf0;
   --field-hint-fg: #777f7b;
   --dialog-backdrop-bg: rgba(8, 10, 12, 0.58);
 
@@ -204,8 +221,36 @@
   --status-info-border-strong: rgba(109, 167, 236, 0.5);
   --wait-target-preview-border: rgba(109, 167, 236, 0.7);
   --status-success-fg: #81c784;
+  --status-success-fg-soft: #b9f0d6;
+  --status-success-bg: rgba(129, 199, 132, 0.08);
+  --status-success-border: rgba(129, 199, 132, 0.25);
   --status-error-fg: #e08a5f;
   --status-pending-fg: #7f8884;
+  --status-failed-bg: rgba(217, 135, 135, 0.13);
+  --status-info-fg-soft: #b8cfea;
+  --status-info-fg-link: #79a7c8;
+  --status-info-bg-strong: rgba(90, 130, 178, 0.16);
+  /* Toast tone borders and icons. */
+  --toast-success-fg: #71d4a9;
+  --toast-success-border: #56c596;
+  --toast-warning-fg: #f1c16e;
+  --toast-warning-border: #e9b65d;
+  --toast-error-fg: #ed8a8a;
+  --toast-error-border: #e07979;
+  /* Amber attention badges on terminal tabs (needs-input / bell). */
+  --attention-badge-bg: #665a2b;
+  --attention-badge-fg: #f4f4ef;
+  --attention-badge-bg-strong: #a8842f;
+  --attention-badge-fg-strong: #111315;
+  --attention-marker-bg: #e0a96d;
+  /* Warm warning callout (composer capacity / stale-session notices). */
+  --warning-callout-fg: #ffdca8;
+  --warning-callout-bg: #241f18;
+  --warning-callout-border: #5b4630;
+  /* Research passage highlights (yellow = selected passage, neutral = hover). */
+  --research-highlight-bg: rgba(216, 196, 95, 0.14);
+  --research-highlight-bg-hover: rgba(216, 196, 95, 0.17);
+  --research-highlight-neutral-bg: rgba(211, 216, 212, 0.16);
 
   --danger-bg: #2c1a17;
   --danger-bg-hover: #3a221d;
@@ -236,6 +281,16 @@
   --sidebar-switcher-hover-bg: rgba(255, 255, 255, 0.045);
   --sidebar-switcher-active-bg: rgba(255, 255, 255, 0.105);
   --sidebar-group-bg: rgba(255, 255, 255, 0.013);
+  --surface-fill-faint: rgba(255, 255, 255, 0.03);
+  --surface-fill-medium: rgba(255, 255, 255, 0.09);
+  --surface-fill-strong: rgba(255, 255, 255, 0.18);
+  --surface-border-strong-alpha: rgba(255, 255, 255, 0.55);
+  /* Text-colored underline for links inside body copy. */
+  --link-underline: rgba(241, 240, 232, 0.8);
+  /* Lightbox scrims sit over images and stay dark in every appearance. */
+  --lightbox-scrim-bg: rgba(0, 0, 0, 0.72);
+  --lightbox-caption-bg: rgba(0, 0, 0, 0.6);
+  --lightbox-caption-fg: #ffffff;
 
   --control-fg: var(--text-strong);
   --control-fg-muted: #b9c0bc;
@@ -254,6 +309,24 @@
   --context-menu-shadow:
     0 0 0 0.5px rgba(0, 0, 0, 0.45),
     0 12px 32px rgba(0, 0, 0, 0.3);
+  /* Generic elevation steps for floating chrome that is not a popover/dialog. */
+  --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 24px 70px rgba(0, 0, 0, 0.48);
+  --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.45);
+  --shadow-ring: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  --shadow-glow-warm: inset 0 0 0 1px rgba(255, 239, 197, 0.12);
+
+  /* Inline SVG glyphs for native form controls (select chevron, launcher lead
+     icons, checkbox check). Stroke colors are baked into the data URI, so each
+     appearance declares its own set. */
+  --select-chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5L5 6.5L8 3.5' fill='none' stroke='%239ca6a1' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  --select-lead-folder: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239ca6a1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z'/></svg>");
+  --select-lead-shield: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239ca6a1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z'/></svg>");
+  --checkbox-check: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'><path d='M3.5 7.3 5.9 9.7 10.5 4.6' fill='none' stroke='%2310211c' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+
+  color-scheme: dark;
 
   color: var(--text-primary);
   /* Transparent so the macOS window vibrancy (NSVisualEffectView) composites
