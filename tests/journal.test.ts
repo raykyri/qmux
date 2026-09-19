@@ -26,7 +26,7 @@ import {
   JournalTweetCard,
   journalEntryMenuItems,
   journalEntryUrl,
-} from "../src/components/research/JournalPane";
+} from "../src/components/research/ResearchActivityFeed";
 
 // Real syndication payloads captured from cdn.syndication.twimg.com, one per
 // content shape the feed must handle.

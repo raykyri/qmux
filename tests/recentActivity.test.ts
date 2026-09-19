@@ -27,7 +27,7 @@ import ActivityMetadataLine, {
 import {
   buildRecentActivityVirtualRows,
   virtualActivityRange,
-} from "../src/components/research/JournalPane";
+} from "../src/components/research/ResearchActivityFeed";
 import type { JournalEntry } from "../src/lib/journal";
 import type { RecentResearchQuery, ResearchNode, ResearchTreeSummary } from "../src/types";
 

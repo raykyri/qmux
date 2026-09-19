@@ -175,7 +175,7 @@ import {
 } from "./lib/researchScope";
 import ResearchDocument from "./components/research/ResearchDocument";
 import ExportToResearchDialog from "./components/research/ExportToResearchDialog";
-import RecentActivityPane from "./components/research/JournalPane";
+import ResearchActivityFeed from "./components/research/ResearchActivityFeed";
 import {
   normalizeNotificationLog,
   type NotificationLogEntry,
@@ -19132,7 +19132,8 @@ function MainApp() {
             </div>
           ) : null}
           {researchStageView === "journal" ? (
-            <RecentActivityPane
+            <ResearchActivityFeed
+              composer={null}
               items={recentActivityItems}
               researchTrees={[...researchTrees, ...archivedResearchTrees]}
               nextCursor={recentActivityCursor}

@@ -16,33 +16,14 @@
   width: min(100%, 380px);
 }
 
-.journal-composer {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.journal-composer-input {
+/* The query composer occupies the top of the page; the feed's own creation
+   affordance (links, notes, X posts) lives in the header actions menu. */
+.journal-composer-container {
   width: 100%;
-  padding: 9px 12px;
-  border: 1px solid var(--surface-border-default);
-  border-radius: 10px;
-  color: inherit;
-  font: inherit;
-  font-size: 13.5px;
-  line-height: 1.45;
-  background: var(--content-card-bg);
-  resize: none;
-  transition: border-color var(--transition-fast);
 }
 
-.journal-composer-input:focus {
-  outline: none;
-  border-color: var(--accent-color);
-}
-
-.journal-composer-input::placeholder {
-  color: var(--text-subtle);
+.journal-feed-menu {
+  width: 200px;
 }
 
 .journal-feed {

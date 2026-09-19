@@ -7,13 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type {
-  FocusEvent,
-  FormEvent,
-  KeyboardEvent,
-  MouseEvent,
-  ReactNode,
-} from "react";
+import type { FocusEvent, MouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   ChevronDown,
@@ -21,7 +15,7 @@ import {
   ExternalLink,
   LoaderCircle,
   MoreHorizontal,
-  Play,
+  Plus,
   RotateCw,
   Trash2,
   Undo2,
@@ -49,8 +43,22 @@ import { writeClipboardText } from "../../lib/clipboard";
 import { TweetEmbed } from "./TweetEmbed";
 import { ResearchDocumentFrame } from "./ResearchDocumentChrome";
 import ActivityMetadataLine from "../ActivityMetadataLine";
+import {
+  Button,
+  DialogActions,
+  DialogForm,
+  DialogRoot,
+  DialogTitle,
+  Input,
+  Menu,
+  MenuItem,
+  PopoverPortal,
+  useAnchoredPopover,
+} from "../ui";
 
-interface RecentActivityPaneProps {
+export interface ResearchActivityFeedProps {
+  /** The Home query composer, rendered above the first feed row. */
+  composer: ReactNode;
   items: RecentActivityItem[];
   researchTrees: ResearchTreeSummary[];
   nextCursor: RecentActivityCursor | null;
@@ -58,6 +66,9 @@ interface RecentActivityPaneProps {
   olderError: string | null;
   /** The most recently removed entry, still restorable. */
   pendingUndo: { entry: JournalEntry } | null;
+  /** Classifies a pasted URL or typed note into a saved feed entry. Reached
+   * from the feed's own actions menu now that the composer slot holds the
+   * research query composer. */
   onAddEntry: (input: string) => void;
   onRemoveEntry: (id: string) => void;
   onRetryTweet: (id: string) => void;
@@ -122,6 +133,142 @@ export function journalEntryMenuItems(entry: JournalEntry): JournalMenuItem[] {
   }
   items.push({ action: "delete", label: "Delete", key: "D", danger: true });
   return items;
+}
+
+const JOURNAL_FEED_MENU_WIDTH = 200;
+
+/** Label of the feed menu's creation item. Exported so the affordance that
+ * keeps note, link and post creation reachable can be asserted directly. */
+export const JOURNAL_CREATE_ENTRY_LABEL = "Add link or note…";
+
+/** Hands a non-blank draft to the feed's entry classifier. Returns false for a
+ * blank draft, so an empty submit is a no-op rather than an empty note. */
+export function submitJournalEntryDraft(
+  draft: string,
+  onAddEntry: (input: string) => void,
+): boolean {
+  const text = draft.trim();
+  if (!text) {
+    return false;
+  }
+  onAddEntry(text);
+  return true;
+}
+
+/** The feed-level actions. The query composer owns the top of the page, so
+ * saving a link, a note or an X post happens from here. */
+export function JournalFeedMenuItems({ onCreateEntry }: { onCreateEntry: () => void }) {
+  return (
+    <div className="group-context-actions">
+      <MenuItem onClick={onCreateEntry}>
+        <Plus size={13} aria-hidden="true" />
+        <span>{JOURNAL_CREATE_ENTRY_LABEL}</span>
+      </MenuItem>
+    </div>
+  );
+}
+
+/** One field for a URL or a note; the backend classifier decides which it is. */
+function JournalEntryCreateDialog({
+  onAddEntry,
+  onClose,
+}: {
+  onAddEntry: (input: string) => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+  return (
+    <DialogRoot onDismiss={onClose}>
+      <DialogForm
+        className="rename-dialog"
+        aria-labelledby="journal-create-entry-title"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (submitJournalEntryDraft(draft, onAddEntry)) {
+            onClose();
+          }
+        }}
+      >
+        <DialogTitle id="journal-create-entry-title">Add link or note</DialogTitle>
+        <Input
+          ref={inputRef}
+          className="rename-dialog-input"
+          value={draft}
+          aria-label="Link or note"
+          placeholder="Paste a URL or type a note…"
+          onChange={(event) => setDraft(event.currentTarget.value)}
+        />
+        <DialogActions>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" disabled={!draft.trim()}>
+            Add
+          </Button>
+        </DialogActions>
+      </DialogForm>
+    </DialogRoot>
+  );
+}
+
+function JournalFeedMenu({ onAddEntry }: { onAddEntry: (input: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const closeMenu = useCallback(() => setOpen(false), []);
+  const menuStyle = useAnchoredPopover({
+    open,
+    onClose: closeMenu,
+    triggerRef,
+    popoverRef: menuRef,
+    preferredWidth: JOURNAL_FEED_MENU_WIDTH,
+    align: "end",
+  });
+  return (
+    <>
+      <Button
+        ref={triggerRef}
+        variant="icon"
+        className="journal-feed-menu-trigger"
+        title="Feed actions"
+        aria-label="Feed actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Plus size={15} aria-hidden="true" />
+      </Button>
+      {open ? (
+        <PopoverPortal>
+          <Menu
+            ref={menuRef}
+            className="pane-context-menu journal-feed-menu"
+            aria-label="Feed actions"
+            style={menuStyle ?? { left: -9999, top: -9999 }}
+          >
+            <JournalFeedMenuItems
+              onCreateEntry={() => {
+                setOpen(false);
+                setCreating(true);
+              }}
+            />
+          </Menu>
+        </PopoverPortal>
+      ) : null}
+      {creating ? (
+        <JournalEntryCreateDialog
+          onAddEntry={onAddEntry}
+          onClose={() => {
+            setCreating(false);
+            triggerRef.current?.focus();
+          }}
+        />
+      ) : null}
+    </>
+  );
 }
 
 function externalLinkClick(url: string) {
@@ -198,14 +345,10 @@ function JournalEntryCard({
         <p className="journal-tweet-error">
           Couldn’t load this tweet{entry.error ? ` — ${entry.error}` : ""}.
         </p>
-        <button
-          className="control-button journal-tweet-retry"
-          type="button"
-          onClick={() => onRetryTweet(entry.id)}
-        >
+        <Button className="journal-tweet-retry" onClick={() => onRetryTweet(entry.id)}>
           <RotateCw size={12} aria-hidden="true" />
           <span>Retry</span>
-        </button>
+        </Button>
       </div>
     );
   } else {
@@ -239,9 +382,8 @@ function JournalEntryCard({
       }}
     >
       {body}
-      <button
-        className="control-button journal-entry-menu-trigger"
-        type="button"
+      <Button
+        className="journal-entry-menu-trigger"
         title="Entry actions"
         aria-label="Entry actions"
         aria-haspopup="menu"
@@ -250,7 +392,7 @@ function JournalEntryCard({
         onClick={(event) => onOpenMenu(entry.id, event.currentTarget)}
       >
         <MoreHorizontal size={13} aria-hidden="true" />
-      </button>
+      </Button>
     </article>
   );
 }
@@ -268,24 +410,22 @@ function ResearchQueryCard({
         {query.prompt}
       </button>
       <div className="recent-query-actions" aria-label="Query actions">
-        <button
-          className="control-button recent-query-action"
-          type="button"
+        <Button
+          className="recent-query-action"
           title="Copy query"
           aria-label="Copy query"
           onClick={() => void writeClipboardText(query.prompt)}
         >
           <Copy size={12} aria-hidden="true" />
-        </button>
-        <button
-          className="control-button recent-query-action"
-          type="button"
+        </Button>
+        <Button
+          className="recent-query-action"
           title="Open research"
           aria-label="Open research"
           onClick={onOpen}
         >
           <ExternalLink size={12} aria-hidden="true" />
-        </button>
+        </Button>
       </div>
     </article>
   );
@@ -393,7 +533,8 @@ function MeasuredActivityRow({
   );
 }
 
-function RecentActivityPane({
+function ResearchActivityFeed({
+  composer,
   items,
   researchTrees,
   nextCursor,
@@ -411,8 +552,7 @@ function RecentActivityPane({
   canGoForward = false,
   onBack,
   onForward,
-}: RecentActivityPaneProps) {
-  const [draft, setDraft] = useState("");
+}: ResearchActivityFeedProps) {
   const [menu, setMenu] = useState<{ entryId: string; left: number; top: number } | null>(
     null,
   );
@@ -823,30 +963,10 @@ function RecentActivityPane({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [onUndoRemove, pendingUndo]);
 
-  function submit() {
-    const text = draft.trim();
-    if (!text) {
-      return;
-    }
-    onAddEntry(text);
-    setDraft("");
-  }
-
-  function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    submit();
-  }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      submit();
-    }
-  }
-
   return (
     <ResearchDocumentFrame
       title="Recent Activity"
+      headerActions={<JournalFeedMenu onAddEntry={onAddEntry} />}
       canGoBack={canGoBack}
       canGoForward={canGoForward}
       backTitle={`Back (${IS_MAC ? "⌘[" : "Ctrl+["})`}
@@ -856,47 +976,31 @@ function RecentActivityPane({
     >
       <div ref={scrollRef} className="research-document-scroll journal-scroll">
         <div className="journal-column">
-          <form className="journal-composer" onSubmit={handleSubmit}>
-            <textarea
-              className="journal-composer-input"
-              value={draft}
-              rows={2}
-              placeholder="Add a note or paste a URL…"
-              aria-label="New recent activity entry"
-              onChange={(event) => setDraft(event.currentTarget.value)}
-              onKeyDown={handleKeyDown}
-            />
-          </form>
+          {composer ? <div className="journal-composer-container">{composer}</div> : null}
           {pendingUndo ? (
             <div className="journal-undo" role="status">
               <span className="journal-undo-label">
                 {pendingUndo.entry.kind === "note" ? "Note" : "Entry"} removed
               </span>
-              <button
-                className="control-button journal-undo-restore"
-                type="button"
-                onClick={onUndoRemove}
-              >
+              <Button className="journal-undo-restore" onClick={onUndoRemove}>
                 <Undo2 size={12} aria-hidden="true" />
                 <span>Undo</span>
                 <kbd className="context-menu-shortcut is-keycap">⌘Z</kbd>
-              </button>
-              <button
-                className="control-button journal-undo-dismiss"
-                type="button"
+              </Button>
+              <Button
+                className="journal-undo-dismiss"
                 title="Dismiss"
                 aria-label="Dismiss undo"
                 onClick={onDismissUndo}
               >
                 <X size={12} aria-hidden="true" />
-              </button>
+              </Button>
             </div>
           ) : null}
           {newActivityCount > 0 ? (
             <div className="recent-activity-new-status" role="status" aria-live="polite">
-              <button
-                className="control-button recent-activity-new"
-                type="button"
+              <Button
+                className="recent-activity-new"
                 onClick={() => {
                   setNewActivityCount(0);
                   const reduceMotion = window.matchMedia?.(
@@ -909,7 +1013,7 @@ function RecentActivityPane({
                 }}
               >
                 {newActivityCount} new {newActivityCount === 1 ? "activity" : "activities"}
-              </button>
+              </Button>
             </div>
           ) : null}
           <div
@@ -983,9 +1087,8 @@ function RecentActivityPane({
               aria-atomic="true"
             >
               {nextCursor ? (
-                <button
-                  className="control-button recent-activity-load-older"
-                  type="button"
+                <Button
+                  className="recent-activity-load-older"
                   disabled={loadingOlder}
                   onClick={onLoadOlder}
                 >
@@ -997,7 +1100,7 @@ function RecentActivityPane({
                         ? "Retry older activity"
                         : "Load older activity"}
                   </span>
-                </button>
+                </Button>
               ) : null}
               {olderError ? (
                 <p className="recent-activity-load-error" role="alert">
@@ -1010,10 +1113,9 @@ function RecentActivityPane({
       </div>
       {menu && menuEntry
         ? createPortal(
-            <div
+            <Menu
               ref={menuRef}
-              className="popover-surface popover-surface--context pane-context-menu journal-entry-menu"
-              role="menu"
+              className="pane-context-menu journal-entry-menu"
               aria-label="Saved entry actions"
               style={{ left: menu.left, top: menu.top }}
               onMouseDown={(event) => event.stopPropagation()}
@@ -1025,22 +1127,21 @@ function RecentActivityPane({
                     {item.danger && index > 0 ? (
                       <div className="context-menu-divider" role="separator" />
                     ) : null}
-                    <button
-                      className={`control-button context-menu-has-shortcut${
+                    <MenuItem
+                      tone={item.danger ? "danger" : "neutral"}
+                      className={`context-menu-has-shortcut${
                         item.danger ? " context-menu-danger" : ""
                       }`}
-                      type="button"
-                      role="menuitem"
                       onClick={() => runMenuAction(menuEntry, item.action)}
                     >
                       {menuItemIcon(item.action)}
                       <span>{item.label}</span>
                       <kbd className="context-menu-shortcut is-keycap">{item.key}</kbd>
-                    </button>
+                    </MenuItem>
                   </span>
                 ))}
               </div>
-            </div>,
+            </Menu>,
             document.body,
           )
         : null}
@@ -1048,4 +1149,4 @@ function RecentActivityPane({
   );
 }
 
-export default memo(RecentActivityPane);
+export default memo(ResearchActivityFeed);
