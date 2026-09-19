@@ -272,6 +272,9 @@
 .journal-tweet {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
+  width: 100%;
+  max-width: var(--research-feed-max-width);
+  min-width: 0;
   column-gap: 10px;
   cursor: pointer;
 }
@@ -500,11 +503,15 @@ a.journal-tweet-more:hover {
    here reaches X. */
 .journal-tweet-stats {
   display: flex;
+  min-height: 14px;
+  align-items: center;
   gap: 18px;
   margin-top: 8px;
   color: var(--text-subtle);
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
+  /* The glyphs and their counts share one optical row. */
+  line-height: 1;
 }
 
 .journal-tweet-stat {
