@@ -107,7 +107,9 @@ import {
 } from "../TranscriptActivity";
 import TranscriptMarkdown, {
   TranscriptLinkActionsProvider,
+  TranscriptWikilinkActionsProvider,
   type LinkActions,
+  type WikilinkActions,
 } from "../TranscriptMarkdown";
 import DocumentComposer from "./DocumentComposer";
 import {
@@ -164,6 +166,8 @@ interface ResearchDocumentProps {
   onRetryNode: (nodeId: string) => Promise<void>;
   onOpenPane: (paneId: string) => void;
   linkActions: LinkActions;
+  /** Encyclopedia resolution for `[[Term]]` links in answers; null leaves them inert. */
+  wikilinkActions?: WikilinkActions | null;
   onError: (message: string) => void;
   onToast: (message: string, tone?: "normal" | "warning") => void;
   onPublish: (target: PublishDialogTarget) => void;
@@ -1760,6 +1764,7 @@ function ResearchDocument({
   onRetryNode,
   onOpenPane,
   linkActions,
+  wikilinkActions = null,
   onError,
   onToast,
   onPublish,
@@ -5383,7 +5388,7 @@ function ResearchDocument({
 
   return (
     <TranscriptLinkActionsProvider actions={linkActions}>
-      <>
+      <TranscriptWikilinkActionsProvider actions={wikilinkActions}>
         <div className="research-workspace">
         <main className="research-document">
           <header className="research-document-header">
@@ -5897,7 +5902,7 @@ function ResearchDocument({
             </Dialog>
           </DialogRoot>
         ) : null}
-      </>
+      </TranscriptWikilinkActionsProvider>
     </TranscriptLinkActionsProvider>
   );
 }

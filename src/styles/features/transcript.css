@@ -1179,10 +1179,10 @@ header + .turn-blocks {
   text-decoration: underline;
 }
 
-/* Wikilinks: key terms the agent marked as [[Term]]. None point to an existing
-   page yet, so they use a slightly muted tint of the base text color rather
-   than the accent color, with a dotted underline to separate them from
-   navigable URLs. */
+/* Wikilinks: key terms the agent marked as [[Term]]. A term without an
+   encyclopedia page uses a slightly muted tint of the base text color with a
+   dotted underline, separating it from navigable URLs; once a page exists the
+   underline turns solid, and a page still being written pulses. */
 .turn-markdown a.research-wikilink {
   cursor: pointer;
   color: color-mix(in srgb, var(--text-strong) 90%, transparent);
@@ -1196,6 +1196,29 @@ header + .turn-blocks {
   color: var(--text-strong);
   text-decoration-style: solid;
   text-decoration-color: color-mix(in srgb, var(--text-strong) 60%, transparent);
+}
+
+.turn-markdown a.research-wikilink.is-ready {
+  text-decoration-style: solid;
+  text-decoration-color: color-mix(in srgb, var(--text-strong) 55%, transparent);
+}
+
+.turn-markdown a.research-wikilink.is-generating {
+  animation: research-wikilink-pulse 1.6s ease-in-out infinite;
+}
+
+.turn-markdown a.research-wikilink.is-failed {
+  text-decoration-color: var(--status-failed-fg);
+}
+
+@keyframes research-wikilink-pulse {
+  0%,
+  100% {
+    text-decoration-color: color-mix(in srgb, var(--text-strong) 40%, transparent);
+  }
+  50% {
+    text-decoration-color: var(--accent-color);
+  }
 }
 
 /* Explicit launch affordance for localhost HTML and Codex visualization
