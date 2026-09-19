@@ -4777,6 +4777,7 @@ impl AppState {
             status: ResearchNodeStatus::Queued,
             error: None,
             response_snapshot_at: None,
+            recap: None,
             created_at: now,
             started_at: None,
             completed_at: None,
@@ -4863,6 +4864,7 @@ impl AppState {
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: Some(now),
+            recap: None,
             created_at: now,
             started_at: None,
             completed_at: Some(now),
@@ -5109,6 +5111,7 @@ impl AppState {
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: Some(now),
+            recap: None,
             created_at: now,
             started_at: Some(prepared.agent_created_at.min(now)),
             completed_at: Some(now),
@@ -5559,6 +5562,7 @@ impl AppState {
                 status: ResearchNodeStatus::Queued,
                 error: None,
                 response_snapshot_at: None,
+                recap: None,
                 created_at: now,
                 started_at: None,
                 completed_at: None,
@@ -9348,6 +9352,54 @@ impl AppState {
                 json!({ "node": node }),
             ));
         }
+        Ok(())
+    }
+
+    /// Commit only if the same run and durable response still exist. Retry,
+    /// deletion, and response edits can race the background model call.
+    pub(crate) fn save_research_recap(
+        &self,
+        source: &ResearchNode,
+        revision: &str,
+        text: String,
+    ) -> Result<(), String> {
+        let updated = {
+            let mut model = self.inner.model.lock().map_err(|_| "model lock poisoned")?;
+            let Some(node) = model.research_nodes.get_mut(&source.id) else {
+                return Ok(());
+            };
+            if node.status != ResearchNodeStatus::Complete
+                || node.agent_id != source.agent_id
+                || node.started_at != source.started_at
+                || node.response_snapshot_at != source.response_snapshot_at
+            {
+                return Ok(());
+            }
+            let snapshot = research::read_response_snapshot_with_revision(
+                &self.inner.config.workspace_root,
+                &node.id,
+            )?;
+            if !snapshot.is_some_and(|snapshot| snapshot.revision == revision) {
+                return Ok(());
+            }
+            node.recap = Some(research::ResearchRecap {
+                id: Some(crate::adapters::new_uuid_v4()?),
+                text,
+                response_revision: revision.to_string(),
+                generated_at: Some(now_millis()),
+                adapter: Some(source.adapter.clone()),
+                model: source.model.clone(),
+                instructions: None,
+            });
+            node.clone()
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.node.updated",
+            updated.pane_id.clone(),
+            updated.agent_id.clone(),
+            json!({ "node": updated }),
+        ));
         Ok(())
     }
 
@@ -15931,6 +15983,7 @@ mod tests {
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: None,
+            recap: None,
             created_at: 1,
             started_at: Some(1),
             completed_at: Some(2),
@@ -16042,6 +16095,7 @@ mod tests {
             status: ResearchNodeStatus::Running,
             error: None,
             response_snapshot_at: None,
+            recap: None,
             created_at: 1,
             started_at: Some(2),
             completed_at: None,
@@ -16137,6 +16191,7 @@ mod tests {
             status: ResearchNodeStatus::Running,
             error: None,
             response_snapshot_at: None,
+            recap: None,
             created_at: 1,
             started_at: Some(1),
             completed_at: None,
@@ -16242,6 +16297,7 @@ mod tests {
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: None,
+            recap: None,
             created_at: 1,
             started_at: Some(1),
             completed_at: Some(2),
@@ -16322,6 +16378,7 @@ mod tests {
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: None,
+            recap: None,
             created_at: 1,
             started_at: Some(1),
             completed_at: Some(2),
@@ -16411,6 +16468,7 @@ mod tests {
                     status: ResearchNodeStatus::Complete,
                     error: None,
                     response_snapshot_at: None,
+                    recap: None,
                     created_at: 1,
                     started_at: Some(1),
                     completed_at: Some(2),

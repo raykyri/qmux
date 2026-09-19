@@ -381,6 +381,9 @@ pub struct ResearchNode {
     /// their signal to refetch content they may have read too early.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_snapshot_at: Option<u128>,
+    /// Derived metadata bound to a durable answer revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recap: Option<ResearchRecap>,
     pub created_at: u128,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<u128>,
@@ -388,6 +391,26 @@ pub struct ResearchNode {
     pub completed_at: Option<u128>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub highlights: Vec<ResearchHighlight>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchRecap {
+    /// Identity of this generation. Older persisted recaps have no id; the
+    /// first manual replacement gives them one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub text: String,
+    pub response_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_at: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Absent means the built-in default instructions were used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 /// Compact, durable query history for Recent Activity. This deliberately omits
@@ -2909,6 +2932,7 @@ mod tests {
             status: ResearchNodeStatus::Complete,
             error: None,
             response_snapshot_at: Some(2),
+            recap: None,
             created_at: 1,
             started_at: Some(1),
             completed_at: Some(2),
