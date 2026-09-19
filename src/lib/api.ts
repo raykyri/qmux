@@ -687,6 +687,14 @@ export function renameResearchTree(treeId: string, title: string) {
   return invoke<ResearchTree>("rename_research_tree", { treeId, title });
 }
 
+export function setResearchTreeFollowed(treeId: string, followed: boolean) {
+  return invoke<ResearchTree>("set_research_tree_followed", { treeId, followed });
+}
+
+export function setResearchTreeBookmarked(treeId: string, bookmarked: boolean) {
+  return invoke<ResearchTree>("set_research_tree_bookmarked", { treeId, bookmarked });
+}
+
 export function renameResearchNode(nodeId: string, title: string) {
   return invoke<ResearchNode>("rename_research_node", { nodeId, title });
 }

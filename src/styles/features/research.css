@@ -184,6 +184,35 @@
   box-shadow: none;
 }
 
+/* Starred rows keep an outline star in the trigger's slot. Hover, focus, or
+   an open menu swaps it for the ⋯ trigger, which paints over the same box. */
+.research-sidebar-star {
+  position: absolute;
+  top: 0;
+  right: 4px;
+  bottom: 0;
+  z-index: 1;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  margin-block: auto;
+  place-items: center;
+  color: var(--text-subtle);
+  pointer-events: none;
+}
+
+.research-sidebar-row:hover > .research-sidebar-star,
+.research-sidebar-row:focus-within > .research-sidebar-star,
+.research-sidebar-row.has-open-menu > .research-sidebar-star {
+  visibility: hidden;
+}
+
+/* Reserve the star's slot so the running spinner and New badge sit beside it
+   rather than underneath. */
+.research-sidebar-row.is-starred > .research-sidebar-select {
+  padding-right: 30px;
+}
+
 /* Titles are raw prompts (often with URLs); two clamped lines keep the list
    scannable, and the row's tooltip carries the full text. */
 .research-sidebar-title {
@@ -936,6 +965,69 @@
   font-size: calc(14px + var(--research-answer-font-delta));
   font-weight: 400;
   line-height: 1.5;
+}
+
+/* The root prompt's footer row sits outside the question bubble, so the
+   bubble hands it the bottom margin it would otherwise keep for itself. */
+.research-prompt.has-footer {
+  margin-bottom: 8px;
+}
+
+.research-prompt-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  min-width: 0;
+  margin: 0 0 26px;
+}
+
+/* Follow / Bookmark pair shared by an open thread's root prompt and, later,
+   Home cards: inline link-style text and icon on one footer row. */
+.research-thread-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+.research-thread-action {
+  min-height: 0;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-activity);
+  font-size: 12px;
+  line-height: 1.4;
+  background: transparent;
+  transition: color var(--transition-fast);
+}
+
+.research-thread-action:hover:not(:disabled) {
+  color: var(--text-secondary);
+}
+
+.research-thread-action.is-active {
+  color: var(--text-interactive);
+}
+
+.research-thread-action:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+/* An outer ring, so the focus indicator does not paint across the label the
+   way the base inset ring would on a zero-padding text control. */
+.research-thread-action:focus-visible {
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
+.research-thread-bookmark svg {
+  flex: none;
+  /* Optical centering against the text baseline. */
+  position: relative;
+  top: -1px;
 }
 
 .research-response-grid {

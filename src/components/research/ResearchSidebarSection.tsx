@@ -1001,12 +1001,15 @@ function ResearchSidebarSection({
   ) {
     const { archived } = options;
     const shortcutIndex = archived ? undefined : shortcutIndexByTreeId.get(tree.id);
+    const starred = isResearchStarred(folderState, tree.id);
     return (
       <div
         key={tree.id}
         className={`research-sidebar-row${archived ? " is-archived" : ""}${
-          activeTreeId === tree.id ? " is-selected" : ""
-        }${!archived && multiSelectedIds.includes(tree.id) ? " is-multi-selected" : ""}${
+          starred ? " is-starred" : ""
+        }${activeTreeId === tree.id ? " is-selected" : ""}${
+          !archived && multiSelectedIds.includes(tree.id) ? " is-multi-selected" : ""
+        }${
           menu?.kind === "tree" && menu.treeId === tree.id && menu.archived === archived
             ? " has-open-menu"
             : ""
@@ -1073,6 +1076,11 @@ function ResearchSidebarSection({
             </span>
           ) : null}
         </button>
+        {starred ? (
+          <span className="research-sidebar-star" title="Starred">
+            <Star size={13} aria-hidden="true" />
+          </span>
+        ) : null}
         <button
           type="button"
           className="control-button research-sidebar-menu-trigger"

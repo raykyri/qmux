@@ -221,6 +221,12 @@ pub struct ResearchTree {
     pub archived_at: Option<u128>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_viewed_at: Option<u128>,
+    /// The user follows this thread from Home; persisted with the tree.
+    #[serde(default)]
+    pub followed: bool,
+    /// The user bookmarked this thread from Home; persisted with the tree.
+    #[serde(default)]
+    pub bookmarked: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -601,6 +607,8 @@ pub struct ResearchTreeSummary {
     pub cancelled_count: usize,
     pub updated_at: u128,
     pub archived_at: Option<u128>,
+    pub followed: bool,
+    pub bookmarked: bool,
     pub has_unseen_update: bool,
     /// A failure settled after the tree was last viewed. Unlike `failed_count`
     /// (a lifetime total that can never be cleared without deleting the tree),
@@ -2909,6 +2917,8 @@ mod tests {
             created_at: 1,
             updated_at: 2,
             archived_at: None,
+            followed: false,
+            bookmarked: false,
             last_viewed_at: Some(2),
         };
         let node = ResearchNode {

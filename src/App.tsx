@@ -539,6 +539,8 @@ import {
   markResearchTreeViewed,
   renameResearchNode,
   renameResearchTree,
+  setResearchTreeBookmarked,
+  setResearchTreeFollowed,
   reorderResearchTrees,
   removeResearchTree,
   removeResearchBranch,
@@ -10424,6 +10426,28 @@ function MainApp() {
     },
     [],
   );
+  // Follow / Bookmark persist on the tree; the resulting tree update event
+  // patches the open document and sidebar summaries, so nothing is set here.
+  const setResearchTreeFollowedFlag = useCallback(
+    async (treeId: string, followed: boolean) => {
+      try {
+        await setResearchTreeFollowed(treeId, followed);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [],
+  );
+  const setResearchTreeBookmarkedFlag = useCallback(
+    async (treeId: string, bookmarked: boolean) => {
+      try {
+        await setResearchTreeBookmarked(treeId, bookmarked);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [],
+  );
   const archiveResearchTreeFromSidebar = useCallback(
     async (treeId: string) => {
       try {
@@ -19146,6 +19170,8 @@ function MainApp() {
               onFork={createResearchFollowup}
               onRemoveBranch={removeResearchBranchFromDocument}
               onRemoveTree={removeResearchTreeAndSelectFallback}
+              onSetFollowed={setResearchTreeFollowedFlag}
+              onSetBookmarked={setResearchTreeBookmarkedFlag}
               onUpdateDocument={editResearchDocument}
               onCancel={cancelResearchRun}
               onRetryNode={retryResearchRun}

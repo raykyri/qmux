@@ -122,6 +122,10 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function isOptionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === "boolean";
+}
+
 function isOptionalFiniteNumber(value: unknown): boolean {
   return value === undefined || value === null || isFiniteNumber(value);
 }
@@ -146,7 +150,9 @@ function isResearchTree(value: unknown): value is ResearchTree {
     isFiniteNumber(value.createdAt) &&
     isFiniteNumber(value.updatedAt) &&
     isOptionalFiniteNumber(value.archivedAt) &&
-    isOptionalFiniteNumber(value.lastViewedAt)
+    isOptionalFiniteNumber(value.lastViewedAt) &&
+    isOptionalBoolean(value.followed) &&
+    isOptionalBoolean(value.bookmarked)
   );
 }
 
@@ -399,6 +405,8 @@ export function researchSummaryFromDetail(detail: ResearchTreeDetail): ResearchT
     cancelledCount,
     updatedAt: detail.tree.updatedAt,
     archivedAt: detail.tree.archivedAt ?? null,
+    followed: detail.tree.followed ?? false,
+    bookmarked: detail.tree.bookmarked ?? false,
     hasUnseenUpdate: unseen(latestSettlement),
     hasUnseenFailure: unseen(latestFailure),
   };
@@ -543,12 +551,16 @@ export function patchResearchSummaryTree(
     return summary;
   }
   const archivedAt = tree.archivedAt ?? null;
+  const followed = tree.followed ?? false;
+  const bookmarked = tree.bookmarked ?? false;
   if (
     summary.title === tree.title &&
     summary.rootNodeId === tree.rootNodeId &&
     summary.workspaceId === tree.workspaceId &&
     summary.updatedAt === tree.updatedAt &&
-    (summary.archivedAt ?? null) === archivedAt
+    (summary.archivedAt ?? null) === archivedAt &&
+    (summary.followed ?? false) === followed &&
+    (summary.bookmarked ?? false) === bookmarked
   ) {
     return summary;
   }
@@ -559,6 +571,8 @@ export function patchResearchSummaryTree(
     workspaceId: tree.workspaceId,
     updatedAt: tree.updatedAt,
     archivedAt,
+    followed,
+    bookmarked,
   };
 }
 

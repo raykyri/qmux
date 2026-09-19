@@ -414,6 +414,10 @@ export interface ResearchTree {
   updatedAt: number;
   archivedAt?: number | null;
   lastViewedAt?: number | null;
+  /** Home's Follow control; persisted on the thread. */
+  followed?: boolean;
+  /** Home's Bookmark control; persisted on the thread. */
+  bookmarked?: boolean;
 }
 
 export interface ResearchNode {
@@ -554,6 +558,8 @@ export interface ResearchTreeSummary {
   cancelledCount: number;
   updatedAt: number;
   archivedAt?: number | null;
+  followed?: boolean;
+  bookmarked?: boolean;
   hasUnseenUpdate: boolean;
   /** A failure settled after the tree was last viewed. Attention flag —
    * viewing the tree acknowledges it — unlike failedCount, a lifetime total. */

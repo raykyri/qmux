@@ -114,6 +114,7 @@ import {
   ResearchSidebarRestoreButton,
 } from "./ResearchDocumentChrome";
 import ResearchRecap from "./ResearchRecap";
+import ResearchThreadActions from "./ResearchThreadActions";
 
 interface ResearchDocumentProps {
   detail: ResearchTreeDetail | null;
@@ -137,6 +138,10 @@ interface ResearchDocumentProps {
   ) => Promise<ResearchNode>;
   onRemoveBranch: (nodeId: string) => Promise<ResearchBranchRemoval>;
   onRemoveTree: (treeId: string) => Promise<void>;
+  /** Persist the thread's Follow / Bookmark flags; the tree update event
+   * flows back through `detail`. */
+  onSetFollowed: (treeId: string, followed: boolean) => Promise<void>;
+  onSetBookmarked: (treeId: string, bookmarked: boolean) => Promise<void>;
   onUpdateDocument: (input: {
     nodeId: string;
     markdown: string;
@@ -871,6 +876,12 @@ interface ThreadSegmentProps {
    * segment renders bail out of reconciliation. */
   node: ResearchNode;
   index: number;
+  /** Thread-level Follow / Bookmark state, rendered on the root prompt's
+   * footer row. */
+  followed: boolean;
+  bookmarked: boolean;
+  onToggleFollow: () => void;
+  onToggleBookmark: () => void;
   isSelected: boolean;
   contentError: string | null;
   segmentActive: boolean;
@@ -1476,35 +1487,61 @@ export const ResearchSegmentPrompt = memo(function ResearchSegmentPrompt({
   parentNodeId,
   queryQuote,
   prompt,
+  followed = false,
+  bookmarked = false,
   onSelectNode,
+  onToggleFollow,
+  onToggleBookmark,
 }: {
   visible: boolean;
   index: number;
   parentNodeId: string | null;
   queryQuote: string | null;
   prompt: string;
+  followed?: boolean;
+  bookmarked?: boolean;
   onSelectNode: (nodeId: string) => void;
+  onToggleFollow?: () => void;
+  onToggleBookmark?: () => void;
 }) {
   if (!visible) {
     return null;
   }
+  // Thread-level actions belong to the root prompt only, and only where the
+  // host wired them; every other segment renders the bubble alone.
+  const threadActions =
+    index === 0 && onToggleFollow && onToggleBookmark ? (
+      <div className="research-prompt-footer">
+        <ResearchThreadActions
+          followed={followed}
+          bookmarked={bookmarked}
+          onToggleFollow={onToggleFollow}
+          onToggleBookmark={onToggleBookmark}
+        />
+      </div>
+    ) : null;
   return (
-    <div className="research-prompt">
-      {index === 0 && parentNodeId ? (
-        <button
-          type="button"
-          className="control-button research-parent-link"
-          onClick={() => onSelectNode(parentNodeId)}
-        >
-          <ArrowLeft size={13} aria-hidden="true" />
-          Back
-        </button>
-      ) : null}
-      {queryQuote ? (
-        <blockquote className="research-prompt-quote">{quoteDisplayText(queryQuote)}</blockquote>
-      ) : null}
-      <TranscriptMarkdown text={prompt} imageBehavior="open" />
-    </div>
+    <>
+      <div className={`research-prompt${threadActions ? " has-footer" : ""}`}>
+        {index === 0 && parentNodeId ? (
+          <button
+            type="button"
+            className="control-button research-parent-link"
+            onClick={() => onSelectNode(parentNodeId)}
+          >
+            <ArrowLeft size={13} aria-hidden="true" />
+            Back
+          </button>
+        ) : null}
+        {queryQuote ? (
+          <blockquote className="research-prompt-quote">
+            {quoteDisplayText(queryQuote)}
+          </blockquote>
+        ) : null}
+        <TranscriptMarkdown text={prompt} imageBehavior="open" />
+      </div>
+      {threadActions}
+    </>
   );
 });
 
@@ -1515,6 +1552,10 @@ const ThreadSegment = memo(function ThreadSegment({
   view,
   node,
   index,
+  followed,
+  bookmarked,
+  onToggleFollow,
+  onToggleBookmark,
   isSelected,
   contentError,
   segmentActive,
@@ -1566,7 +1607,11 @@ const ThreadSegment = memo(function ThreadSegment({
         parentNodeId={node.parentNodeId ?? null}
         queryQuote={node.queryAnchor?.exact ?? null}
         prompt={node.prompt}
+        followed={followed}
+        bookmarked={bookmarked}
         onSelectNode={onSelectNode}
+        onToggleFollow={onToggleFollow}
+        onToggleBookmark={onToggleBookmark}
       />
       <div
         ref={(element) => registerSegmentElement(node.id, "grid", element)}
@@ -1635,6 +1680,8 @@ function ResearchDocument({
   onFork,
   onRemoveBranch,
   onRemoveTree,
+  onSetFollowed,
+  onSetBookmarked,
   onUpdateDocument,
   onCancel,
   onRetryNode,
@@ -4593,6 +4640,14 @@ function ResearchDocument({
   onToastRef.current = onToast;
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const treeFollowed = Boolean(detail?.tree.followed);
+  const treeBookmarked = Boolean(detail?.tree.bookmarked);
+  const handleToggleFollow = useCallback(() => {
+    if (treeId) void onSetFollowed(treeId, !treeFollowed);
+  }, [onSetFollowed, treeFollowed, treeId]);
+  const handleToggleBookmark = useCallback(() => {
+    if (treeId) void onSetBookmarked(treeId, !treeBookmarked);
+  }, [onSetBookmarked, treeBookmarked, treeId]);
   const handleSelectNode = useCallback((nodeId: string) => {
     setOpenedFollowupIds((prev) =>
       prev.has(nodeId) ? prev : new Set(prev).add(nodeId),
@@ -5201,6 +5256,10 @@ function ResearchDocument({
         view={view}
         node={node}
         index={index}
+        followed={treeFollowed}
+        bookmarked={treeBookmarked}
+        onToggleFollow={handleToggleFollow}
+        onToggleBookmark={handleToggleBookmark}
         isSelected={node.id === selectedNodeId}
         contentError={contentErrorByNode[node.id] ?? null}
         segmentActive={segmentActive}
