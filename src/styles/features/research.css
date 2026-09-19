@@ -100,6 +100,33 @@
   background: var(--surface-fill-hover);
 }
 
+/* Encyclopedia: pages grown from wikilinks, listed between the journal rows
+   and the research list. Bounded so a long encyclopedia cannot push the
+   research list out of view; it scrolls on its own past that. */
+.encyclopedia-sidebar-section {
+  flex: none;
+  max-height: 38%;
+  padding-bottom: 2px;
+}
+
+.encyclopedia-sidebar-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.encyclopedia-sidebar-row {
+  font-size: calc(var(--fs-input) - 0.5px);
+}
+
+.encyclopedia-sidebar-failed {
+  display: inline-grid;
+  align-self: center;
+  flex: none;
+  place-items: center;
+  color: var(--status-failed-fg);
+}
+
 .research-sidebar-row {
   position: relative;
   display: flex;

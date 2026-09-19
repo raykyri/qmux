@@ -9302,7 +9302,9 @@ function MainApp() {
         showJournal();
         return;
       }
-      void selectResearchTree(visit.treeId);
+      if (visit.kind === "document") {
+        void selectResearchTree(visit.treeId);
+      }
     },
     [selectResearchTree, showJournal],
   );

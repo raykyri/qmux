@@ -544,3 +544,164 @@
   flex: none;
   margin-left: auto;
 }
+
+/* — Encyclopedia page — */
+
+/* One generated page in Home's column. The title is the model's heading; the
+   body is ordinary research prose so its wikilinks keep the same affordance
+   they have in answers. */
+.encyclopedia-column {
+  padding-top: 26px;
+}
+
+.encyclopedia-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-inline: var(--journal-content-padding);
+}
+
+.encyclopedia-page-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.encyclopedia-page-title {
+  margin: 0;
+  color: var(--text-heading);
+  font-size: calc(24px + var(--font-ui-size-offset, 0px));
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.encyclopedia-page-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+}
+
+.encyclopedia-page-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+}
+
+.encyclopedia-page-pending p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.encyclopedia-page-pending .is-spinning,
+.encyclopedia-column > .encyclopedia-page-pending .is-spinning {
+  flex: none;
+  color: var(--accent-color);
+  animation: spinner-spin 0.9s linear infinite;
+}
+
+.encyclopedia-column > .encyclopedia-page-pending {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding-inline: var(--journal-content-padding);
+}
+
+.encyclopedia-page-source-excerpt {
+  margin: 0;
+  padding: 10px 14px;
+  border-left: 2px solid var(--surface-border-default);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.encyclopedia-page-failed {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.encyclopedia-page-failed p {
+  margin: 0;
+  font-size: var(--fs-base);
+}
+
+.encyclopedia-page-sources {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 18px;
+  border-top: 1px solid var(--surface-border-subtle);
+}
+
+.encyclopedia-page-sources h2 {
+  margin: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.encyclopedia-page-sources ul {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.encyclopedia-page-sources li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.encyclopedia-source-link {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  color: var(--text-interactive);
+  font: inherit;
+  font-size: var(--fs-base);
+  font-weight: 600;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.encyclopedia-source-link:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.encyclopedia-source-link:disabled {
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+.encyclopedia-source-excerpt {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+/* Header controls: rewrite and delete beside the breadcrumb. The delete
+   confirmation is a shared ui/Dialog, so no inline confirm chrome here. */
+.encyclopedia-page-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}

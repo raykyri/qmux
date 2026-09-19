@@ -90,7 +90,8 @@ export function researchHistoryForward(history: ResearchHistory): ResearchHistor
  * stack remounts empty and cannot remember the feed. */
 export type ResearchWorkspaceVisit =
   | { kind: "journal" }
-  | { kind: "document"; treeId: string };
+  | { kind: "document"; treeId: string }
+  | { kind: "encyclopedia"; slug: string };
 
 export interface ResearchWorkspaceHistory {
   entries: ResearchWorkspaceVisit[];
@@ -120,6 +121,7 @@ export function sameResearchWorkspaceVisit(
   if (left.kind !== right.kind) return false;
   if (left.kind === "journal" && right.kind === "journal") return true;
   if (left.kind === "document" && right.kind === "document") return left.treeId === right.treeId;
+  if (left.kind === "encyclopedia" && right.kind === "encyclopedia") return left.slug === right.slug;
   return false;
 }
 
