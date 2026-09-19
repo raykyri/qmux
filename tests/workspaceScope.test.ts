@@ -10,8 +10,10 @@ import {
   replaceScopedGroupOrder,
 } from "../src/lib/workspaceScope";
 import {
+  RESEARCH_JOURNAL_TAB_IDS,
   parseSidebarMode,
   researchCycleTabIds,
+  researchEncyclopediaTabId,
   researchTreeIdFromTabId,
   researchTreeTabId,
   terminalTabForMode,
@@ -287,6 +289,37 @@ test("research cycling honours the folder scope the sidebar is filtered to", () 
       researchB.id,
     ),
     [researchTreeTabId("tree-b"), "pane-b"],
+  );
+});
+
+test("research cycling leads with the journal pages and the scoped encyclopedia pages", () => {
+  const researchA = group("research-a", "research");
+  const researchB = group("research-b", "research");
+  const panes = [pane("pane-a", researchA.id)];
+  const groups = [researchA, researchB];
+  const trees = [treeSummary("tree-a", researchA.id)];
+
+  // With no journal pages wired up yet the cycle is unchanged: scoped trees
+  // first, live research panes as the tail.
+  assert.deepEqual(RESEARCH_JOURNAL_TAB_IDS, []);
+  assert.deepEqual(researchCycleTabIds(panes, groups, trees, researchA.id), [
+    researchTreeTabId("tree-a"),
+    "pane-a",
+  ]);
+
+  // Encyclopedia pages sit between the journal pages and the trees, and are
+  // filtered by the same folder scope as everything else in the sidebar.
+  assert.deepEqual(
+    researchCycleTabIds(panes, groups, trees, researchA.id, [
+      { slug: "alpha", workspaceId: researchA.id },
+      { slug: "beta", workspaceId: researchB.id },
+    ]),
+    [
+      ...RESEARCH_JOURNAL_TAB_IDS,
+      researchEncyclopediaTabId("alpha"),
+      researchTreeTabId("tree-a"),
+      "pane-a",
+    ],
   );
 });
 
