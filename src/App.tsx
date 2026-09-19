@@ -193,7 +193,7 @@ import {
 } from "./lib/journal";
 import { syndicationToken, tweetSnapshotFromSyndication } from "./lib/journalTweets";
 import NewDocumentPane from "./components/research/NewDocumentPane";
-import NewResearchDialog from "./components/research/NewResearchDialog";
+import ResearchQueryComposer from "./components/research/ResearchQueryComposer";
 import { isMarkdownDocumentPath } from "./lib/researchDocuments";
 import {
   moveResearchTreeIdBy,
@@ -2577,9 +2577,6 @@ function MainApp() {
     setThemePickerOpen(false);
     setPreviewThemeId(null);
   }, []);
-  const [newResearchOpen, setNewResearchOpen] = useState(
-    () => readSessionDraftJson(SESSION_DRAFT_KEYS.newResearchModal) !== null,
-  );
   const [newAgentOpen, setNewAgentOpen] = useState(false);
   const [newAgentError, setNewAgentError] = useState<string | null>(null);
   const [terminalMapOpen, setTerminalMapOpen] = useState(false);
@@ -2639,11 +2636,27 @@ function MainApp() {
         }
       })
       .catch(() => undefined);
+    // The modal research launcher became the Home page's inline composer.
+    // Carry a draft written under the old key over to the new one so an
+    // in-flight prompt is not silently lost on upgrade, then bring Home
+    // forward so the restored draft is where the user left it. The old key
+    // stays readable for one release; the migrated copy is cleared so the
+    // carry-over happens once.
     void loadSessionDraftJson<{ prompt?: string }>(SESSION_DRAFT_KEYS.newResearchModal)
       .then((restored) => {
-        if (!disposed && restored?.prompt) {
-          setNewResearchOpen(true);
+        if (disposed || !restored?.prompt) {
+          return;
         }
+        if (readSessionDraftJson(SESSION_DRAFT_KEYS.newResearchInline) === null) {
+          saveSessionDraftJson(SESSION_DRAFT_KEYS.newResearchInline, {
+            prompt: restored.prompt,
+            adapter: "",
+            modelChoice: null,
+            customModel: "",
+          });
+        }
+        clearSessionDraft(SESSION_DRAFT_KEYS.newResearchModal);
+        setJournalOpen(true);
       })
       .catch(() => undefined);
     return () => {
@@ -3571,6 +3584,10 @@ function MainApp() {
           : activeResearchTreeId
             ? ("document" as const)
             : ("home" as const);
+  // Whether the Home page is the forward research view. The inline composer
+  // and everything that used to hang off the research modal's open flag key
+  // off this instead: Home is a page, not a modal.
+  const researchHomeVisible = researchStageView === "journal";
   // Menu badges and the folder-replace dialog both count every tree that keeps
   // a folder alive, so archived trees are included (removal is blocked on them).
   const researchFolderTreeCounts = useMemo(() => {
@@ -6299,7 +6316,6 @@ function MainApp() {
     settingsOpen ||
       imageLightbox !== null ||
       diagramLightbox !== null ||
-      newResearchOpen ||
       newAgentOpen ||
       terminalMapOpen ||
       newResearchFolderRequest !== null ||
@@ -9125,12 +9141,14 @@ function MainApp() {
   }, [selectResearchTree]);
   const focusResearchHome = useCallback(() => {
     // Invalidate a tree request that may still be landing while Home is
-    // selected; otherwise its detail can repaint behind the launcher.
+    // selected; otherwise its detail can repaint behind the composer.
     researchDetailRequestSeqRef.current += 1;
     dismissPristineNewDocumentComposer();
     setSidebarMode("research");
     setActiveSurface("research");
-    setJournalOpen(false);
+    // Home is the feed page with the query composer on top, not an empty
+    // placeholder, so going Home brings that page forward.
+    setJournalOpen(true);
     setResearchMultiSelectIds([]);
     activeResearchPaneIdRef.current = null;
     setActiveResearchPaneId(null);
@@ -9175,6 +9193,17 @@ function MainApp() {
     });
     showJournal();
   }, [showJournal]);
+  // ⌘N and the sidebar's new-query button. The composer is the first row of the
+  // Home page rather than a dialog, so starting a query is a navigation: bring
+  // Home forward, then put the cursor in its prompt.
+  const focusResearchHomeComposer = useCallback(() => {
+    openJournal();
+    window.requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLTextAreaElement>(".new-research-launcher textarea")
+        ?.focus();
+    });
+  }, [openJournal]);
   const applyResearchWorkspaceVisit = useCallback(
     (visit: ResearchWorkspaceVisit) => {
       if (visit.kind === "journal") {
@@ -9448,16 +9477,15 @@ function MainApp() {
     ],
   );
   const createResearchFromSidebar = useCallback(() => {
-    // Bring the research surface forward alongside the sidebar mode: opening
-    // this from a terminal and cancelling would otherwise strand sidebarMode
-    // "research" with activeSurface "pane" (a terminal pane on the research
-    // stage), the mismatch the boot-restore path treats as unrecoverable.
+    // Bring the research surface forward alongside the sidebar mode: starting
+    // this from a terminal would otherwise strand sidebarMode "research" with
+    // activeSurface "pane" (a terminal pane on the research stage), the
+    // mismatch the boot-restore path treats as unrecoverable. Home's own
+    // navigation sets both halves of that pair.
     setNewAgentOpen(false);
     setTerminalMapOpen(false);
-    setSidebarMode("research");
-    setActiveSurface("research");
-    setNewResearchOpen(true);
-  }, [setActiveSurface, setSidebarMode]);
+    focusResearchHomeComposer();
+  }, [focusResearchHomeComposer]);
   const createDocumentFromSidebar = useCallback(() => {
     // The composer is a research-surface page, not a modal: opening it also
     // brings the research surface forward so it is actually visible.
@@ -9485,7 +9513,6 @@ function MainApp() {
   // this render-time flag could not track keystrokes in the composer anyway.
   const markdownDropBlocked =
     settingsOpen ||
-    newResearchOpen ||
     newAgentOpen ||
     terminalMapOpen ||
     Boolean(publicationTarget) ||
@@ -11274,7 +11301,6 @@ function MainApp() {
 
   function openNewAgentPopover() {
     setTerminalMapOpen(false);
-    setNewResearchOpen(false);
     setNewAgentError(null);
     setNewAgentOpen(true);
     if (sidebarModeRef.current !== "terminal") {
@@ -11306,12 +11332,15 @@ function MainApp() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [newAgentOpen]);
 
+  // Home carries the research query composer, whose agent picker shows each
+  // adapter's readiness. Re-probe when the page becomes visible, the way the
+  // modal launcher used to re-probe when it opened.
   useEffect(() => {
-    if (!newResearchOpen) {
+    if (!researchHomeVisible) {
       return;
     }
     void refreshAdapterReadiness().catch(() => undefined);
-  }, [newResearchOpen, refreshAdapterReadiness]);
+  }, [researchHomeVisible, refreshAdapterReadiness]);
 
   useEffect(() => {
     if (!config || adapterProbeCompletedAtRef.current.has("local")) {
@@ -11422,7 +11451,6 @@ function MainApp() {
       return;
     }
     setNewAgentOpen(false);
-    setNewResearchOpen(false);
     setConversationHistoryOpen(false);
     setTerminalMapOpen(true);
   }
@@ -11433,7 +11461,6 @@ function MainApp() {
       return;
     }
     setNewAgentOpen(false);
-    setNewResearchOpen(false);
     setTerminalMapOpen(false);
     setConversationHistoryOpen(true);
   }
@@ -13578,7 +13605,6 @@ function MainApp() {
     commandPaletteOpen ||
     conversationHistoryOpen ||
     settingsOpen ||
-    newResearchOpen ||
     newAgentOpen ||
     terminalMapOpen ||
     Boolean(publicationTarget) ||
@@ -13610,6 +13636,22 @@ function MainApp() {
     });
     return () => cancelAnimationFrame(frame);
   }, [newDocumentOpen]);
+  // Home's query composer is a page-level editable too, and it unmounts with
+  // the page (WebKit emits no focusout for a removed subtree). It replaces the
+  // research modal's slot in modalEditorOpen above: without this re-sample,
+  // leaving Home while its textarea held focus would leave the active terminal
+  // keyboard-dead until the next real focus event.
+  useEffect(() => {
+    if (researchHomeVisible) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      setWebEditableFocused(
+        document.hasFocus() && isEditableTarget(document.activeElement),
+      );
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [researchHomeVisible]);
 
   // Backstop for the right-pane mount/unmount layout transition: an agent
   // quitting unmounts its turn-pane cell, and starting a terminal over a split
@@ -19212,12 +19254,6 @@ function MainApp() {
               onWorkspaceForward={goResearchWorkspaceForward}
             />
           ) : null}
-          <div className="research-empty-state" hidden={researchStageView !== "home"}>
-            <div className="research-empty-placeholder">
-              <MessageSquareText size={48} aria-hidden="true" />
-              <span>Select a research item or start a new query</span>
-            </div>
-          </div>
           {panes.map((pane) => (
             <TerminalPane
               key={pane.id}
@@ -19592,20 +19628,6 @@ function MainApp() {
           onClose={() => setLinkMenu(null)}
         />
       ) : null}
-
-      <NewResearchDialog
-        open={newResearchOpen}
-        adapters={config?.adapters ?? []}
-        requireCmdEnterToSend={settings.requireCmdEnterToSend}
-        workspaceId={researchScope}
-        onOpenAgentSettings={() => {
-          setNewResearchOpen(false);
-          setSettingsTab("agents");
-          setSettingsOpen(true);
-        }}
-        onClose={() => setNewResearchOpen(false)}
-        onCreate={submitNewResearch}
-      />
 
       {newAgentOpen ? (
         <DialogRoot className="new-agent-backdrop" onDismiss={closeNewAgentPopover}>

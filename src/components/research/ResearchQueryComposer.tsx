@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AgentAdapterMetadata } from "../../types";
 import { LauncherSelect, type LauncherSelectOption } from "../LauncherSelect";
-import { DialogRoot } from "../ui";
 import {
   ComposerSubmitShortcutGlyph,
   isComposerSubmitShortcut,
@@ -37,12 +36,22 @@ import {
 // reject a level the model does not support.
 const GPT_5_4_REASONING_LEVELS = ["", "low", "medium", "high", "xhigh"];
 
+// The Home composer's chips sit in a narrow overlay row, where "Medium effort"
+// wastes the width the select's own "Reasoning effort" label already spends.
+const CLAUDE_RESEARCH_EFFORT_OPTIONS = CLAUDE_EFFORT_OPTIONS.map((option) => ({
+  ...option,
+  label: option.label.replace(/ effort$/i, ""),
+}));
+
 // The reasoning/effort levels the selected model supports, or null for
 // adapters without a reasoning-effort launch option. Every Claude model
 // (Fable, Opus, Sonnet) shares one range; Codex ranges vary by model.
-function effortOptionsFor(adapter: string, model: string): LauncherSelectOption[] | null {
+export function researchEffortOptionsFor(
+  adapter: string,
+  model: string,
+): LauncherSelectOption[] | null {
   if (adapter === CLAUDE_ADAPTER_ID) {
-    return CLAUDE_EFFORT_OPTIONS;
+    return CLAUDE_RESEARCH_EFFORT_OPTIONS;
   }
   if (adapter === CODEX_ADAPTER_ID) {
     if (model === "gpt-5.4") {
@@ -55,18 +64,11 @@ function effortOptionsFor(adapter: string, model: string): LauncherSelectOption[
   return null;
 }
 
-interface NewResearchDialogProps {
-  open: boolean;
-  inline?: boolean;
-  /** Whether an inline launcher is currently on screen. Inline launchers can
-   * stay mounted while hidden so their in-progress fields survive switching
-   * to another app surface. */
-  visible?: boolean;
+interface ResearchQueryComposerProps {
   adapters: AgentAdapterMetadata[];
   requireCmdEnterToSend: boolean;
   workspaceId: string | null;
   onOpenAgentSettings: () => void;
-  onClose: () => void;
   onCreate: (input: {
     prompt: string;
     adapter: string;
@@ -76,17 +78,16 @@ interface NewResearchDialogProps {
   }) => Promise<void>;
 }
 
-export default function NewResearchDialog({
-  open,
-  inline = false,
-  visible = true,
+/** The Home page's query composer. Not a modal: it is the first row of the
+ * Home feed, so it has no open/close state and no scrim — the page it lives on
+ * is what comes and goes. */
+export default function ResearchQueryComposer({
   adapters: allAdapters,
   requireCmdEnterToSend,
   workspaceId,
   onOpenAgentSettings,
-  onClose,
   onCreate,
-}: NewResearchDialogProps) {
+}: ResearchQueryComposerProps) {
   const [prompt, setPrompt] = useState("");
   const [adapter, setAdapter] = useState("");
   const [modelChoice, setModelChoice] = useState<string | null>(null);
@@ -95,12 +96,9 @@ export default function NewResearchDialog({
   const [submitting, setSubmitting] = useState(false);
   const [sessionDraftReady, setSessionDraftReady] = useState(false);
   const sessionDraftTouchedRef = useRef(false);
-  const draftKey = inline
-    ? SESSION_DRAFT_KEYS.newResearchInline
-    : SESSION_DRAFT_KEYS.newResearchModal;
-  // Shown inside the dialog: a global banner renders behind the modal
-  // backdrop, so a failed launch (bad model name, missing folder…) looked
-  // like an unresponsive Start button. Fields are kept for the retry.
+  const draftKey = SESSION_DRAFT_KEYS.newResearchInline;
+  // Launch errors stay beside the Home composer so every field remains
+  // available for a retry.
   const [error, setError] = useState<string | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   // General terminal-session fork support is intentionally wider than the
@@ -116,10 +114,6 @@ export default function NewResearchDialog({
   const adapterReady = adapterCanLaunchResearch(selectedAdapter);
 
   useEffect(() => {
-    if (!open) {
-      setSessionDraftReady(false);
-      return;
-    }
     sessionDraftTouchedRef.current = false;
     const restored = readSessionDraftJson<{
       prompt: string;
@@ -162,10 +156,10 @@ export default function NewResearchDialog({
     return () => {
       disposed = true;
     };
-  }, [draftKey, open]);
+  }, [draftKey]);
 
   useEffect(() => {
-    if (!open || !sessionDraftReady) {
+    if (!sessionDraftReady) {
       return;
     }
     if (!prompt && !modelChoice && !customModel) {
@@ -173,57 +167,27 @@ export default function NewResearchDialog({
       return;
     }
     saveSessionDraftJson(draftKey, { prompt, adapter, modelChoice, customModel });
-  }, [
-    adapter,
-    customModel,
-    draftKey,
-    modelChoice,
-    open,
-    prompt,
-    sessionDraftReady,
-  ]);
+  }, [adapter, customModel, draftKey, modelChoice, prompt, sessionDraftReady]);
 
   useEffect(() => {
-    if (
-      !open ||
-      adapterCanLaunchResearch(adapters.find((candidate) => candidate.id === adapter))
-    ) {
+    if (adapterCanLaunchResearch(adapters.find((candidate) => candidate.id === adapter))) {
       return;
     }
-    setAdapter(
-      preferredResearchAdapter(adapters)?.id ??
-        adapters[0]?.id ??
-        "",
-    );
-  }, [adapter, adapters, open]);
+    setAdapter(preferredResearchAdapter(adapters)?.id ?? adapters[0]?.id ?? "");
+  }, [adapter, adapters]);
 
   // Grow the textarea to fit the committed prompt value. Measuring directly in
   // onChange can catch WebKit between its native edit and React restoring the
   // controlled value, briefly sizing the field for a different wrap count.
   // useLayoutEffect keeps the value and height in the same pre-paint commit.
   useLayoutEffect(() => {
-    if (!open || !visible) {
-      return;
-    }
     const textarea = promptRef.current;
     if (!textarea) {
       return;
     }
     textarea.style.height = "auto";
     textarea.style.height = `${textarea.scrollHeight}px`;
-  }, [open, prompt, visible]);
-
-  useEffect(() => {
-    if (!open || !visible) {
-      return;
-    }
-    const frame = window.requestAnimationFrame(() => promptRef.current?.focus());
-    return () => window.cancelAnimationFrame(frame);
-  }, [open, visible]);
-
-  if (!open) {
-    return null;
-  }
+  }, [prompt]);
 
   // A stale choice (left over from another adapter) silently falls back to the
   // adapter's first preset, so the trigger always shows what will launch.
@@ -234,7 +198,7 @@ export default function NewResearchDialog({
   // Same stale-choice contract as the model picker: a level left over from
   // another adapter or model silently falls back to the default, so the
   // trigger always shows what will launch.
-  const effortOptions = effortOptionsFor(adapter, selectedModel);
+  const effortOptions = researchEffortOptionsFor(adapter, selectedModel);
   const selectedEffort =
     effortOptions && effortOptions.some((option) => option.value === effortChoice)
       ? effortChoice
@@ -255,31 +219,20 @@ export default function NewResearchDialog({
         effort: resolvedEffort,
         workspaceId,
       });
-      // The modal unmounts on close, but the inline Research-home launcher is
-      // deliberately kept alive across surface switches. Clear a successfully
-      // submitted prompt explicitly so returning Home starts a fresh draft.
+      // A successful launch opens its research page. The composer stays mounted
+      // on Home, so clear it explicitly: returning here starts a fresh draft.
       setPrompt("");
       setModelChoice(null);
       setCustomModel("");
       setError(null);
       clearSessionDraft(draftKey);
-      onClose();
     } catch (err) {
-      // Surfaced here, where the user is looking; the dialog stays open with
-      // every field intact for the retry.
+      // Surfaced here, where the user is looking, with every field intact for
+      // the retry.
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
     }
-  }
-
-  function close() {
-    clearSessionDraft(draftKey);
-    setPrompt("");
-    setModelChoice(null);
-    setCustomModel("");
-    setError(null);
-    onClose();
   }
 
   const adapterOptions: LauncherSelectOption[] = adapters.map((candidate, index) => ({
@@ -316,11 +269,9 @@ export default function NewResearchDialog({
     window.requestAnimationFrame(() => promptRef.current?.focus());
   }
 
-  const launcher = (
+  return (
     <form
       className="command-launcher new-research-launcher"
-      role={inline ? undefined : "dialog"}
-      aria-modal={inline ? undefined : true}
       aria-label="New research"
       onKeyDown={(event) => {
         const tabAction = launcherTabAction(event, true);
@@ -332,10 +283,6 @@ export default function NewResearchDialog({
           } else if (tabAction === "cycle-model") {
             cycleModel();
           }
-          return;
-        }
-        if (!inline && event.key === "Escape" && !submitting) {
-          close();
         }
       }}
       onSubmit={(event) => {
@@ -346,7 +293,6 @@ export default function NewResearchDialog({
       <div className="new-research-composer">
         <textarea
           ref={promptRef}
-          autoFocus
           className="command-launcher-input"
           rows={2}
           value={prompt}
@@ -453,19 +399,5 @@ export default function NewResearchDialog({
         </div>
       ) : null}
     </form>
-  );
-
-  if (inline) {
-    return launcher;
-  }
-
-  return (
-    <DialogRoot
-      className="new-research-backdrop"
-      onDismiss={close}
-      dismissDisabled={submitting}
-    >
-      {launcher}
-    </DialogRoot>
   );
 }

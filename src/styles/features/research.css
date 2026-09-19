@@ -625,32 +625,6 @@
   line-height: 1.4;
 }
 
-.research-empty-state {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 40px;
-  background: var(--research-workspace-bg);
-}
-
-.research-empty-state[hidden] {
-  display: none;
-}
-
-.research-empty-placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  color: var(--text-subtle);
-}
-
-.research-empty-placeholder svg {
-  opacity: 0.5;
-}
-
 /* Placeholder shown while several sidebar items are multi-selected: a large
    faint glyph with its caption, centered where the document would be. */
 .research-multi-select-state {
@@ -1907,10 +1881,9 @@
   color: var(--text-secondary);
 }
 
-/* New research — the modal reuses the agent launcher's composer surface: the
-   command-launcher card floats alone on the dialog scrim, with the model and
-   agent pickers as overlay chips. */
-.confirm-dialog-backdrop.new-research-backdrop,
+/* New research — the Home composer reuses the agent launcher's composer
+   surface: one command-launcher card with the model and agent pickers as
+   overlay chips. The agent launcher is still a modal and keeps its scrim. */
 .confirm-dialog-backdrop.new-agent-backdrop {
   align-items: center;
 }
@@ -1939,11 +1912,9 @@
 }
 
 .new-research-composer .command-launcher-input {
-  min-height: 132px;
-}
-
-.research-empty-state .new-research-composer .command-launcher-input {
-  min-height: 106px;
+  /* Roughly one 15px/1.5 text row shorter than the launcher default: the
+     composer shares the Home page with the feed rather than a whole dialog. */
+  min-height: 110px;
 }
 
 .new-research-send {
