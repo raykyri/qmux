@@ -51,11 +51,18 @@ test("non-encyclopedia ids yield no slug, and an empty slug is rejected", () => 
 });
 
 test("the journal cycle list holds only ids App.tsx can dispatch", () => {
-  // Home has a dispatch arm in focusResearchTabById; Bookmarks and Highlights
-  // join it once the surface can show them. An id here without an arm would
-  // make Ctrl-Tab focus a pane that does not exist.
-  assert.deepEqual(RESEARCH_JOURNAL_TAB_IDS, [RESEARCH_HOME_TAB_ID]);
-  for (const tabId of RESEARCH_JOURNAL_TAB_IDS) {
-    assert.ok(researchJournalViewFromTabId(tabId));
-  }
+  // All three pages have a dispatch arm in focusResearchTabById, in sidebar
+  // order. An id here without an arm would make Ctrl-Tab focus a pane that
+  // does not exist.
+  assert.deepEqual(RESEARCH_JOURNAL_TAB_IDS, [
+    RESEARCH_HOME_TAB_ID,
+    RESEARCH_BOOKMARKS_TAB_ID,
+    RESEARCH_HIGHLIGHTS_TAB_ID,
+  ]);
+  assert.deepEqual(RESEARCH_JOURNAL_TAB_IDS.map(researchJournalViewFromTabId), [
+    ...RESEARCH_JOURNAL_VIEWS,
+  ]);
+  // Journal pages are never mistaken for tree tabs: Cmd-1..9 numbering indexes
+  // tree tabs only, so it must skip every page here.
+  assert.ok(RESEARCH_JOURNAL_TAB_IDS.every((tabId) => researchTreeIdFromTabId(tabId) === null));
 });

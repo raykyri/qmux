@@ -21,11 +21,17 @@ export const RESEARCH_JOURNAL_VIEWS: readonly ResearchJournalView[] = [
   "highlights",
 ];
 
-// A tab id only belongs here once `focusResearchTabById` in App.tsx has a
-// dispatch arm for it; otherwise cycling onto it would call `focusPaneTab` with
-// a pane id that does not exist. Home has one; Bookmarks and Highlights join it
-// when the surface can show them.
-export const RESEARCH_JOURNAL_TAB_IDS: readonly string[] = [RESEARCH_HOME_TAB_ID];
+/** The journal pages in sidebar order. They lead the Ctrl-Tab cycle, ahead of
+ * the research trees, so cycling follows the sidebar top to bottom.
+ *
+ * A tab id only belongs here once `focusResearchTabById` in App.tsx has a
+ * dispatch arm for it; otherwise cycling onto it would call `focusPaneTab` with
+ * a pane id that does not exist. All three pages are dispatched there. */
+export const RESEARCH_JOURNAL_TAB_IDS: readonly string[] = [
+  RESEARCH_HOME_TAB_ID,
+  RESEARCH_BOOKMARKS_TAB_ID,
+  RESEARCH_HIGHLIGHTS_TAB_ID,
+];
 
 export function researchJournalTabId(view: ResearchJournalView): string {
   switch (view) {

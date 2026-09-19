@@ -456,6 +456,7 @@ import {
   parseSidebarMode,
   RESEARCH_HOME_TAB_ID,
   researchCycleTabIds,
+  researchJournalTabId,
   researchJournalViewFromTabId,
   type ResearchJournalView,
   researchTreeIdFromTabId,
@@ -3566,6 +3567,8 @@ function MainApp() {
   // Highlights. The three are pages of the same stage view, so the stage
   // selector stays a single "journal" branch.
   const [journalView, setJournalView] = useState<ResearchJournalView>("home");
+  const journalViewRef = useRef(journalView);
+  journalViewRef.current = journalView;
   // Whether the Home page itself is the one currently shown. The inline
   // composer and everything that used to hang off the research modal's open
   // flag key off this instead: Home is a page, not a modal. Its sibling
@@ -4130,13 +4133,18 @@ function MainApp() {
       researchScope,
     ],
   );
+  const cycleableResearchTreeTabIds = useMemo(
+    () => cycleableResearchTabIds.filter((tabId) => researchTreeIdFromTabId(tabId) !== null),
+    [cycleableResearchTabIds],
+  );
   // Shortcut number per research tree id, mirroring the terminal tabs' Cmd-1..9
-  // hints. A tree's number is its position among the cycleable research tabs
-  // (the exact target Cmd-N jumps to via focusResearchTab), so the badge always
-  // names the key that selects that row. Only the first nine get a number.
+  // hints. The journal pages (Home, Bookmarks, Highlights) take part in
+  // Ctrl-Tab cycling but are not numbered (Home has its own Cmd-N shortcut),
+  // so tree numbers stay indexed over tree tabs only. The badge always names
+  // the key that selects that row; only the first nine get a number.
   const researchShortcutIndexByTreeId = useMemo(() => {
     const map = new Map<string, number>();
-    cycleableResearchTabIds.forEach((tabId, index) => {
+    cycleableResearchTreeTabIds.forEach((tabId, index) => {
       if (index >= 9) {
         return;
       }
@@ -4146,7 +4154,7 @@ function MainApp() {
       }
     });
     return map;
-  }, [cycleableResearchTabIds]);
+  }, [cycleableResearchTreeTabIds]);
   const researchAttentionState = useMemo(() => researchAttention(researchTrees), [researchTrees]);
   const runningResearchCount = researchAttentionState.runningCount;
   const unseenResearchCount = researchAttentionState.unseenCount;
@@ -9231,6 +9239,11 @@ function MainApp() {
     recordResearchJournalVisit();
     showJournal();
   }, [recordResearchJournalVisit, showJournal]);
+  const showBookmarks = useCallback(() => {
+    setJournalView("bookmarks");
+    recordResearchJournalVisit();
+    showJournal();
+  }, [recordResearchJournalVisit, showJournal]);
   const showHighlights = useCallback(() => {
     setJournalView("highlights");
     recordResearchJournalVisit();
@@ -9263,6 +9276,7 @@ function MainApp() {
       }
     }
   }, []);
+  const bookmarksFeedVisible = researchStageView === "journal" && journalView === "bookmarks";
   const highlightsFeedVisible = researchStageView === "journal" && journalView === "highlights";
   useEffect(() => {
     if (!highlightsFeedVisible) return;
@@ -14404,13 +14418,21 @@ function MainApp() {
 
     const focusResearchTabById = (tabId: string) => {
       // Journal pages come first in the cycle list, so they are dispatched
-      // first here too: without this arm Ctrl-Tab onto Home would fall through
-      // to focusPaneTab with a pane id that does not exist. Only Home is in
-      // RESEARCH_JOURNAL_TAB_IDS so far; Bookmarks and Highlights join it once
-      // the surface can show them.
-      if (researchJournalViewFromTabId(tabId)) {
-        openJournal();
-        return;
+      // first here too: without this arm Ctrl-Tab onto one would fall through
+      // to focusPaneTab with a pane id that does not exist. Landing on a page
+      // calls the same opener its sidebar row does.
+      switch (researchJournalViewFromTabId(tabId)) {
+        case "home":
+          openJournal();
+          return;
+        case "bookmarks":
+          showBookmarks();
+          return;
+        case "highlights":
+          showHighlights();
+          return;
+        default:
+          break;
       }
       const treeId = researchTreeIdFromTabId(tabId);
       if (treeId) {
@@ -14433,13 +14455,13 @@ function MainApp() {
     const cycleResearchTab = (direction: -1 | 1) => {
       const currentResearchTreeId = activeResearchTreeIdRef.current;
       const currentResearchSurfaceActive = activeSurfaceRef.current === "research";
-      // A forward Home page is the current tab even while a tree stays selected
-      // behind it, so the cycle steps from the page the user sees rather than
-      // from the hidden document.
+      // A visible journal page (Home, Bookmarks, Highlights) is the current tab
+      // even while a tree stays selected behind it, so the cycle steps from the
+      // page the user sees rather than from the hidden document.
       const activeTabId = !currentResearchSurfaceActive
         ? activePaneIdRef.current
         : researchStageViewRef.current === "journal"
-          ? RESEARCH_HOME_TAB_ID
+          ? researchJournalTabId(journalViewRef.current)
           : currentResearchTreeId
             ? researchTreeTabId(currentResearchTreeId)
             : RESEARCH_HOME_TAB_ID;
@@ -14484,7 +14506,7 @@ function MainApp() {
           return;
         }
         case "focusResearchTab": {
-          const tabId = cycleableResearchTabIds[command.tabIndex];
+          const tabId = cycleableResearchTreeTabIds[command.tabIndex];
           if (tabId) {
             focusResearchTabById(tabId);
           }
@@ -14735,6 +14757,7 @@ function MainApp() {
     sidebarPanes,
     cycleableSidebarPanes,
     cycleableResearchTabIds,
+    cycleableResearchTreeTabIds,
     numberedTabPanes,
     activePane,
     lastActiveGroupId,
@@ -14749,6 +14772,8 @@ function MainApp() {
     createResearchFromSidebar,
     createDocumentFromSidebar,
     openJournal,
+    showBookmarks,
+    showHighlights,
     moveActiveResearchTree,
     selectResearchTree,
     sidebarMode,
@@ -16428,6 +16453,25 @@ function MainApp() {
                     {RESEARCH_HOME_SHORTCUT_LABEL}
                   </span>
                 ) : null}
+              </div>
+              <div
+                className={`research-sidebar-row journal-sidebar-row${
+                  bookmarksFeedVisible ? " is-selected" : ""
+                }`}
+              >
+                <button
+                  type="button"
+                  className="control-button research-sidebar-select"
+                  aria-current={bookmarksFeedVisible ? "page" : undefined}
+                  title="Bookmarks"
+                  onClick={showBookmarks}
+                >
+                  <span className="research-sidebar-copy">
+                    <span className="research-sidebar-title">
+                      <span className="research-sidebar-title-text">Bookmarks</span>
+                    </span>
+                  </span>
+                </button>
               </div>
               <div
                 className={`research-sidebar-row journal-sidebar-row${
@@ -19332,6 +19376,7 @@ function MainApp() {
           {researchStageView === "journal" && config && !highlightsFeedVisible ? (
             <ResearchActivityFeed
               {...activityFeedState}
+              view={journalView === "bookmarks" ? "bookmarks" : "home"}
               composer={
                 <ResearchQueryComposer
                   adapters={config.adapters}
