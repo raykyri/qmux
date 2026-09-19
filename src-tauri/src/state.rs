@@ -4340,14 +4340,17 @@ impl AppState {
                 })
             })
             .chain(model.research_nodes.values().filter_map(|node| {
-                (node.kind.is_run() && model.research_trees.contains_key(&node.tree_id)).then_some(
-                    Candidate {
-                        occurred_at: node.created_at,
-                        source_rank: RESEARCH_ACTIVITY_SOURCE_RANK,
-                        id: &node.id,
-                        payload: ActivityPayload::Research(node),
-                    },
-                )
+                (node.kind.is_run()
+                    && model
+                        .research_trees
+                        .get(&node.tree_id)
+                        .is_some_and(|tree| tree.archived_at.is_none()))
+                .then_some(Candidate {
+                    occurred_at: node.created_at,
+                    source_rank: RESEARCH_ACTIVITY_SOURCE_RANK,
+                    id: &node.id,
+                    payload: ActivityPayload::Research(node),
+                })
             }))
             .filter(|candidate| {
                 before
@@ -4372,6 +4375,19 @@ impl AppState {
                 id: last.id.to_string(),
             }
         });
+        // Children are gathered after the page is truncated and sorted, so the
+        // cursor above is derived from the page rows alone and never shifts
+        // because a root gained a follow-up.
+        let mut children_by_parent: HashMap<&str, Vec<&ResearchNode>> = HashMap::new();
+        for node in model
+            .research_nodes
+            .values()
+            .filter(|node| node.kind.is_run())
+        {
+            if let Some(parent_id) = node.parent_node_id.as_deref() {
+                children_by_parent.entry(parent_id).or_default().push(node);
+            }
+        }
         let items = candidates
             .into_iter()
             .map(|candidate| match candidate.payload {
@@ -4379,10 +4395,25 @@ impl AppState {
                     occurred_at: candidate.occurred_at,
                     entry: entry.clone(),
                 },
-                ActivityPayload::Research(node) => RecentActivityItem::ResearchQuery {
-                    occurred_at: candidate.occurred_at,
-                    query: RecentResearchQuery::from(node),
-                },
+                ActivityPayload::Research(node) => {
+                    let mut query = RecentResearchQuery::from(node);
+                    query.children = children_by_parent
+                        .remove(node.id.as_str())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|child| child.tree_id == node.tree_id)
+                        .map(RecentResearchQuery::from)
+                        .collect();
+                    query.children.sort_by(|left, right| {
+                        left.created_at
+                            .cmp(&right.created_at)
+                            .then_with(|| left.node_id.cmp(&right.node_id))
+                    });
+                    RecentActivityItem::ResearchQuery {
+                        occurred_at: candidate.occurred_at,
+                        query,
+                    }
+                }
             })
             .collect();
         Ok(RecentActivityPage { items, next_cursor })
@@ -13607,12 +13638,46 @@ mod tests {
         let root_id = detail.tree.root_node_id;
         {
             let mut model = state.inner.model.lock().unwrap();
-            let root = model.research_nodes.get_mut(&root_id).unwrap();
-            root.created_at = 200;
+            let root = {
+                let root = model.research_nodes.get_mut(&root_id).unwrap();
+                root.created_at = 200;
+                root.clone()
+            };
             let mut older = root.clone();
             older.id = "older-query".to_string();
             older.created_at = 100;
             model.research_nodes.insert(older.id.clone(), older);
+
+            let mut reply = root.clone();
+            reply.id = "reply-query".to_string();
+            reply.parent_node_id = Some(root_id.clone());
+            reply.created_at = 300;
+            reply.query_anchor = Some(ResearchHighlightAnchor {
+                version: 1,
+                projection: "answer-v1".to_string(),
+                response_revision: "a".repeat(64),
+                start: 0,
+                end: 15,
+                exact: "Selected answer".to_string(),
+                prefix: String::new(),
+                suffix: String::new(),
+            });
+            let mut grandchild = reply.clone();
+            grandchild.id = "grandchild-query".to_string();
+            grandchild.parent_node_id = Some(reply.id.clone());
+            grandchild.created_at = 310;
+            grandchild.query_anchor = None;
+            // A reply recorded against another tree must never be folded into
+            // this root's children.
+            let mut foreign = reply.clone();
+            foreign.id = "foreign-reply".to_string();
+            foreign.tree_id = "missing-tree".to_string();
+            foreign.query_anchor = None;
+            model.research_nodes.insert(foreign.id.clone(), foreign);
+            model
+                .research_nodes
+                .insert(grandchild.id.clone(), grandchild);
+            model.research_nodes.insert(reply.id.clone(), reply);
         }
         state
             .set_journal(journal::JournalState {
@@ -13631,22 +13696,112 @@ mod tests {
             }
             RecentActivityItem::ResearchQuery { query, .. } => query.node_id.clone(),
         };
+        let children_of = |item: &RecentActivityItem| match item {
+            RecentActivityItem::Journal { .. } => panic!("expected a research row"),
+            RecentActivityItem::ResearchQuery { query, .. } => query.children.clone(),
+        };
+        // Follow-ups still surface as their own rows in this build: the
+        // top-level-only predicate ships with the renderer that draws
+        // `children`.
         let first = state.list_recent_activity(2, None).unwrap();
         assert_eq!(
             first.items.iter().map(item_id).collect::<Vec<_>>(),
-            vec!["new-note".to_string(), root_id]
+            vec!["grandchild-query".to_string(), "reply-query".to_string()]
         );
+        let reply_children = children_of(&first.items[1]);
+        assert_eq!(
+            reply_children
+                .iter()
+                .map(|child| child.node_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["grandchild-query"]
+        );
+        assert!(reply_children[0].children.is_empty());
         let second = state.list_recent_activity(2, first.next_cursor).unwrap();
         assert_eq!(
             second.items.iter().map(item_id).collect::<Vec<_>>(),
-            vec!["tied-note".to_string(), "older-query".to_string()]
+            vec!["new-note".to_string(), root_id.clone()]
+        );
+        let root_children = children_of(&second.items[1]);
+        assert_eq!(
+            root_children
+                .iter()
+                .map(|child| child.node_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["reply-query"]
+        );
+        assert_eq!(
+            root_children[0].query_target.as_deref(),
+            Some("Selected answer")
         );
         let third = state.list_recent_activity(2, second.next_cursor).unwrap();
         assert_eq!(
             third.items.iter().map(item_id).collect::<Vec<_>>(),
+            vec!["tied-note".to_string(), "older-query".to_string()]
+        );
+        let fourth = state.list_recent_activity(2, third.next_cursor).unwrap();
+        assert_eq!(
+            fourth.items.iter().map(item_id).collect::<Vec<_>>(),
             vec!["old-note".to_string()]
         );
-        assert!(third.next_cursor.is_none());
+        assert!(fourth.next_cursor.is_none());
+
+        // Children are attached after the page is truncated, so the cursors are
+        // byte-identical to the same fixture with no parent links at all.
+        let cursors = |state: &AppState| {
+            let mut cursors = Vec::new();
+            let mut before = None;
+            loop {
+                let page = state.list_recent_activity(2, before).unwrap();
+                cursors.push(page.next_cursor.clone());
+                match page.next_cursor {
+                    Some(cursor) => before = Some(cursor),
+                    None => break,
+                }
+            }
+            cursors
+        };
+        let with_children = cursors(&state);
+        {
+            let mut model = state.inner.model.lock().unwrap();
+            for id in ["reply-query", "grandchild-query"] {
+                model.research_nodes.get_mut(id).unwrap().parent_node_id = None;
+            }
+        }
+        assert_eq!(cursors(&state), with_children);
+        assert!(
+            state
+                .list_recent_activity(100, None)
+                .unwrap()
+                .items
+                .iter()
+                .all(|item| match item {
+                    RecentActivityItem::Journal { .. } => true,
+                    RecentActivityItem::ResearchQuery { query, .. } => query.children.is_empty(),
+                })
+        );
+
+        {
+            let mut model = state.inner.model.lock().unwrap();
+            model
+                .research_trees
+                .get_mut(&detail.tree.id)
+                .unwrap()
+                .archived_at = Some(400);
+        }
+        let archived_page = state.list_recent_activity(2, None).unwrap();
+        assert_eq!(
+            archived_page.items.iter().map(item_id).collect::<Vec<_>>(),
+            vec!["new-note".to_string(), "tied-note".to_string()]
+        );
+        let archived_tail = state
+            .list_recent_activity(2, archived_page.next_cursor)
+            .unwrap();
+        assert_eq!(
+            archived_tail.items.iter().map(item_id).collect::<Vec<_>>(),
+            vec!["old-note".to_string()]
+        );
+        assert!(archived_tail.next_cursor.is_none());
     }
 
     #[test]

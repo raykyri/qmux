@@ -425,11 +425,19 @@ pub struct ResearchRecap {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentResearchQuery {
+    /// Direct follow-up questions, attached by the feed query so a root
+    /// question and its replies travel as one row.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<RecentResearchQuery>,
     pub node_id: String,
     pub tree_id: String,
     pub parent_node_id: Option<String>,
     pub inline: bool,
     pub prompt: String,
+    /// Selected parent-answer text this follow-up replies to. The remaining
+    /// anchor geometry is deliberately omitted from the compact feed payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_target: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<crate::tweets::ResearchMessageAttachment>,
     pub title: Option<String>,
@@ -445,11 +453,16 @@ pub struct RecentResearchQuery {
 impl From<&ResearchNode> for RecentResearchQuery {
     fn from(node: &ResearchNode) -> Self {
         Self {
+            children: Vec::new(),
             node_id: node.id.clone(),
             tree_id: node.tree_id.clone(),
             parent_node_id: node.parent_node_id.clone(),
             inline: node.inline,
             prompt: node.prompt.clone(),
+            query_target: node
+                .query_anchor
+                .as_ref()
+                .map(|anchor| anchor.exact.clone()),
             attachments: node.attachments.clone(),
             title: node.title.clone(),
             adapter: node.adapter.clone(),
