@@ -47,6 +47,11 @@ export default function DomSearchBar({
 
   const close = () => {
     inputRef.current?.blur();
+    // Drop the collected ranges and repaint synchronously: no highlight may
+    // outlive the bar, and a later rescan must not resurrect stale ranges.
+    rangesRef.current = [];
+    setResults({ index: -1, count: 0 });
+    clearSearchHighlights(ownerRef.current);
     setOpen(false);
   };
 
@@ -108,6 +113,38 @@ export default function DomSearchBar({
       inputRef.current?.select();
     }
   }, [open]);
+
+  // Escape closes an open find bar from anywhere in the host pane, not only
+  // while its input has focus. A focused native terminal keeps Escape for
+  // itself, as do editable targets and events another handler already took.
+  useEffect(() => {
+    if (!open || !active) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.key !== "Escape") {
+        return;
+      }
+      const target = event.target;
+      if (target instanceof HTMLElement) {
+        if (isTerminalTarget(target) || isEditableTarget(target)) {
+          return;
+        }
+        if (target === inputRef.current) {
+          // The bar's own input handles Escape itself.
+          return;
+        }
+        if (target !== document.body && !hotkeyScopeRef.current?.contains(target)) {
+          return;
+        }
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    };
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [active, hotkeyScopeRef, open]);
 
   // A new document/transcript should not inherit an open find bar from the
   // previous one. Preserve the term and options so reopening can repeat it.

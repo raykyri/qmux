@@ -573,11 +573,13 @@ export function loadSettings(): AppSettings {
       typeof parsed.reduceMotion === "boolean"
         ? parsed.reduceMotion
         : DEFAULT_SETTINGS.reduceMotion;
+    // A retired provider must not revive a stale OpenRouter opt-in. Only use the
+    // legacy flag when no provider selection has ever been saved.
     const tabTitleProvider =
       typeof parsed.tabTitleProvider === "string" &&
       TAB_TITLE_PROVIDER_OPTIONS.some((option) => option.id === parsed.tabTitleProvider)
         ? parsed.tabTitleProvider
-        : parsed.openRouterTitlesEnabled === true
+        : parsed.tabTitleProvider == null && parsed.openRouterTitlesEnabled === true
           ? "openRouter"
           : DEFAULT_SETTINGS.tabTitleProvider;
     const codeMode =
