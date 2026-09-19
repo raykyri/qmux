@@ -87,7 +87,12 @@ pub fn schedule(state: &AppState, node_id: &str) {
                 return Ok(());
             }
             let workspace = state.research_workspace_for_node(&node.id)?;
-            let text = generate_recap_text(&state, &node, &workspace, &answer)?;
+            let text = crate::title_generation::generate_research_recap(
+                state.config(),
+                &node,
+                &workspace,
+                &answer,
+            )?;
             state.save_research_recap(&node, &snapshot.revision, text)
         })();
         if let Err(err) = result {
@@ -95,17 +100,6 @@ pub fn schedule(state: &AppState, node_id: &str) {
         }
         emit_pending(&state, &node.id, false);
     });
-}
-
-// TODO(P3c2): replace with crate::title_generation::generate_research_recap
-// once the metadata generalization lands.
-fn generate_recap_text(
-    _state: &AppState,
-    _node: &research::ResearchNode,
-    _workspace: &crate::workspace::GroupInfo,
-    _answer: &str,
-) -> Result<String, String> {
-    Err("recap generation not wired yet".to_string())
 }
 
 fn emit_pending(state: &AppState, node_id: &str, pending: bool) {
