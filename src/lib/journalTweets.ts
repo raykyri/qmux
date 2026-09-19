@@ -65,6 +65,8 @@ export interface TweetMedia {
   watchUrl?: string;
   width?: number;
   height?: number;
+  altText?: string;
+  durationMillis?: number;
 }
 
 /** One span of the tweet text: plain text, or a t.co entity expanded into a
@@ -116,6 +118,9 @@ export interface TweetSnapshot {
   likes?: number;
   replyTo?: { handle: string; id?: string };
   quoted?: QuotedTweetSnapshot;
+  possiblySensitive?: boolean;
+  language?: string;
+  editIds?: string[];
 }
 
 export type QuotedTweetSnapshot = Omit<TweetSnapshot, "quoted" | "replyTo">;

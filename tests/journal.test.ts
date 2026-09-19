@@ -359,6 +359,9 @@ function renderCard(entry: JournalEntry) {
 
 test("tweet card renders header, text, media, and linked timestamp", () => {
   const html = renderCard(tweetEntry(snapshot("463440424141459456")));
+  assert.match(html, /aria-label="Open tweet by @Interior"/);
+  assert.match(html, /role="link"/);
+  assert.match(html, /tabindex="0"/);
   assert.match(html, /journal-tweet-head/);
   assert.match(html, /@Interior/);
   assert.match(html, /Sunsets don(&#x27;|')t get much better/);
@@ -370,6 +373,8 @@ test("tweet card renders header, text, media, and linked timestamp", () => {
 test("tweet card renders quote tweets as a nested mini-card", () => {
   const html = renderCard(tweetEntry(snapshot("1599367266448994304")));
   assert.match(html, /journal-tweet-quote/);
+  // The embed and its quoted mini-card are each their own link target.
+  assert.equal(html.match(/role="link"/g)?.length, 2);
   assert.match(html, /@CantBeFaraz/);
   // Outer video poster and the quoted tweet's own media both render.
   assert.match(html, /journal-tweet-video/);

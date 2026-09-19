@@ -50,6 +50,7 @@ export function recentResearchQueryFromNode(
     parentNodeId: node.parentNodeId,
     inline: Boolean(node.inline),
     prompt: node.prompt,
+    attachments: node.attachments,
     title: node.title,
     adapter: node.adapter,
     model: node.model,

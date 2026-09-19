@@ -396,6 +396,16 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   column-gap: 10px;
+  cursor: pointer;
+}
+
+/* The card and its quoted mini-card are both link targets, so both need a
+   visible ring when reached with the keyboard. */
+.journal-tweet:focus-visible,
+.journal-tweet-quote:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 10px;
 }
 
 .journal-tweet-avatar-link {
@@ -632,9 +642,37 @@ a.journal-tweet-more:hover {
 }
 
 .journal-tweet-media {
+  position: relative;
   display: grid;
   gap: 4px;
   margin-top: 8px;
+}
+
+.journal-tweet-media.is-sensitive .journal-tweet-media-item {
+  filter: blur(18px);
+  pointer-events: none;
+}
+
+.journal-tweet-sensitive-reveal {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  z-index: 1;
+  padding: 7px 11px;
+  border: 1px solid var(--surface-border-strong-alpha);
+  border-radius: 999px;
+  color: var(--lightbox-caption-fg);
+  background: var(--lightbox-scrim-bg);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+}
+
+.journal-tweet-sensitive-reveal:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .journal-tweet-media.is-multi {

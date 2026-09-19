@@ -1,3 +1,5 @@
+import type { TweetSnapshot } from "./lib/journalTweets";
+
 export type PaneKind = "shell" | "agent";
 
 export interface RuntimeConfig {
@@ -385,6 +387,24 @@ export type ResearchNodeKind = "run" | "document" | "conversation";
 /** Provenance for content that did not come from a research launch. */
 export type ResearchNodeOrigin = "terminalExport";
 
+/** An immutable snapshot captured alongside a research message's prompt.
+ * Mirrors the Rust `ResearchMessageAttachment` serde shape exactly. */
+export interface ResearchTweetAttachment {
+  kind: "tweet";
+  schemaVersion: 1;
+  sourceUrl: string;
+  tweetId: string;
+  placement: "inline" | "trailing";
+  provider: "xSyndication";
+  status: "resolved" | "unavailable";
+  attemptedAt: number;
+  fetchedAt?: number;
+  tweet?: TweetSnapshot;
+  failure?: "timeout" | "notFound" | "invalidPayload" | "network";
+}
+
+export type ResearchMessageAttachment = ResearchTweetAttachment;
+
 export interface ResearchTree {
   id: string;
   title: string;
@@ -412,6 +432,7 @@ export interface ResearchNode {
    * most one existing inline child per node; absent means false. */
   inline?: boolean;
   prompt: string;
+  attachments?: ResearchMessageAttachment[];
   /** Short generated title for breadcrumbs and menus; the document body still
    * shows the full prompt. */
   title?: string | null;
@@ -453,6 +474,7 @@ export interface RecentResearchQuery {
   parentNodeId?: string | null;
   inline: boolean;
   prompt: string;
+  attachments?: ResearchMessageAttachment[];
   title?: string | null;
   adapter: string;
   model?: string | null;
