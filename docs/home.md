@@ -17,6 +17,16 @@ saved links and X posts, newest first.
 - Each research card ends with Follow and Bookmark beside its timestamp. Both
   are stored on the thread, and the open thread shows the same pair under its
   root prompt.
+- The Bookmarks row below Home shows the same feed limited to bookmarked
+  threads, without the composer or the setup guide.
+- The Highlights row below Bookmarks lists every highlight saved in open
+  threads, newest first under day headers, each passage shown inside its stored
+  context. Opening one selects its thread and scrolls to the passage; the
+  request is recorded under `qmux.research-navigation.v1` and cleared once the
+  document lands on it.
+- `Ctrl-Tab` and `Shift-Ctrl-Tab` step through Home, Bookmarks and Highlights,
+  then the scoped research threads, then the visible research terminals,
+  wrapping both ways. `Cmd-1` through `Cmd-9` stay assigned to threads only.
 - A card's context menu renames, archives or restores, deletes, stars, and
   groups a thread into a folder — the same actions as its sidebar row.
 - The feed's header menu ("Feed actions") holds Refresh and

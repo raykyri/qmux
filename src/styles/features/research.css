@@ -4,6 +4,14 @@
   gap: 0;
 }
 
+/* Held-⌘ hints form one fixed-width column even when the final key has a
+   different glyph width (N/O versus 1–9). */
+.sidebar.is-research-mode .pane-tab-shortcut-hint {
+  width: 34px;
+  min-width: 34px;
+  padding-inline: 4px;
+}
+
 /* Keep the fixed controls in their existing positions while moving the space
    around the research list into its scrollable area. */
 .sidebar.is-research-mode .sidebar-mode-toggle {
@@ -108,6 +116,13 @@
     color var(--transition-fast),
     background-color var(--transition-fast),
     border-color var(--transition-fast);
+}
+
+/* Thread titles use the same base reading size as questions and answers in
+   Home. Keep the shared row size on the journal pages, folders, and the
+   surrounding chrome. */
+.research-sidebar-row[data-research-tree-id] {
+  font-size: calc(var(--fs-input) - 0.5px);
 }
 
 /* Hover/selected mirror the terminal sidebar's pane tabs so the two modes read
@@ -484,7 +499,9 @@
 /* Held-⌘ badge for the folder menu chord, over the trigger's chevron edge.
    The switcher root is already position: relative for the dropdown. */
 .research-folder-shortcut-hint {
-  right: 8px;
+  /* The switcher has a 4px outer margin while the journal and list rows are
+     inset 7px. */
+  right: 11px;
 }
 
 /* Plain count like the terminal sidebar's group counts, not a pill. */

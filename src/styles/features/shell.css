@@ -407,7 +407,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 25px;
+  min-width: 30px;
   min-height: 18px;
   padding: 1px 6px;
   transform: translateY(-50%);
@@ -418,7 +418,11 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
   font-size: var(--fs-xs);
   font-weight: 600;
+  /* One badge width and one glyph advance for every chord, so the badges of
+     ⌘1–⌘9 and ⌘T/⌘O line up as a column instead of jittering. */
+  font-variant-numeric: tabular-nums;
   line-height: 1;
+  text-align: center;
   opacity: 0.88;
   pointer-events: none;
   user-select: none;

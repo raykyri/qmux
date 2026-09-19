@@ -35,6 +35,7 @@
     "test:sidebar-controls": "node --import tsx --test tests/sidebarControls.test.ts",
     "test:context-menu-placement": "node --import tsx --test tests/contextMenuPlacement.test.ts",
     "test:research-highlights": "node --import tsx --test tests/researchHighlights.test.ts",
+    "test:research-highlights-feed": "node --import tsx --test tests/researchHighlightsFeed.test.ts",
     "test:research-navigation": "node --import tsx --test tests/researchNavigation.test.ts",
     "test:research-events": "node --import tsx --test tests/researchEvents.test.ts",
     "test:research-history": "node --import tsx --test tests/researchHistory.test.ts",

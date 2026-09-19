@@ -60,7 +60,7 @@ test("research summaries get typography only from the shared surface recipe", ()
 });
 
 // Enabled in P11, which restyles the sidebar rows to the feed's body size.
-test.skip("research thread titles match feed body size without resizing sidebar chrome", () => {
+test("research thread titles match feed body size without resizing sidebar chrome", () => {
   const threadRow = ruleBody(researchCss, ".research-sidebar-row[data-research-tree-id]");
   assert.match(threadRow, /font-size:\s*calc\(var\(--fs-input\) - 0\.5px\)/);
 
