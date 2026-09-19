@@ -41,6 +41,7 @@ mod thread_graph;
 mod title_generation;
 mod transcript;
 mod turn_queue;
+mod tweets;
 mod updater;
 mod user_notifications;
 mod wikilinks;

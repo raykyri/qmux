@@ -323,6 +323,10 @@ pub struct ResearchNode {
     #[serde(default, skip_serializing_if = "is_false")]
     pub inline: bool,
     pub prompt: String,
+    /// Immutable references captured with the user's prompt. The original
+    /// prompt remains verbatim; attachment placement controls display only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::tweets::ResearchMessageAttachment>,
     /// Short generated title for breadcrumbs and menus. The full prompt stays
     /// the document's displayed user query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -394,6 +398,8 @@ pub struct RecentResearchQuery {
     pub parent_node_id: Option<String>,
     pub inline: bool,
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::tweets::ResearchMessageAttachment>,
     pub title: Option<String>,
     pub adapter: String,
     pub model: Option<String>,
@@ -409,6 +415,7 @@ impl From<&ResearchNode> for RecentResearchQuery {
             parent_node_id: node.parent_node_id.clone(),
             inline: node.inline,
             prompt: node.prompt.clone(),
+            attachments: node.attachments.clone(),
             title: node.title.clone(),
             adapter: node.adapter.clone(),
             model: node.model.clone(),
@@ -2870,6 +2877,7 @@ mod tests {
             query_anchor: None,
             inline: false,
             prompt: "Question".to_string(),
+            attachments: Vec::new(),
             title: None,
             response_preview: Some("Answer".to_string()),
             adapter: "claude".to_string(),
