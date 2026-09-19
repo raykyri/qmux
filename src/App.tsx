@@ -2336,6 +2336,11 @@ function MainApp() {
     }
   }, []);
   const [researchActivity, setResearchActivity] = useState<ResearchNode[]>([]);
+  // Runs whose background summary job is in flight. Held only for the session:
+  // the jobs die with the process, so a restart correctly shows no spinner.
+  const [recapPendingNodeIds, setRecapPendingNodeIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
   const [activeResearchDetail, setActiveResearchDetail] = useState<ResearchTreeDetail | null>(null);
   const activeResearchDetailRef = useRef(activeResearchDetail);
   activeResearchDetailRef.current = activeResearchDetail;
@@ -10027,6 +10032,18 @@ function MainApp() {
               knownUnseen: true,
             }).catch(() => undefined);
           }
+          break;
+        }
+        case "research.recap.pending": {
+          setRecapPendingNodeIds((current) => {
+            if (current.has(event.nodeId) === event.pending) {
+              return current;
+            }
+            const next = new Set(current);
+            if (event.pending) next.add(event.nodeId);
+            else next.delete(event.nodeId);
+            return next;
+          });
           break;
         }
         case "research.tree.updated": {
@@ -19123,6 +19140,7 @@ function MainApp() {
                 archivedResearchTrees.find((tree) => tree.id === activeResearchTreeId)?.title
               }
               archived={Boolean(activeResearchDetail?.tree.archivedAt)}
+              recapPendingNodeIds={recapPendingNodeIds}
               detailError={activeResearchDetailError}
               onRetryDetail={retryActiveResearchDetail}
               onFork={createResearchFollowup}

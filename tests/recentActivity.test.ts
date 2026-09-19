@@ -136,6 +136,22 @@ test("run nodes enter history at every depth while documents do not", () => {
   } satisfies ResearchNode;
   assert.equal(recentResearchQueryFromNode(node)?.nodeId, "root");
   assert.equal(recentResearchQueryFromNode({ ...node, kind: "document" }), null);
+  // The feed carries the recap text itself; a blank one never reaches a card.
+  assert.equal(recentResearchQueryFromNode(node)?.recap, undefined);
+  assert.equal(
+    recentResearchQueryFromNode({
+      ...node,
+      recap: { text: "  The result is ready.  ", responseRevision: "revision" },
+    })?.recap,
+    "The result is ready.",
+  );
+  assert.equal(
+    recentResearchQueryFromNode({
+      ...node,
+      recap: { text: "   ", responseRevision: "revision" },
+    })?.recap,
+    undefined,
+  );
   assert.deepEqual(
     upsertRecentResearchQuery([query], { ...query, status: "failed" }),
     [{ ...query, status: "failed" }],

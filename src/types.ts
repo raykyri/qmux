@@ -461,10 +461,32 @@ export interface ResearchNode {
   /** Set when the durable response snapshot lands — the viewer's signal to
    * refetch content it may have read before the adapter finished flushing. */
   responseSnapshotAt?: number | null;
+  recap?: ResearchRecap;
   createdAt: number;
   startedAt?: number | null;
   completedAt?: number | null;
   highlights: ResearchHighlight[];
+}
+
+export interface ResearchRecap {
+  id?: string | null;
+  text: string;
+  responseRevision: string;
+  generatedAt?: number | null;
+  adapter?: string | null;
+  model?: string | null;
+  /** Absent for automatically generated summaries using the built-in default. */
+  instructions?: string | null;
+}
+
+export interface ResearchRecapCandidate {
+  id: string;
+  text: string;
+  responseRevision: string;
+  generatedAt: number;
+  adapter: string;
+  model: string | null;
+  instructions: string;
 }
 
 /** Compact research-run history returned to Recent Activity. */
@@ -480,6 +502,8 @@ export interface RecentResearchQuery {
   model?: string | null;
   status: ResearchNodeStatus;
   createdAt: number;
+  /** Current answer recap, when one has been generated for this run. */
+  recap?: string | null;
 }
 
 export interface RecentResearchQueryCursor {

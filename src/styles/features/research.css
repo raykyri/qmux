@@ -962,6 +962,40 @@
   max-width: 640px;
 }
 
+/* Recaps are plain derived text, outside the answer's highlight projection.
+   They sit outside .research-response-content-root, so they do not inherit the
+   answer's font delta; the size and line-height are pinned here so the line box
+   matches the answer body. TODO(P5): this typography moves into
+   research-surface.css, which drops the pin. */
+.research-summary-text {
+  margin: 0 0 28px;
+  color: var(--text-muted);
+  font-size: calc(14px + var(--research-answer-font-delta, 0.5px));
+  font-style: italic;
+  font-weight: 400;
+  line-height: 1.5;
+  white-space: normal;
+}
+
+.research-recap {
+  margin: 0 0 28px;
+}
+
+/* Holds the recap's slot while the summary generates, so the text lands in
+   place instead of pushing the answer down when it arrives. */
+.research-recap-pending {
+  display: flex;
+  align-items: center;
+  min-height: calc((14px + var(--research-answer-font-delta, 0.5px)) * 1.5);
+  color: var(--accent-color);
+}
+
+.research-recap-pending .research-spinner {
+  display: block;
+  transform-origin: center;
+  will-change: transform;
+}
+
 .research-response-content-root {
   --transcript-font-delta: var(--research-answer-font-delta);
   --transcript-line-height-delta: 0.12;

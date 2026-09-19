@@ -120,6 +120,7 @@ test("parseResearchEvent recognizes the complete backend research taxonomy", () 
     ["research.highlight.created", { nodeId: root.id, highlight: highlightA }],
     ["research.highlight.removed", { nodeId: root.id, highlightId: highlightA.id }],
     ["research.highlights.removed", { nodeId: root.id, highlightIds: [highlightA.id] }],
+    ["research.recap.pending", { nodeId: root.id, pending: true }],
     ["research.tree.removed", { treeId: researchTree.id }],
     [
       "research.node.removed",
@@ -158,6 +159,25 @@ test("parseResearchEvent separates unrelated, unsupported, and malformed events"
     ),
     { kind: "malformed", type: "research.highlights.removed" },
   );
+  assert.deepEqual(
+    parseResearchEvent(qmuxEvent("research.recap.pending", { nodeId: "node-root" })),
+    { kind: "malformed", type: "research.recap.pending" },
+  );
+  // A recap object that does not match the persisted shape rejects the node.
+  assert.deepEqual(
+    parseResearchEvent(
+      qmuxEvent("research.node.updated", {
+        node: { ...node(), recap: { text: "Summary" } },
+      }),
+    ),
+    { kind: "malformed", type: "research.node.updated" },
+  );
+  const withRecap = parseResearchEvent(
+    qmuxEvent("research.node.updated", {
+      node: { ...node(), recap: { text: "Summary", responseRevision: "revision-1" } },
+    }),
+  );
+  assert.equal(withRecap.kind, "event");
 });
 
 test("researchSummaryFromDetail exactly derives counts, kind, and unseen attention", () => {

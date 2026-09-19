@@ -113,6 +113,7 @@ import {
   ResearchHistoryNav,
   ResearchSidebarRestoreButton,
 } from "./ResearchDocumentChrome";
+import ResearchRecap from "./ResearchRecap";
 
 interface ResearchDocumentProps {
   detail: ResearchTreeDetail | null;
@@ -162,6 +163,8 @@ interface ResearchDocumentProps {
   terminalMapOpen?: boolean;
   /** Show held-⌘ shortcut badges (the ⌘J follow-ups hint). */
   shortcutHintsShown: boolean;
+  /** Runs whose background summary job is in flight. */
+  recapPendingNodeIds?: ReadonlySet<string>;
   /** Workspace-level back/forward (Recent Activity ↔ documents). Used when
    * this tree's own visit stack has nowhere left to go. */
   workspaceCanGoBack?: boolean;
@@ -855,6 +858,7 @@ function useStableValue<T>(next: T, isEqual: (previous: T, candidate: T) => bool
   return ref.current;
 }
 
+const EMPTY_RECAP_PENDING_NODE_IDS: ReadonlySet<string> = new Set<string>();
 const EMPTY_SEGMENT_CHILDREN: ResearchNode[] = [];
 const EMPTY_SEGMENT_CONNECTORS: SegmentAnchorConnector[] = [];
 
@@ -881,6 +885,8 @@ interface ThreadSegmentProps {
    * text actually changes. */
   durationText: string | null;
   hiddenHighlightCount: number;
+  /** A background summary job is in flight for this segment's run. */
+  recapPending: boolean;
   /** Sorted, comma-joined ids of this segment's follow-up cards that finished
    * while open and remain unopened; each gets an unread dot. */
   unreadCardKey: string;
@@ -1019,6 +1025,7 @@ interface ResearchAnswerPaneProps {
   cancelling: boolean;
   durationText: string | null;
   hiddenHighlightCount: number;
+  recapPending: boolean;
   pointerOverHighlight: boolean;
   menuOpen: boolean;
   registerSegmentElement: ThreadSegmentProps["registerSegmentElement"];
@@ -1064,6 +1071,7 @@ const ResearchAnswerPane = memo(function ResearchAnswerPane({
   cancelling,
   durationText,
   hiddenHighlightCount,
+  recapPending,
   pointerOverHighlight,
   menuOpen,
   registerSegmentElement,
@@ -1140,6 +1148,7 @@ const ResearchAnswerPane = memo(function ResearchAnswerPane({
               {retryButton}
             </div>
           ) : null}
+          <ResearchRecap content={view.content} pending={recapPending} />
           {view.displayedTimelineItems.length === 0 ? (
             <>
               <p className="research-response-empty">
@@ -1513,6 +1522,7 @@ const ThreadSegment = memo(function ThreadSegment({
   cancelling,
   durationText,
   hiddenHighlightCount,
+  recapPending,
   unreadCardKey,
   pointerOverHighlight,
   linkedAnchorId,
@@ -1576,6 +1586,7 @@ const ThreadSegment = memo(function ThreadSegment({
           cancelling={cancelling}
           durationText={durationText}
           hiddenHighlightCount={hiddenHighlightCount}
+          recapPending={recapPending}
           pointerOverHighlight={pointerOverHighlight}
           menuOpen={menuOpen}
           registerSegmentElement={registerSegmentElement}
@@ -1638,6 +1649,7 @@ function ResearchDocument({
   onOpenTerminalMap,
   terminalMapOpen,
   shortcutHintsShown,
+  recapPendingNodeIds = EMPTY_RECAP_PENDING_NODE_IDS,
   workspaceCanGoBack = false,
   workspaceCanGoForward = false,
   onWorkspaceBack,
@@ -5199,6 +5211,7 @@ function ResearchDocument({
         cancelling={cancelling}
         durationText={durationText}
         hiddenHighlightCount={hiddenHighlightsByNode[node.id] ?? 0}
+        recapPending={recapPendingNodeIds.has(node.id)}
         unreadCardKey={unreadKeyBySegment.get(node.id) ?? ""}
         pointerOverHighlight={pointerHighlightNodeId === node.id}
         linkedAnchorId={linkedForSegment}

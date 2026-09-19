@@ -61,6 +61,15 @@ type HighlightsRemovedEvent = {
   timestamp: number;
 };
 
+/** Background summary generation started or settled for a run. Purely a
+ * viewer hint: the recap itself arrives as a node update. */
+type RecapPendingEvent = {
+  type: "research.recap.pending";
+  nodeId: string;
+  pending: boolean;
+  timestamp: number;
+};
+
 type TreeRemovedEvent = {
   type: "research.tree.removed";
   treeId: string;
@@ -86,6 +95,7 @@ export type ParsedResearchEvent =
   | HighlightCreatedEvent
   | HighlightRemovedEvent
   | HighlightsRemovedEvent
+  | RecapPendingEvent
   | TreeRemovedEvent
   | NodeRemovedEvent;
 
@@ -176,6 +186,15 @@ function isResearchNode(value: unknown): value is ResearchNode {
     isOptionalFiniteNumber(value.startedAt) &&
     isOptionalFiniteNumber(value.completedAt) &&
     isOptionalFiniteNumber(value.responseSnapshotAt) &&
+    (value.recap == null ||
+      (isRecord(value.recap) &&
+        typeof value.recap.text === "string" &&
+        typeof value.recap.responseRevision === "string" &&
+        isOptionalString(value.recap.id) &&
+        isOptionalFiniteNumber(value.recap.generatedAt) &&
+        isOptionalString(value.recap.adapter) &&
+        isOptionalString(value.recap.model) &&
+        isOptionalString(value.recap.instructions))) &&
     isOptionalString(value.parentNodeId) &&
     isOptionalString(value.title) &&
     isOptionalString(value.responsePreview) &&
@@ -283,6 +302,18 @@ export function parseResearchEvent(event: QmuxEvent): ResearchEventParseResult {
               type: event.type,
               nodeId: payload.nodeId,
               highlightIds: payload.highlightIds,
+              timestamp: event.timestamp,
+            },
+          }
+        : malformed();
+    case "research.recap.pending":
+      return typeof payload.nodeId === "string" && typeof payload.pending === "boolean"
+        ? {
+            kind: "event",
+            event: {
+              type: event.type,
+              nodeId: payload.nodeId,
+              pending: payload.pending,
               timestamp: event.timestamp,
             },
           }
