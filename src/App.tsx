@@ -9104,6 +9104,17 @@ function MainApp() {
     },
     [changeResearchVisibilityFilter, navigateToResearchDocument],
   );
+  /** An applied summary candidate reaches every surface that already holds the
+   * node: the open document, the research activity list, and the Home feed. */
+  const handleResearchRecapApplied = useCallback((node: ResearchNode) => {
+    setActiveResearchDetail((current) => patchResearchDetailNode(current, node));
+    setResearchActivity((current) => upsertResearchActivity(current, node));
+    setRecentActivityItems((current) => {
+      const next = upsertRecentActivityResearchNode(current, node);
+      recentActivityItemsRef.current = next;
+      return next;
+    });
+  }, []);
   const loadOlderActivity = useCallback(() => {
     if (!recentActivityCursor || loadingOlderActivityRef.current) return;
     const requestSeq = recentActivityPageRequestSeqRef.current + 1;
@@ -19239,6 +19250,8 @@ function MainApp() {
               onUndoRemove={undoJournalRemove}
               onDismissUndo={dismissJournalUndo}
               onOpenResearchQuery={openRecentResearchQuery}
+              onResearchRecapApplied={handleResearchRecapApplied}
+              onError={setError}
               onSetResearchFollowed={setResearchTreeFollowedFlag}
               onSetResearchBookmarked={setResearchTreeBookmarkedFlag}
               folderState={researchFolderState}

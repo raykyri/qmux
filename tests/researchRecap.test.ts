@@ -3,6 +3,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ResearchRecap from "../src/components/research/ResearchRecap";
+import { ResearchRecapDialogPanel } from "../src/components/research/ResearchRecapDialog";
 import type { ResearchNodeContent } from "../src/types";
 
 function content(): ResearchNodeContent {
@@ -74,4 +75,32 @@ test("current recaps render without an inline regeneration control", () => {
   assert.match(html, /Summary: The result is ready\./);
   assert.doesNotMatch(html, /Generate summary/);
   assert.doesNotMatch(html, /<button/);
+});
+
+test("candidate dialog presents the current recap before generation", () => {
+  const html = renderToStaticMarkup(
+    createElement(ResearchRecapDialogPanel, {
+      content: content(),
+      onClose: () => undefined,
+      onApplied: () => undefined,
+    }),
+  );
+  assert.match(html, /Generate summary/);
+  // The current summary is shown for comparison and stays until a candidate
+  // is generated and applied.
+  assert.match(html, /The result is ready\./);
+  assert.match(html, /Generate a new summary first\./);
+  assert.match(html, /Generate candidate/);
+  assert.ok(html.indexOf("Generate candidate") < html.indexOf(">Candidate<"));
+  assert.ok(html.indexOf(">Candidate<") < html.indexOf(">Current<"));
+  // Shared primitives, not hand-rolled controls: the form-field textarea and
+  // input, the LauncherSelect trigger, and no native datalist.
+  assert.match(html, /class="form-field research-recap-instructions"/);
+  assert.match(html, /class="form-field research-recap-control"/);
+  // The agent select and the model field are disabled until the adapter probe
+  // returns, so nothing can be generated against an unknown agent.
+  assert.match(html, /disabled="" type="button" class="control-button launcher-select-trigger"/);
+  assert.match(html, /disabled="" role="combobox"/);
+  assert.doesNotMatch(html, /<datalist/);
+  assert.match(html, /<hr class="research-recap-comparison-divider"/);
 });

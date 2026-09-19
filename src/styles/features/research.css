@@ -899,6 +899,159 @@
   will-change: transform;
 }
 
+/* The summary regeneration dialog: instructions, the agent and model the
+   candidate is generated with, and the candidate beside the current summary. */
+.research-recap-dialog {
+  width: min(720px, 100%);
+  max-height: min(760px, calc(100vh - 36px));
+  overflow: auto;
+}
+
+.research-recap-dialog-header,
+.research-recap-dialog-status {
+  display: flex;
+  align-items: center;
+}
+
+.research-recap-dialog-header {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.research-recap-dialog-header > .icon-button {
+  flex: 0 0 auto;
+  width: var(--control-h-md);
+  min-height: var(--control-h-md);
+}
+
+.research-recap-instructions-field,
+.research-recap-dialog-field {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+}
+
+.research-recap-instructions-field {
+  width: 100%;
+}
+
+/* The shared .form-field primitive carries the chrome; the dialog owns the
+   field's own size, padding and focus treatment. */
+.research-recap-instructions,
+.research-recap-control {
+  flex: none;
+  width: 100%;
+  padding: 9px 10px;
+  color: var(--text-primary);
+  line-height: 1.45;
+  outline: none;
+}
+
+.research-recap-instructions {
+  display: block;
+  min-height: 118px;
+  resize: vertical;
+}
+
+.research-recap-control {
+  min-height: var(--control-h-lg);
+  padding-block: 0;
+}
+
+.research-recap-instructions:hover,
+.research-recap-control:hover {
+  border-color: var(--control-border-hover);
+}
+
+.research-recap-instructions:focus,
+.research-recap-control:focus {
+  border-color: var(--focus-ring);
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
+}
+
+.research-recap-dialog-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.research-recap-dialog-controls .launcher-select,
+.research-recap-dialog-controls .launcher-select-trigger {
+  width: 100%;
+}
+
+.research-recap-dialog-controls .launcher-select-trigger {
+  justify-content: space-between;
+  max-width: none;
+  min-height: var(--control-h-lg);
+  border-radius: var(--radius-md);
+}
+
+.research-recap-dialog-controls .launcher-select-value {
+  text-align: left;
+}
+
+.research-recap-model-suggestions {
+  max-height: min(240px, calc(100vh - 24px));
+  overflow-y: auto;
+}
+
+.research-recap-dialog-status {
+  gap: 7px;
+}
+
+.research-recap-comparison {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.research-recap-comparison-divider {
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--surface-divider);
+}
+
+.research-recap-comparison section {
+  min-width: 0;
+  padding: 0;
+}
+
+.research-recap-comparison section + section {
+  padding-top: 14px;
+  border-top: 1px solid var(--surface-divider);
+}
+
+.research-recap-comparison .research-recap-candidate p {
+  color: var(--text-strong);
+}
+
+.research-recap-comparison section.is-empty p {
+  color: var(--text-secondary);
+  opacity: 0.75;
+}
+
+.research-recap-comparison h3 {
+  margin: 0 0 6px;
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+}
+
+.research-recap-comparison p {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 620px) {
+  .research-recap-dialog-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .research-response-content-root {
   --transcript-font-delta: var(--research-answer-font-delta);
   --transcript-line-height-delta: 0.12;

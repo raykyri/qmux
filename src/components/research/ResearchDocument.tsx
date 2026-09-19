@@ -116,6 +116,7 @@ import {
   ResearchSidebarRestoreButton,
 } from "./ResearchDocumentChrome";
 import ResearchRecap from "./ResearchRecap";
+import ResearchRecapDialog from "./ResearchRecapDialog";
 import {
   ResearchMessageBody,
   ResearchUserMessage,
@@ -214,8 +215,8 @@ const FOLLOWUP_MODE_OPTIONS: {
 ];
 
 const FOLLOWUP_MENU_WIDTH = 230;
-const FOLLOWUP_MENU_HEIGHT = 154;
-const DOCUMENT_MENU_HEIGHT = 196;
+const FOLLOWUP_MENU_HEIGHT = 188;
+const DOCUMENT_MENU_HEIGHT = 230;
 const FOLLOWUP_MENU_MARGIN = 8;
 
 interface FollowupMenu {
@@ -1654,6 +1655,17 @@ const ThreadSegment = memo(function ThreadSegment({
       ref={(element) => registerSegmentElement(node.id, "anchor", element)}
       className={`research-thread-segment${isSelected ? " is-selected" : ""}`}
       data-segment-anchor={node.id}
+      onContextMenu={(event) => {
+        // Links, images and other nested controls own a more specific context
+        // menu and mark the event handled. Everywhere else in the
+        // question-and-answer segment opens the research item menu.
+        if (event.defaultPrevented) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        onOpenFollowupMenu(node.id, event.clientX, event.clientY);
+      }}
     >
       <ResearchSegmentPrompt
         visible={!view.isDocument && !view.isConversation}
@@ -1792,6 +1804,7 @@ function ResearchDocument({
   const [deletingBranchId, setDeletingBranchId] = useState<string | null>(null);
   const [removingBranch, setRemovingBranch] = useState(false);
   const [documentEditSession, setDocumentEditSession] = useState<DocumentEditSession | null>(null);
+  const [recapDialogNodeId, setRecapDialogNodeId] = useState<string | null>(null);
   const [branchRemovalError, setBranchRemovalError] = useState<string | null>(null);
   const [contentLoadNonce, setContentLoadNonce] = useState(0);
   // Per-node reading state for the rendered thread: which segments show their
@@ -2450,6 +2463,11 @@ function ResearchDocument({
         Math.min(clientY, window.innerHeight - menuHeight - FOLLOWUP_MENU_MARGIN),
       ),
     });
+  }, []);
+
+  const openRecapDialog = useCallback((nodeId: string) => {
+    setFollowupMenu(null);
+    setRecapDialogNodeId(nodeId);
   }, []);
 
   const followupMenuStateRef = useRef(followupMenu);
@@ -5482,6 +5500,12 @@ function ResearchDocument({
               const nodeName = (node.title ?? node.prompt) || detail.tree.title;
               const menuView = viewForNode(node.id);
               const menuContent = contentByNode[node.id] ?? null;
+              // Only a completed answer that already carries a summary can
+              // replace it: the dialog compares the candidate against a current
+              // summary, and the automatic job owns the first one.
+              const canRegenerateMenuRecap = Boolean(
+                !archived && menuContent?.responseRevision && menuContent.node.recap?.text.trim(),
+              );
               return createPortal(
                 <div
                   ref={followupMenuRef}
@@ -5574,6 +5598,12 @@ function ResearchDocument({
                         <span>Retry run</span>
                       </button>
                     ) : null}
+                    {canRegenerateMenuRecap ? (
+                      <Button role="menuitem" onClick={() => openRecapDialog(node.id)}>
+                        <RefreshCw size={13} aria-hidden="true" />
+                        <span>Generate summary</span>
+                      </Button>
+                    ) : null}
                     <div className="context-menu-divider" role="separator" />
                     {rootNode && node.kind === "document" ? (
                       <>
@@ -5656,6 +5686,21 @@ function ResearchDocument({
               document.body,
             )
           : null}
+        {recapDialogNodeId && contentByNode[recapDialogNodeId]?.node.recap ? (
+          <ResearchRecapDialog
+            content={contentByNode[recapDialogNodeId]}
+            onClose={() => setRecapDialogNodeId(null)}
+            onApplied={(updatedNode) => {
+              setContentByNode((current) => {
+                const content = current[updatedNode.id];
+                return content
+                  ? { ...current, [updatedNode.id]: { ...content, node: updatedNode } }
+                  : current;
+              });
+              onToast("Summary updated");
+            }}
+          />
+        ) : null}
         {highlightAction
           ? createPortal(
               <div

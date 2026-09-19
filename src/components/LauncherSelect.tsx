@@ -33,12 +33,19 @@ interface LauncherSelectProps {
   options: LauncherSelectOption[];
   onChange: (value: string) => void;
   ariaLabel?: string;
+  disabled?: boolean;
 }
 
 const launcherPopoverWidth = (trigger: HTMLElement, popover: HTMLElement) =>
   Math.max(trigger.getBoundingClientRect().width, popover.scrollWidth);
 
-export function LauncherSelect({ value, options, onChange, ariaLabel }: LauncherSelectProps) {
+export function LauncherSelect({
+  value,
+  options,
+  onChange,
+  ariaLabel,
+  disabled = false,
+}: LauncherSelectProps) {
   const [open, setOpen] = useState(false);
   const generatedId = useId();
   const listboxId = `launcher-select-${generatedId}`;
@@ -52,6 +59,10 @@ export function LauncherSelect({ value, options, onChange, ariaLabel }: Launcher
     popoverRef,
     preferredWidth: launcherPopoverWidth,
   });
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
 
   useEffect(() => {
     if (listbox.selectedOption || options.length === 0) return;
@@ -84,7 +95,7 @@ export function LauncherSelect({ value, options, onChange, ariaLabel }: Launcher
             ? `${listboxId}-option-${listbox.activeIndex}`
             : undefined
         }
-        disabled={listbox.empty}
+        disabled={disabled || listbox.empty}
         onClick={() => (open ? listbox.closeListbox() : listbox.openListbox())}
         onKeyDown={listbox.handleKeyDown}
       >
@@ -94,7 +105,7 @@ export function LauncherSelect({ value, options, onChange, ariaLabel }: Launcher
         <span className="launcher-select-value">{selected?.label}</span>
         <ChevronDown size={13} className="launcher-select-chevron" aria-hidden="true" />
       </Button>
-      {open ? (
+      {open && !disabled ? (
         <PopoverPortal target={triggerRef.current?.closest(".confirm-dialog-backdrop")}>
           <Popover
             ref={popoverRef}
