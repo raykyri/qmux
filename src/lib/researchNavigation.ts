@@ -40,6 +40,9 @@ export interface SavedResearchNavigation {
   askByNode?: Record<string, SavedResearchAsk>;
   /** In-progress text in the ordinary thread/branch composer. */
   followupDraft?: SavedResearchFollowupDraft;
+  /** A highlight to scroll into view on the next page visit (set when a
+   * Highlights feed unit is opened). Cleared once the document lands on it. */
+  focusHighlight?: { nodeId: string; highlightId: string };
 }
 
 const RESEARCH_NAVIGATION_KEY = "qmux.research-navigation.v1";
@@ -146,6 +149,16 @@ function load(): Record<string, SavedResearchNavigation> {
                 updatedAt: candidate.followupDraft.updatedAt,
               }
             : undefined;
+        const focusHighlight =
+          candidate.focusHighlight &&
+          typeof candidate.focusHighlight === "object" &&
+          typeof candidate.focusHighlight.nodeId === "string" &&
+          typeof candidate.focusHighlight.highlightId === "string"
+            ? {
+                nodeId: candidate.focusHighlight.nodeId,
+                highlightId: candidate.focusHighlight.highlightId,
+              }
+            : undefined;
         return [[treeId, {
           selectedNodeId:
             typeof candidate.selectedNodeId === "string" ? candidate.selectedNodeId : undefined,
@@ -153,6 +166,7 @@ function load(): Record<string, SavedResearchNavigation> {
           ...(Object.keys(expandedByNode).length > 0 ? { expandedByNode } : {}),
           ...(Object.keys(askByNode).length > 0 ? { askByNode } : {}),
           ...(followupDraft ? { followupDraft } : {}),
+          ...(focusHighlight ? { focusHighlight } : {}),
         } satisfies SavedResearchNavigation]];
       }),
     );

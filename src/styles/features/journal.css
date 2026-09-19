@@ -409,10 +409,138 @@
 
 /* — Sidebar tab above the Research heading — */
 
-/* Match the scrollable research section's horizontal padding while keeping
-   Recent Activity fixed above it, then leave the gap before the Research heading. */
+/* Match the scrollable research section's horizontal padding while keeping the
+   journal pages fixed above it, then leave the gap before the Research
+   heading. */
+.journal-sidebar-rows {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+
 .journal-sidebar-row {
   width: calc(100% - 14px);
   margin-inline: 7px;
-  margin-bottom: 8px;
+}
+
+/* — Highlights feed — */
+
+/* Highlight units share Home's column and inset. Each shows the saved passage
+   inside its stored context with the highlighted span marked, under day
+   headers, then names its thread and time on a footer line. */
+.research-highlights-column {
+  padding-top: 26px;
+}
+
+.research-highlights-list {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding-inline: var(--journal-content-padding);
+}
+
+.research-highlight-unit {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.research-highlight-day {
+  margin: 6px 0 4px;
+  color: var(--text-subtle);
+  font-size: calc(var(--research-meta-font-size) - 1px);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.research-highlight-unit:first-child .research-highlight-day {
+  margin-top: 0;
+}
+
+.research-highlight-excerpt {
+  max-width: 640px;
+  color: var(--text-subtle);
+  font-size: var(--research-body-font-size);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.research-highlight-context {
+  transition: color var(--transition-fast);
+}
+
+.research-highlight-unit:hover .research-highlight-context {
+  color: var(--text-activity);
+}
+
+/* Same gold wash as the in-answer highlight pseudo, so the passage keeps the
+   same visual identity it has in the thread. */
+.research-highlight-mark {
+  /* No vertical padding, unlike the in-answer wash: at the feed's line-height
+     the 2px spread alone already reaches the adjacent line's wash. */
+  padding: 0;
+  border-radius: 2px;
+  color: var(--text-body-soft);
+  background: var(--research-highlight-bg);
+  box-shadow: 0 0 0 2px var(--research-highlight-bg);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  transition: background-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.research-highlight-unit:hover .research-highlight-mark {
+  background: var(--research-highlight-bg-hover);
+  box-shadow: 0 0 0 2px var(--research-highlight-bg-hover);
+}
+
+.research-highlight-excerpt:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.research-highlight-footer {
+  display: flex;
+  align-items: center;
+  /* Keeps a truncated label clear of the right-aligned timestamp. */
+  gap: 16px;
+  min-width: 0;
+  max-width: 640px;
+  color: var(--text-subtle);
+  font-size: var(--research-meta-font-size);
+  line-height: var(--research-meta-line-height);
+  white-space: nowrap;
+}
+
+/* Block display (not the control's inline-flex) so a long thread › node label
+   truncates with an ellipsis instead of centering and spilling past both edges. */
+.research-highlight-source {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  overflow: hidden;
+  color: var(--text-activity);
+  font-size: inherit;
+  line-height: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+}
+
+.research-highlight-source:hover {
+  color: var(--text-secondary);
+}
+
+.research-highlight-footer time {
+  flex: none;
+  margin-left: auto;
 }

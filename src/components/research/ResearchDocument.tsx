@@ -1875,6 +1875,9 @@ function ResearchDocument({
   const modeMenuRef = useRef<HTMLDivElement | null>(null);
   // Resolved highlight ranges per segment, refreshed by the paint effect.
   const resolvedHighlightsRef = useRef(new Map<string, ResolvedHighlight[]>());
+  // Bumped after each highlight paint so the focus-highlight effect below
+  // observes freshly resolved ranges.
+  const [highlightPaintVersion, setHighlightPaintVersion] = useState(0);
   // Flat-offset ranges of the query-anchor passages that resolved, tagged
   // with their owning segment, refreshed by the anchor paint effect.
   // Consulted by passage-side pointer hit-testing and connector measurement.
@@ -3357,6 +3360,9 @@ function ResearchDocument({
     // Nothing resolvable (no content yet, or no Highlight API at all) is not
     // "hidden highlights" — segments without entries keep a quiet footer.
     setHiddenHighlightsByNode((current) => (sameCardTops(current, hidden) ? current : hidden));
+    if (treeId && navigationRef.current[treeId]?.focusHighlight) {
+      setHighlightPaintVersion((version) => version + 1);
+    }
     // Keyed on the revisions and highlight-id lists rather than contentByNode
     // identity: a streaming segment's 1s poll replaces the map every second,
     // and repainting would re-walk every settled segment's text nodes each
@@ -3373,6 +3379,57 @@ function ResearchDocument({
     highlightDomNonce,
     segmentRoot,
   ]);
+
+  // Land on the highlight a Highlights feed unit was opened from: once the
+  // page visit has restored (so the saved offset cannot overwrite this scroll)
+  // and the passage has been painted, scroll it a third of the way down the
+  // viewport and clear the request. A highlight that no longer exists or
+  // cannot be relocated clears the request too, leaving the segment itself in
+  // view.
+  useLayoutEffect(() => {
+    if (!treeId || restoredChainRef.current === null || !documentScrollRef.current) {
+      return;
+    }
+    const navigation = navigationRef.current[treeId];
+    const focus = navigation?.focusHighlight;
+    if (!navigation || !focus) {
+      return;
+    }
+    const segmentContent = contentByNode[focus.nodeId];
+    if (!segmentContent?.responseRevision) {
+      return;
+    }
+    const clear = () => {
+      delete navigation.focusHighlight;
+      saveResearchNavigation();
+    };
+    const resolved = resolvedHighlightsRef.current
+      .get(focus.nodeId)
+      ?.find(({ highlight }) => highlight.id === focus.highlightId);
+    const root = segmentRoot(focus.nodeId);
+    if (!resolved || !root) {
+      const stillExists = segmentContent.node.highlights?.some(
+        (highlight) => highlight.id === focus.highlightId,
+      );
+      if (!stillExists || resolvedHighlightsRef.current.has(focus.nodeId)) {
+        // Removed since it was listed, or present but unresolvable here.
+        clear();
+        scrollToSegment(focus.nodeId, "auto");
+      }
+      return;
+    }
+    const range = rangeForTextOffsets(root, resolved.start, resolved.end);
+    if (!range) {
+      clear();
+      scrollToSegment(focus.nodeId, "auto");
+      return;
+    }
+    const scroller = documentScrollRef.current;
+    const scrollerRect = scroller.getBoundingClientRect();
+    const rect = range.getBoundingClientRect();
+    scroller.scrollTop += rect.top - scrollerRect.top - Math.max(72, scrollerRect.height / 3);
+    clear();
+  }, [contentByNode, highlightPaintVersion, scrollToSegment, segmentRoot, treeId]);
 
   // Paint the passages that targeted follow-ups (and an in-progress ask) were
   // asked about, and resolve each follow-up's rail offset so its card can sit

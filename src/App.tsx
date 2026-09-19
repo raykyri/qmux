@@ -175,6 +175,7 @@ import {
 import ResearchDocument from "./components/research/ResearchDocument";
 import ExportToResearchDialog from "./components/research/ExportToResearchDialog";
 import ResearchActivityFeed from "./components/research/ResearchActivityFeed";
+import ResearchHighlightsFeed from "./components/research/ResearchHighlightsFeed";
 import {
   normalizeNotificationLog,
   type NotificationLogEntry,
@@ -456,6 +457,7 @@ import {
   RESEARCH_HOME_TAB_ID,
   researchCycleTabIds,
   researchJournalViewFromTabId,
+  type ResearchJournalView,
   researchTreeIdFromTabId,
   researchTreeTabId,
   SIDEBAR_MODE_STORAGE_KEY,
@@ -544,6 +546,7 @@ import {
   forkResearchNode,
   markResearchTreeViewed,
   renameResearchNode,
+  listResearchHighlights,
   renameResearchTree,
   setResearchTreeBookmarked,
   setResearchTreeFollowed,
@@ -696,6 +699,7 @@ import type {
   RecentActivityCursor,
   RecentResearchQuery,
   ResearchHighlightAnchor,
+  ResearchHighlightFeedItem,
   ResearchNode,
   ResearchTreeDetail,
   ResearchTreeSummary,
@@ -3558,10 +3562,16 @@ function MainApp() {
           : ("document" as const);
   const researchStageViewRef = useRef(researchStageView);
   researchStageViewRef.current = researchStageView;
-  // Whether the Home page is the forward research view. The inline composer
-  // and everything that used to hang off the research modal's open flag key
-  // off this instead: Home is a page, not a modal.
-  const researchHomeVisible = researchStageView === "journal";
+  // Which list the journal surface shows: Home (everything), Bookmarks, or
+  // Highlights. The three are pages of the same stage view, so the stage
+  // selector stays a single "journal" branch.
+  const [journalView, setJournalView] = useState<ResearchJournalView>("home");
+  // Whether the Home page itself is the one currently shown. The inline
+  // composer and everything that used to hang off the research modal's open
+  // flag key off this instead: Home is a page, not a modal. Its sibling
+  // journal pages (Bookmarks, Highlights) carry no composer, so they read as
+  // Home not being visible.
+  const researchHomeVisible = researchStageView === "journal" && journalView === "home";
   // Menu badges and the folder-replace dialog both count every tree that keeps
   // a folder alive, so archived trees are included (removal is blocked on them).
   const researchFolderTreeCounts = useMemo(() => {
@@ -9090,19 +9100,34 @@ function MainApp() {
     },
     [recordResearchWorkspaceVisit, selectResearchTree],
   );
-  const openRecentResearchQuery = useCallback(
-    (query: RecentResearchQuery) => {
+  const openResearchNode = useCallback(
+    (treeId: string, nodeId: string) => {
       const navigationStore = researchNavigationStore();
-      const navigation = navigationStore[query.treeId] ?? { scrollByNode: {} };
-      navigation.selectedNodeId = query.nodeId;
-      navigationStore[query.treeId] = navigation;
+      const navigation = navigationStore[treeId] ?? { scrollByNode: {} };
+      navigation.selectedNodeId = nodeId;
+      navigationStore[treeId] = navigation;
       saveResearchNavigation();
-      if (archivedResearchTreesRef.current.some((tree) => tree.id === query.treeId)) {
+      if (archivedResearchTreesRef.current.some((tree) => tree.id === treeId)) {
         changeResearchVisibilityFilter("all");
       }
-      navigateToResearchDocument(query.treeId);
+      navigateToResearchDocument(treeId);
     },
     [changeResearchVisibilityFilter, navigateToResearchDocument],
+  );
+  const openRecentResearchQuery = useCallback(
+    (query: RecentResearchQuery) => openResearchNode(query.treeId, query.nodeId),
+    [openResearchNode],
+  );
+  const openResearchHighlight = useCallback(
+    (item: ResearchHighlightFeedItem) => {
+      // Recorded before navigation so the document's page-visit restore can
+      // land on the passage instead of the saved scroll offset.
+      const navigationStore = researchNavigationStore();
+      const navigation = (navigationStore[item.treeId] ??= { scrollByNode: {} });
+      navigation.focusHighlight = { nodeId: item.nodeId, highlightId: item.highlightId };
+      openResearchNode(item.treeId, item.nodeId);
+    },
+    [openResearchNode],
   );
   /** An applied summary candidate reaches every surface that already holds the
    * node: the open document, the research activity list, and the Home feed. */
@@ -9152,6 +9177,7 @@ function MainApp() {
     }
   }, [selectResearchTree]);
   const focusResearchHome = useCallback(() => {
+    setJournalView("home");
     recordResearchJournalVisit();
     // Invalidate a tree request that may still be landing while Home is
     // selected; otherwise its detail can repaint behind the composer.
@@ -9201,9 +9227,50 @@ function MainApp() {
     setJournalOpen(true);
   }, [dismissPristineNewDocumentComposer, setActiveSurface, setJournalOpen, setSidebarMode]);
   const openJournal = useCallback(() => {
+    setJournalView("home");
     recordResearchJournalVisit();
     showJournal();
   }, [recordResearchJournalVisit, showJournal]);
+  const showHighlights = useCallback(() => {
+    setJournalView("highlights");
+    recordResearchJournalVisit();
+    showJournal();
+  }, [recordResearchJournalVisit, showJournal]);
+  // The Highlights feed is fetched whole (highlights are few and unpaged).
+  // Highlight, node, and tree events bump the version so an open feed refetches.
+  const [researchHighlightItems, setResearchHighlightItems] = useState<
+    ResearchHighlightFeedItem[]
+  >([]);
+  const [researchHighlightsLoading, setResearchHighlightsLoading] = useState(false);
+  const [researchHighlightsError, setResearchHighlightsError] = useState<string | null>(null);
+  const [researchHighlightsVersion, setResearchHighlightsVersion] = useState(0);
+  const researchHighlightsRequestSeqRef = useRef(0);
+  const refreshResearchHighlights = useCallback(async () => {
+    const requestSeq = researchHighlightsRequestSeqRef.current + 1;
+    researchHighlightsRequestSeqRef.current = requestSeq;
+    setResearchHighlightsLoading(true);
+    try {
+      const items = await listResearchHighlights();
+      if (researchHighlightsRequestSeqRef.current !== requestSeq) return;
+      setResearchHighlightItems(items);
+      setResearchHighlightsError(null);
+    } catch (err) {
+      if (researchHighlightsRequestSeqRef.current !== requestSeq) return;
+      setResearchHighlightsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (researchHighlightsRequestSeqRef.current === requestSeq) {
+        setResearchHighlightsLoading(false);
+      }
+    }
+  }, []);
+  const highlightsFeedVisible = researchStageView === "journal" && journalView === "highlights";
+  useEffect(() => {
+    if (!highlightsFeedVisible) return;
+    void refreshResearchHighlights();
+  }, [highlightsFeedVisible, refreshResearchHighlights, researchHighlightsVersion]);
+  const invalidateResearchHighlights = useCallback(() => {
+    setResearchHighlightsVersion((version) => version + 1);
+  }, []);
   // ⌘N and the sidebar's new-query button. The composer is the first row of the
   // Home page rather than a dialog, so starting a query is a navigation: bring
   // Home forward, then put the cursor in its prompt.
@@ -10099,6 +10166,7 @@ function MainApp() {
         }
         case "research.tree.archived":
         case "research.tree.restored": {
+          invalidateResearchHighlights();
           invalidateNavigationSnapshot();
           invalidateVisibleDetailSnapshot(event.tree.id);
           setActiveResearchDetail((current) => patchResearchDetailTree(current, event.tree));
@@ -10126,6 +10194,7 @@ function MainApp() {
           setActiveResearchDetail((current) =>
             patchResearchDetailHighlightCreated(current, event.nodeId, event.highlight),
           );
+          invalidateResearchHighlights();
           break;
         }
         case "research.highlight.removed":
@@ -10145,9 +10214,11 @@ function MainApp() {
           setActiveResearchDetail((current) =>
             patchResearchDetailHighlightsRemoved(current, event.nodeId, highlightIds),
           );
+          invalidateResearchHighlights();
           break;
         }
         case "research.node.removed": {
+          invalidateResearchHighlights();
           invalidateNavigationSnapshot();
           invalidateVisibleDetailSnapshot(event.treeId);
           const removedIds = new Set(event.removedNodeIds);
@@ -10181,6 +10252,7 @@ function MainApp() {
           break;
         }
         case "research.tree.removed": {
+          invalidateResearchHighlights();
           invalidateNavigationSnapshot();
           removedResearchTreeIdsRef.current.add(event.treeId);
           const pendingTimer = researchTreeRecoveryTimersRef.current.get(event.treeId);
@@ -10229,6 +10301,7 @@ function MainApp() {
     [
       commitResearchFolderState,
       focusResearchHome,
+      invalidateResearchHighlights,
       pruneResearchWorkspaceVisits,
       scheduleResearchRefresh,
       scheduleResearchNavigationRecovery,
@@ -16327,33 +16400,54 @@ function MainApp() {
           className={`pane-list${draggingPaneId || draggingGroupId ? " is-dragging" : ""}`}
           aria-label={sidebarMode === "terminal" ? "Terminal tabs" : "Research"}
         >
-          {/* Home uses the same row/select/copy nesting every research row
-              uses. Its fixed-row inset mirrors the scrollable research section
-              below. */}
+          {/* The journal pages use the same row/select/copy nesting every
+              research row uses. Their fixed inset mirrors the scrollable
+              research section below. */}
           {sidebarMode === "research" ? (
-            <div
-              className={`research-sidebar-row journal-sidebar-row${
-                researchHomeVisible ? " is-selected" : ""
-              }`}
-            >
-              <button
-                type="button"
-                className="control-button research-sidebar-select"
-                aria-current={researchHomeVisible ? "page" : undefined}
-                title={`Home (${RESEARCH_HOME_SHORTCUT_LABEL})`}
-                onClick={openJournal}
+            <div className="journal-sidebar-rows">
+              <div
+                className={`research-sidebar-row journal-sidebar-row${
+                  researchHomeVisible ? " is-selected" : ""
+                }`}
               >
-                <span className="research-sidebar-copy">
-                  <span className="research-sidebar-title">
-                    <span className="research-sidebar-title-text">Home</span>
+                <button
+                  type="button"
+                  className="control-button research-sidebar-select"
+                  aria-current={researchHomeVisible ? "page" : undefined}
+                  title={`Home (${RESEARCH_HOME_SHORTCUT_LABEL})`}
+                  onClick={openJournal}
+                >
+                  <span className="research-sidebar-copy">
+                    <span className="research-sidebar-title">
+                      <span className="research-sidebar-title-text">Home</span>
+                    </span>
                   </span>
-                </span>
-              </button>
-              {shortcutHintsShown ? (
-                <span className="pane-tab-shortcut-hint" aria-hidden="true">
-                  {RESEARCH_HOME_SHORTCUT_LABEL}
-                </span>
-              ) : null}
+                </button>
+                {shortcutHintsShown ? (
+                  <span className="pane-tab-shortcut-hint" aria-hidden="true">
+                    {RESEARCH_HOME_SHORTCUT_LABEL}
+                  </span>
+                ) : null}
+              </div>
+              <div
+                className={`research-sidebar-row journal-sidebar-row${
+                  highlightsFeedVisible ? " is-selected" : ""
+                }`}
+              >
+                <button
+                  type="button"
+                  className="control-button research-sidebar-select"
+                  aria-current={highlightsFeedVisible ? "page" : undefined}
+                  title="Highlights"
+                  onClick={showHighlights}
+                >
+                  <span className="research-sidebar-copy">
+                    <span className="research-sidebar-title">
+                      <span className="research-sidebar-title-text">Highlights</span>
+                    </span>
+                  </span>
+                </button>
+              </div>
             </div>
           ) : null}
           {sidebarMode === "research" ? (
@@ -19222,7 +19316,20 @@ function MainApp() {
               <span>{researchMultiSelection.length} research items selected</span>
             </div>
           ) : null}
-          {researchStageView === "journal" && config ? (
+          {highlightsFeedVisible ? (
+            <ResearchHighlightsFeed
+              items={researchHighlightItems}
+              loading={researchHighlightsLoading}
+              error={researchHighlightsError}
+              onOpen={openResearchHighlight}
+              onRefresh={() => void refreshResearchHighlights()}
+              canGoBack={canGoWorkspaceBack(researchWorkspaceHistory)}
+              canGoForward={canGoWorkspaceForward(researchWorkspaceHistory)}
+              onBack={goResearchWorkspaceBack}
+              onForward={goResearchWorkspaceForward}
+            />
+          ) : null}
+          {researchStageView === "journal" && config && !highlightsFeedVisible ? (
             <ResearchActivityFeed
               {...activityFeedState}
               composer={
