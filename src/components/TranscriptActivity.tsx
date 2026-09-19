@@ -76,12 +76,14 @@ export function serializeActivityValue(value: unknown, maxCharacters?: number) {
 
 export function TranscriptActivityItem({
   item,
+  className,
   isRootActivity = false,
   maxPayloadCharacters,
   deferPayloads = false,
   showResultTokenCount = true,
 }: {
   item: ActivityItem;
+  className?: string;
   isRootActivity?: boolean;
   maxPayloadCharacters?: number;
   deferPayloads?: boolean;
@@ -92,6 +94,7 @@ export function TranscriptActivityItem({
       return (
         <ToolEntryView
           entry={item}
+          className={className}
           showChevron={!isRootActivity}
           maxPayloadCharacters={maxPayloadCharacters}
           showResultTokenCount={showResultTokenCount}
@@ -101,6 +104,7 @@ export function TranscriptActivityItem({
       return (
         <ThinkingView
           item={item}
+          className={className}
           showChevron={!isRootActivity}
           maxPayloadCharacters={maxPayloadCharacters}
           deferPayloads={deferPayloads}
@@ -110,6 +114,7 @@ export function TranscriptActivityItem({
       return (
         <ActivityGroupView
           group={item}
+          className={className}
           showChevron={!isRootActivity}
           maxPayloadCharacters={maxPayloadCharacters}
           deferPayloads={deferPayloads}
@@ -121,12 +126,14 @@ export function TranscriptActivityItem({
 
 function ActivityGroupView({
   group,
+  className,
   showChevron,
   maxPayloadCharacters,
   deferPayloads,
   showResultTokenCount,
 }: {
   group: ActivityGroupItem;
+  className?: string;
   showChevron: boolean;
   maxPayloadCharacters?: number;
   deferPayloads: boolean;
@@ -134,7 +141,7 @@ function ActivityGroupView({
 }) {
   return (
     <details
-      className={`activity-group-block${showChevron ? "" : " is-root-activity"}${timelineStatusClass(
+      className={`activity-group-block${className ? ` ${className}` : ""}${showChevron ? "" : " is-root-activity"}${timelineStatusClass(
         group.status,
       )}`}
     >
@@ -265,11 +272,13 @@ function capitalizeSentence(label: string) {
 
 function ToolEntryView({
   entry,
+  className,
   showChevron,
   maxPayloadCharacters,
   showResultTokenCount,
 }: {
   entry: ToolEntry;
+  className?: string;
   showChevron: boolean;
   maxPayloadCharacters?: number;
   showResultTokenCount: boolean;
@@ -280,7 +289,7 @@ function ToolEntryView({
   const [expanded, setExpanded] = useState(false);
   return (
     <details
-      className={`tool-block tool-pair${entry.isError ? " is-error" : ""}${
+      className={`tool-block tool-pair${className ? ` ${className}` : ""}${entry.isError ? " is-error" : ""}${
         showChevron ? "" : " is-root-activity"
       }${timelineStatusClass(entry.status)}`}
       onToggle={(event) => setExpanded(event.currentTarget.open)}
@@ -367,11 +376,13 @@ function ToolPayload({
 
 function ThinkingView({
   item,
+  className,
   showChevron,
   maxPayloadCharacters,
   deferPayloads,
 }: {
   item: ThinkingItem;
+  className?: string;
   showChevron: boolean;
   maxPayloadCharacters?: number;
   deferPayloads: boolean;
@@ -379,7 +390,7 @@ function ThinkingView({
   const [expanded, setExpanded] = useState(false);
   return (
     <details
-      className={`thinking-block${showChevron ? "" : " is-root-activity"}${timelineStatusClass(
+      className={`thinking-block${className ? ` ${className}` : ""}${showChevron ? "" : " is-root-activity"}${timelineStatusClass(
         item.status,
       )}`}
       onToggle={
@@ -420,17 +431,19 @@ function ThinkingView({
 
 export function RawTranscriptDisclosure({
   value,
+  className,
   maxPayloadCharacters,
   deferPayload = false,
 }: {
   value: unknown;
+  className?: string;
   maxPayloadCharacters?: number;
   deferPayload?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   return (
     <details
-      className="tool-block"
+      className={`tool-block${className ? ` ${className}` : ""}`}
       onToggle={deferPayload ? (event) => setExpanded(event.currentTarget.open) : undefined}
     >
       <summary>

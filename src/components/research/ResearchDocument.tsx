@@ -5447,7 +5447,10 @@ function ResearchDocument({
             className="research-document-scroll"
             onScroll={recordScroll}
           >
-            <div ref={contentContainerRef} className="research-document-content">
+            <div
+              ref={contentContainerRef}
+              className="research-document-content research-reading-surface"
+            >
               {renderedSegments}
               {!ask ? (
                 <div className="research-response-grid research-thread-composer-row">
