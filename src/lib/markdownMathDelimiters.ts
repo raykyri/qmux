@@ -1,9 +1,9 @@
-interface MarkdownFence {
+export interface MarkdownFence {
   marker: "`" | "~";
   length: number;
 }
 
-function markerRunAtLineStart(line: string): { marker: "`" | "~"; length: number } | null {
+export function markerRunAtLineStart(line: string): { marker: "`" | "~"; length: number } | null {
   const match = /^ {0,3}(`{3,}|~{3,})/.exec(line);
   const run = match?.[1];
   if (!run) {
@@ -12,7 +12,7 @@ function markerRunAtLineStart(line: string): { marker: "`" | "~"; length: number
   return { marker: run[0] as "`" | "~", length: run.length };
 }
 
-function closesFence(line: string, fence: MarkdownFence): boolean {
+export function closesFence(line: string, fence: MarkdownFence): boolean {
   const indentation = /^ {0,3}/.exec(line)?.[0].length ?? 0;
   let cursor = indentation;
   while (line[cursor] === fence.marker) {
