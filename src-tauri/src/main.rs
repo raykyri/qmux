@@ -1753,6 +1753,7 @@ async fn create_research_tree(
     request: CreateResearchTreeRequest,
 ) -> Result<ResearchTreeDetail, String> {
     let state = state.inner().clone();
+    let attachments = tweets::resolve_research_message_attachments(&request.prompt).await;
     tauri::async_runtime::spawn_blocking(move || {
         // Probe before inserting a tree or reserving an agent. The frontend
         // performs the same preflight before creating a default workspace, but
@@ -1765,7 +1766,7 @@ async fn create_research_tree(
         let detail = {
             let _guard = workspace::lock_research_workspace_mutations()?;
             validate_launch_workspace(&state, Some(&request.group_id), LaunchOrigin::Research)?;
-            state.create_research_tree(request)?
+            state.create_research_tree_with_attachments(request, attachments)?
         };
         let root = detail
             .nodes
@@ -1787,7 +1788,7 @@ async fn create_research_tree(
             &root.adapter,
             root.model.clone(),
             root.effort.clone(),
-            root.prompt.clone(),
+            tweets::prompt_with_research_attachments(root.prompt.clone(), &root.attachments),
         ) {
             Ok(_) => state.research_tree(&detail.tree.id),
             Err(err) => {
@@ -2132,6 +2133,13 @@ async fn fork_research_node(
 ) -> Result<ResearchNode, String> {
     let state = state.inner().clone();
     let inline = inline.unwrap_or(false);
+    // An accepted community proposal is the proposer's text, not a prompt the
+    // owner authored here, so it never resolves attachments of its own.
+    let attachments = if publication_proposal.is_none() {
+        tweets::resolve_research_message_attachments(&prompt).await
+    } else {
+        Vec::new()
+    };
     tauri::async_runtime::spawn_blocking(move || {
         if inline && publication_proposal.is_some() {
             return Err("community proposals become branches, not inline follow-ups".to_string());
@@ -2148,9 +2156,13 @@ async fn fork_research_node(
                 Some(proposal) => {
                     state.create_research_child_for_proposal(&parent_node_id, prompt, proposal)?
                 }
-                None => {
-                    state.create_research_child(&parent_node_id, prompt, query_anchor, inline)?
-                }
+                None => state.create_research_child(
+                    &parent_node_id,
+                    prompt,
+                    query_anchor,
+                    inline,
+                    attachments,
+                )?,
             };
             (parent, workspace, child)
         };
@@ -2173,13 +2185,14 @@ fn launch_research_child_run(
     workspace: &GroupInfo,
     child: &ResearchNode,
 ) -> Result<ResearchNode, String> {
+    let prompt = tweets::prompt_with_research_attachments(child.prompt.clone(), &child.attachments);
     // A highlight-targeted follow-up sends the quoted passage with the
     // question. Only the sent prompt carries the quote — the child's
     // displayed prompt stays the bare question, which boundary matching
     // still finds as a normalized substring of the sent prompt.
     let question = match &child.query_anchor {
-        Some(anchor) => research::query_followup_prompt(&anchor.exact, &child.prompt),
-        None => child.prompt.clone(),
+        Some(anchor) => research::query_followup_prompt(&anchor.exact, &prompt),
+        None => prompt,
     };
     // Exhaustive on purpose: each kind must pick its launch path
     // explicitly, so a new kind (or lifting a refusal in
@@ -2225,7 +2238,7 @@ fn launch_research_child_run(
             // `question` the other kinds share.
             let launch_prompt = state.research_conversation_followup_prompt(
                 &parent.id,
-                &child.prompt,
+                &tweets::prompt_with_research_attachments(child.prompt.clone(), &child.attachments),
                 child.query_anchor.as_ref(),
             );
             let launch_prompt = match launch_prompt {
@@ -2390,7 +2403,7 @@ async fn retry_research_node(
                 &node.adapter,
                 node.model.clone(),
                 node.effort.clone(),
-                node.prompt.clone(),
+                tweets::prompt_with_research_attachments(node.prompt.clone(), &node.attachments),
             ),
             Some(parent_id) => {
                 let parent = match state.research_node(parent_id) {

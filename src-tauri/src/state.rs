@@ -4704,9 +4704,18 @@ impl AppState {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn create_research_tree(
         &self,
         request: CreateResearchTreeRequest,
+    ) -> Result<ResearchTreeDetail, String> {
+        self.create_research_tree_with_attachments(request, Vec::new())
+    }
+
+    pub fn create_research_tree_with_attachments(
+        &self,
+        request: CreateResearchTreeRequest,
+        attachments: Vec<crate::tweets::ResearchMessageAttachment>,
     ) -> Result<ResearchTreeDetail, String> {
         let prompt = request.prompt.trim().to_string();
         if prompt.is_empty() {
@@ -4724,6 +4733,7 @@ impl AppState {
         if request.group_id.trim().is_empty() {
             return Err("research workspace cannot be empty".to_string());
         }
+        crate::tweets::validate_research_message_attachments(&attachments)?;
         let tree_id = self.next_id("research");
         let node_id = self.next_id("research-node");
         let now = now_millis();
@@ -4747,7 +4757,7 @@ impl AppState {
             query_anchor: None,
             inline: false,
             prompt,
-            attachments: Vec::new(),
+            attachments,
             title: None,
             response_preview: None,
             adapter: request.adapter,
@@ -5381,11 +5391,19 @@ impl AppState {
         prompt: String,
         query_anchor: Option<ResearchHighlightAnchor>,
         inline: bool,
+        attachments: Vec<crate::tweets::ResearchMessageAttachment>,
     ) -> Result<ResearchNode, String> {
         if let Some(anchor) = &query_anchor {
             research::validate_highlight_anchor(anchor)?;
         }
-        self.create_research_child_with_options(parent_node_id, prompt, None, query_anchor, inline)
+        self.create_research_child_with_options(
+            parent_node_id,
+            prompt,
+            None,
+            query_anchor,
+            inline,
+            attachments,
+        )
     }
 
     pub fn create_research_child_for_proposal(
@@ -5405,7 +5423,14 @@ impl AppState {
         }
         // Accepted community proposals are always branches: an inline slot is
         // the owner's conversation to continue, not a contribution target.
-        self.create_research_child_with_options(parent_node_id, prompt, Some(proposal), None, false)
+        self.create_research_child_with_options(
+            parent_node_id,
+            prompt,
+            Some(proposal),
+            None,
+            false,
+            Vec::new(),
+        )
     }
 
     fn create_research_child_with_options(
@@ -5415,11 +5440,13 @@ impl AppState {
         publication_proposal: Option<ResearchPublicationProposal>,
         query_anchor: Option<ResearchHighlightAnchor>,
         inline: bool,
+        attachments: Vec<crate::tweets::ResearchMessageAttachment>,
     ) -> Result<ResearchNode, String> {
         let prompt = prompt.trim().to_string();
         if prompt.is_empty() {
             return Err("research prompt cannot be empty".to_string());
         }
+        crate::tweets::validate_research_message_attachments(&attachments)?;
         let node_id = self.next_id("research-node");
         let now = now_millis();
         let node = {
@@ -5512,7 +5539,7 @@ impl AppState {
                 query_anchor,
                 inline,
                 prompt,
-                attachments: Vec::new(),
+                attachments,
                 title: None,
                 response_preview: None,
                 adapter,
@@ -13651,11 +13678,23 @@ mod tests {
         };
         settle(&detail.tree.root_node_id);
         let branch = state
-            .create_research_child(&detail.tree.root_node_id, "Branch".to_string(), None, false)
+            .create_research_child(
+                &detail.tree.root_node_id,
+                "Branch".to_string(),
+                None,
+                false,
+                Vec::new(),
+            )
             .unwrap();
         settle(&branch.id);
         let descendant = state
-            .create_research_child(&branch.id, "Descendant".to_string(), None, false)
+            .create_research_child(
+                &branch.id,
+                "Descendant".to_string(),
+                None,
+                false,
+                Vec::new(),
+            )
             .unwrap();
         state
             .fail_research_node(&descendant.id, "settled".to_string())
@@ -13666,6 +13705,7 @@ mod tests {
                 "Sibling".to_string(),
                 None,
                 false,
+                Vec::new(),
             )
             .unwrap();
         state
@@ -13739,7 +13779,7 @@ mod tests {
         settle(&root_id);
 
         let inline_child = state
-            .create_research_child(&root_id, "Continue".to_string(), None, true)
+            .create_research_child(&root_id, "Continue".to_string(), None, true, Vec::new())
             .unwrap();
         assert!(inline_child.inline);
         // The flag serializes only when set, so pre-existing trees keep their
@@ -13750,13 +13790,13 @@ mod tests {
         // A queued (not yet settled) inline child already holds the slot.
         assert!(
             state
-                .create_research_child(&root_id, "Again".to_string(), None, true)
+                .create_research_child(&root_id, "Again".to_string(), None, true, Vec::new())
                 .unwrap_err()
                 .contains("already has an inline follow-up")
         );
         // Branches are unaffected by the occupied slot and never hold it.
         let branch = state
-            .create_research_child(&root_id, "Aside".to_string(), None, false)
+            .create_research_child(&root_id, "Aside".to_string(), None, false, Vec::new())
             .unwrap();
         assert!(!branch.inline);
         assert!(
@@ -13772,11 +13812,17 @@ mod tests {
         settle(&inline_child.id);
         assert!(
             state
-                .create_research_child(&root_id, "Again".to_string(), None, true)
+                .create_research_child(&root_id, "Again".to_string(), None, true, Vec::new())
                 .is_err()
         );
         let grandchild = state
-            .create_research_child(&inline_child.id, "Deeper".to_string(), None, true)
+            .create_research_child(
+                &inline_child.id,
+                "Deeper".to_string(),
+                None,
+                true,
+                Vec::new(),
+            )
             .unwrap();
         assert!(grandchild.inline);
         assert_eq!(
@@ -13791,13 +13837,25 @@ mod tests {
             .unwrap();
         assert!(
             state
-                .create_research_child(&inline_child.id, "Retry".to_string(), None, true)
+                .create_research_child(
+                    &inline_child.id,
+                    "Retry".to_string(),
+                    None,
+                    true,
+                    Vec::new()
+                )
                 .unwrap_err()
                 .contains("already has an inline follow-up")
         );
         state.remove_research_branch(&grandchild.id).unwrap();
         let retry = state
-            .create_research_child(&inline_child.id, "Retry".to_string(), None, true)
+            .create_research_child(
+                &inline_child.id,
+                "Retry".to_string(),
+                None,
+                true,
+                Vec::new(),
+            )
             .unwrap();
         assert!(retry.inline);
 
@@ -13846,7 +13904,13 @@ mod tests {
             root.native_session_id = Some("root-session".to_string());
         }
         let branch = state
-            .create_research_child(&detail.tree.root_node_id, "Branch".to_string(), None, false)
+            .create_research_child(
+                &detail.tree.root_node_id,
+                "Branch".to_string(),
+                None,
+                false,
+                Vec::new(),
+            )
             .unwrap();
         assert!(
             state
@@ -13914,7 +13978,13 @@ mod tests {
         assert!(state.list_research_trees().unwrap().is_empty());
         assert!(
             state
-                .create_research_child(&detail.tree.root_node_id, "More".to_string(), None, false)
+                .create_research_child(
+                    &detail.tree.root_node_id,
+                    "More".to_string(),
+                    None,
+                    false,
+                    Vec::new()
+                )
                 .unwrap_err()
                 .contains("restore archived research")
         );
@@ -14250,7 +14320,13 @@ mod tests {
         // parent exchange first, and while the answer is being generated the
         // child's own prompt has not reached the transcript yet.
         let child = state
-            .create_research_child(&root_id, "Follow-up question".to_string(), None, false)
+            .create_research_child(
+                &root_id,
+                "Follow-up question".to_string(),
+                None,
+                false,
+                Vec::new(),
+            )
             .unwrap();
         let child_agent = sample_agent("child-agent");
         state.insert_agent(child_agent.clone()).unwrap();
@@ -14483,6 +14559,7 @@ mod tests {
                 "Too soon".to_string(),
                 None,
                 false,
+                Vec::new(),
             )
             .unwrap_err();
         assert!(err.contains("completed parent"));
@@ -15152,7 +15229,13 @@ mod tests {
         let root_id = detail.tree.root_node_id.clone();
 
         let child = state
-            .create_research_child(&root_id, "Follow-up question".to_string(), None, false)
+            .create_research_child(
+                &root_id,
+                "Follow-up question".to_string(),
+                None,
+                false,
+                Vec::new(),
+            )
             .unwrap();
         assert_eq!(child.kind, ResearchNodeKind::Run);
         assert_eq!(child.parent_node_id.as_deref(), Some(root_id.as_str()));
@@ -15194,6 +15277,7 @@ mod tests {
                 "Anchored question".to_string(),
                 Some(anchor),
                 false,
+                Vec::new(),
             )
             .unwrap();
         assert_eq!(anchored.kind, ResearchNodeKind::Run);
@@ -16522,7 +16606,13 @@ mod tests {
             )
             .unwrap();
         let child = state
-            .create_research_child(&node_id, "What changed?".to_string(), None, false)
+            .create_research_child(
+                &node_id,
+                "What changed?".to_string(),
+                None,
+                false,
+                Vec::new(),
+            )
             .unwrap();
         let captured_before_edit = state
             .research_document_followup_prompt(&node_id, &child.prompt)
@@ -16842,6 +16932,7 @@ mod tests {
                 "Follow-up".to_string(),
                 None,
                 false,
+                Vec::new(),
             )
             .unwrap();
         let mut crash_agent = sample_agent("crash-agent");

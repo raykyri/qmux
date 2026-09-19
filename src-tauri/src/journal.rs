@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const JOURNAL_STATE_VERSION: u32 = 1;
+const MAX_TWEET_RESPONSE_BYTES: u64 = 1024 * 1024;
 
 fn journal_state_version() -> u32 {
     JOURNAL_STATE_VERSION
@@ -124,7 +125,7 @@ pub struct RecentActivityPage {
 fn http_client() -> Result<reqwest::Client, String> {
     crate::ensure_rustls_crypto_provider()?;
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(8))
         .build()
         .map_err(|error| format!("failed to build tweet HTTP client: {error}"))
 }
@@ -146,21 +147,34 @@ pub async fn fetch_tweet_json(id: &str, token: &str) -> Result<String, String> {
     validate_tweet_fetch_args(id, token)?;
     let url =
         format!("https://cdn.syndication.twimg.com/tweet-result?id={id}&token={token}&lang=en");
-    let response = http_client()?
+    let mut response = http_client()?
         .get(url)
         .header("User-Agent", "qmux")
         .send()
         .await
         .map_err(|error| format!("tweet fetch failed: {error}"))?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| format!("failed to read tweet response: {error}"))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_TWEET_RESPONSE_BYTES)
+    {
+        return Err("tweet response was too large".to_string());
+    }
     if !status.is_success() {
         return Err(format!("tweet fetch failed: HTTP {status}"));
     }
-    Ok(body)
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("failed to read tweet response: {error}"))?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_TWEET_RESPONSE_BYTES as usize {
+            return Err("tweet response was too large".to_string());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|_| "tweet response was not valid UTF-8".to_string())
 }
 
 #[cfg(test)]
