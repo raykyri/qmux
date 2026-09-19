@@ -28,6 +28,7 @@ import {
   DialogRoot,
   DialogTitle,
   Input,
+  Menu,
 } from "../ui";
 import { moveResearchTreeIdToGap } from "../../lib/researchOrder";
 import {
@@ -174,6 +175,9 @@ function ResearchSidebarSection({
   const [folderRemovalError, setFolderRemovalError] = useState<string | null>(null);
   const [dissolvingFolder, setDissolvingFolder] = useState<ResearchFolder | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  /** The control that opened the thread menu, refocused when the menu closes
+   * without handing focus to a dialog. Context menus have no trigger. */
+  const menuTriggerRef = useRef<HTMLElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const sectionRef = useRef<HTMLElement | null>(null);
   // Range-select anchor: the last plainly clicked (or toggled) row, so a
@@ -324,6 +328,17 @@ function ResearchSidebarSection({
     setFolderRemovalError,
   ]);
 
+  // Focus returns to the control that opened the menu, so keyboard users are
+  // not dropped on the document body when the menu dismisses.
+  useEffect(() => {
+    if (menu) {
+      return;
+    }
+    const trigger = menuTriggerRef.current;
+    menuTriggerRef.current = null;
+    trigger?.focus();
+  }, [menu]);
+
   useEffect(() => {
     if (renamingTree || renamingFolder) {
       renameInputRef.current?.focus();
@@ -404,6 +419,7 @@ function ResearchSidebarSection({
       setMenu(null);
       return;
     }
+    menuTriggerRef.current = trigger;
     setMenu(treeMenuForPosition(treeId, archived, menuPositionFromTrigger(trigger)));
   }
 
@@ -421,6 +437,7 @@ function ResearchSidebarSection({
     clientX: number,
     clientY: number,
   ) {
+    menuTriggerRef.current = null;
     setMenu(treeMenuForPosition(treeId, archived, menuPositionFromPoint(clientX, clientY)));
   }
 
@@ -429,12 +446,16 @@ function ResearchSidebarSection({
   }
 
   function openDeleteDialog(tree: ResearchTreeSummary) {
+    // The dialog owns focus from here; do not pull it back to the trigger.
+    menuTriggerRef.current = null;
     setMenu(null);
     setTreeRemovalError(null);
     setDeletingTree(tree);
   }
 
   function openRenameDialog(tree: ResearchTreeSummary) {
+    // The dialog owns focus from here; do not pull it back to the trigger.
+    menuTriggerRef.current = null;
     setMenu(null);
     setRenamingFolder(null);
     setRenameDraft(tree.title);
@@ -1423,10 +1444,9 @@ function ResearchSidebarSection({
         : null}
       {menu?.kind === "tree" && menuTree
         ? createPortal(
-            <div
+            <Menu
               ref={menuRef}
-              className="popover-surface popover-surface--context pane-context-menu research-sidebar-menu"
-              role="menu"
+              className="pane-context-menu research-sidebar-menu"
               aria-label={`Actions for ${menuTree.title}`}
               style={{ left: menu.left, top: menu.top }}
               onMouseDown={(event) => event.stopPropagation()}
@@ -1446,7 +1466,7 @@ function ResearchSidebarSection({
                 onRequestCreateFolder={onRequestCreateFolder}
                 onRegenerateTitle={(treeId) => void onRegenerateTitle(treeId)}
               />
-            </div>,
+            </Menu>,
             document.body,
           )
         : null}
