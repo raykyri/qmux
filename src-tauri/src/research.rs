@@ -419,6 +419,45 @@ pub struct ResearchRecap {
     pub instructions: Option<String>,
 }
 
+/// A user-initiated summary regeneration. The expected revision pins the
+/// candidate to the answer the user was looking at.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateResearchRecapRequest {
+    pub node_id: String,
+    pub expected_response_revision: String,
+    pub adapter: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub instructions: String,
+}
+
+/// A generated summary held in the preview dialog. Nothing is persisted until
+/// the user applies it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchRecapCandidate {
+    pub id: String,
+    pub text: String,
+    pub response_revision: String,
+    pub generated_at: u128,
+    pub adapter: String,
+    pub model: Option<String>,
+    pub instructions: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyResearchRecapCandidateRequest {
+    pub node_id: String,
+    pub expected_response_revision: String,
+    /// The recap the preview compared against; `None` when the node had no
+    /// recap identity, including recaps persisted before ids existed.
+    #[serde(default)]
+    pub expected_current_recap_id: Option<String>,
+    pub candidate: ResearchRecapCandidate,
+}
+
 /// Compact, durable query history for Recent Activity. This deliberately omits
 /// transcripts, filesystem paths, highlights, and runtime bindings: the feed
 /// needs query identity and display metadata, not the full research record.

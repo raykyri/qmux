@@ -9564,6 +9564,85 @@ impl AppState {
         Ok(())
     }
 
+    /// Applies a user-previewed recap only while both the answer and the recap
+    /// it was compared against are still current. The recap identity guard is
+    /// separate from the answer revision because regenerating a recap does not
+    /// change the underlying response snapshot.
+    pub(crate) fn apply_research_recap_candidate(
+        &self,
+        request: research::ApplyResearchRecapCandidateRequest,
+    ) -> Result<ResearchNode, String> {
+        let updated = {
+            let mut model = self.inner.model.lock().map_err(|_| "model lock poisoned")?;
+            let tree_id = model
+                .research_nodes
+                .get(&request.node_id)
+                .ok_or_else(|| format!("research node {} was not found", request.node_id))?
+                .tree_id
+                .clone();
+            if model
+                .research_trees
+                .get(&tree_id)
+                .is_some_and(|tree| tree.archived_at.is_some())
+            {
+                return Err("restore archived research before replacing its summary".to_string());
+            }
+            let node = model
+                .research_nodes
+                .get_mut(&request.node_id)
+                .ok_or_else(|| format!("research node {} was not found", request.node_id))?;
+            if !node.kind.is_run() || node.status != ResearchNodeStatus::Complete {
+                return Err("only completed research runs can replace a summary".to_string());
+            }
+            if node.recap.as_ref().and_then(|recap| recap.id.clone())
+                != request.expected_current_recap_id
+            {
+                return Err(
+                    "the summary changed while the preview was open; review the latest summary and try again"
+                        .to_string(),
+                );
+            }
+            if request.candidate.response_revision != request.expected_response_revision {
+                return Err("the summary candidate belongs to a different answer".to_string());
+            }
+            let snapshot = research::read_response_snapshot_with_revision(
+                &self.inner.config.workspace_root,
+                &node.id,
+            )?;
+            if !snapshot
+                .is_some_and(|snapshot| snapshot.revision == request.expected_response_revision)
+            {
+                return Err(
+                    "the answer changed while the preview was open; generate a new summary"
+                        .to_string(),
+                );
+            }
+            let text = crate::research_recap::normalize_recap(&request.candidate.text)
+                .ok_or_else(|| "the summary candidate is invalid".to_string())?;
+            let instructions =
+                crate::research_recap::validate_instructions(&request.candidate.instructions)?
+                    .to_string();
+            node.recap = Some(research::ResearchRecap {
+                id: Some(request.candidate.id),
+                text,
+                response_revision: request.expected_response_revision,
+                generated_at: Some(request.candidate.generated_at),
+                adapter: Some(request.candidate.adapter),
+                model: request.candidate.model,
+                instructions: Some(instructions),
+            });
+            node.clone()
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.node.updated",
+            updated.pane_id.clone(),
+            updated.agent_id.clone(),
+            json!({ "node": updated }),
+        ));
+        Ok(updated)
+    }
+
     /// Unconditional append, kept for tests: production tails go through
     /// [`Self::append_turn_for_transcript`] so a rebind can't splice a dead
     /// file's parse over the new timeline.
@@ -17865,6 +17944,94 @@ mod tests {
             .save_research_recap(&source, &revision, "Deleted recap".into())
             .unwrap();
         assert!(state.research_node(&id).is_err());
+    }
+
+    #[test]
+    fn previewed_recap_apply_rejects_stale_summary_and_answer() {
+        let state = AppState::new(test_config(temp_workspace()));
+        state.insert_group_after(sample_group(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "Question".into(),
+                title: None,
+                adapter: "claude".into(),
+                model: None,
+                effort: None,
+                group_id: "group-1".into(),
+            })
+            .unwrap();
+        let id = detail.tree.root_node_id;
+        {
+            let mut model = state.inner.model.lock().unwrap();
+            let node = model.research_nodes.get_mut(&id).unwrap();
+            node.status = ResearchNodeStatus::Complete;
+            node.response_snapshot_at = Some(10);
+        }
+        let mut answer = sample_user_turn("agent", "Original answer");
+        answer.role = "assistant".into();
+        research::write_response_snapshot(
+            &state.config().workspace_root,
+            &id,
+            std::slice::from_ref(&answer),
+        )
+        .unwrap();
+        let revision = research::response_revision(std::slice::from_ref(&answer)).unwrap();
+        let source = state.research_node(&id).unwrap();
+        state
+            .save_research_recap(&source, &revision, "Original recap".into())
+            .unwrap();
+        let original_id = state.research_node(&id).unwrap().recap.unwrap().id.unwrap();
+        let candidate = research::ResearchRecapCandidate {
+            id: "candidate-1".into(),
+            text: "A better recap".into(),
+            response_revision: revision.clone(),
+            generated_at: 20,
+            adapter: "codex".into(),
+            model: Some("gpt-test".into()),
+            instructions: "Preserve the conclusion.".into(),
+        };
+        let updated = state
+            .apply_research_recap_candidate(research::ApplyResearchRecapCandidateRequest {
+                node_id: id.clone(),
+                expected_response_revision: revision.clone(),
+                expected_current_recap_id: Some(original_id.clone()),
+                candidate: candidate.clone(),
+            })
+            .unwrap();
+        let recap = updated.recap.unwrap();
+        assert_eq!(recap.text, "A better recap");
+        assert_eq!(recap.adapter.as_deref(), Some("codex"));
+        assert_eq!(recap.id.as_deref(), Some("candidate-1"));
+        assert_eq!(
+            recap.instructions.as_deref(),
+            Some("Preserve the conclusion.")
+        );
+
+        // The recap the preview compared against is gone, so the apply is refused.
+        let stale_summary =
+            state.apply_research_recap_candidate(research::ApplyResearchRecapCandidateRequest {
+                node_id: id.clone(),
+                expected_response_revision: revision.clone(),
+                expected_current_recap_id: Some(original_id),
+                candidate: research::ResearchRecapCandidate {
+                    id: "candidate-2".into(),
+                    ..candidate.clone()
+                },
+            });
+        assert!(stale_summary.unwrap_err().contains("summary changed"));
+
+        answer.blocks = vec![crate::transcript::TurnBlock::Text {
+            text: "Changed answer".into(),
+        }];
+        research::write_response_snapshot(&state.config().workspace_root, &id, &[answer]).unwrap();
+        let stale_answer =
+            state.apply_research_recap_candidate(research::ApplyResearchRecapCandidateRequest {
+                node_id: id,
+                expected_response_revision: revision,
+                expected_current_recap_id: Some("candidate-1".into()),
+                candidate,
+            });
+        assert!(stale_answer.unwrap_err().contains("answer changed"));
     }
 
     #[test]

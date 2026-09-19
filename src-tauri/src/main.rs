@@ -72,9 +72,10 @@ use pty::{
     spawn_ssh_shell_pane, write_pane,
 };
 use research::{
-    CreateResearchDocumentRequest, CreateResearchTreeRequest, RecentResearchQueryCursor,
-    RecentResearchQueryPage, ResearchBranchRemoval, ResearchFolderState, ResearchHighlight,
-    ResearchHighlightAnchor, ResearchHighlightFeedItem, ResearchNode, ResearchNodeContent,
+    ApplyResearchRecapCandidateRequest, CreateResearchDocumentRequest, CreateResearchTreeRequest,
+    GenerateResearchRecapRequest, RecentResearchQueryCursor, RecentResearchQueryPage,
+    ResearchBranchRemoval, ResearchFolderState, ResearchHighlight, ResearchHighlightAnchor,
+    ResearchHighlightFeedItem, ResearchNode, ResearchNodeContent, ResearchRecapCandidate,
     ResearchTree, ResearchTreeDetail, ResearchTreeSummary, UpdateResearchDocumentRequest,
     UpdateResearchDocumentResult,
 };
@@ -3763,6 +3764,87 @@ async fn generate_research_agent_title(
     .map_err(|err| format!("research title task failed: {err}"))?
 }
 
+/// The built-in summary instructions, shown as the starting point in the
+/// regeneration dialog.
+#[tauri::command]
+fn research_recap_default_instructions() -> String {
+    research_recap::DEFAULT_RECAP_INSTRUCTIONS.to_string()
+}
+
+/// Generates a summary candidate without persisting it: the user compares it
+/// against the current summary and applies it separately.
+#[tauri::command(async)]
+async fn generate_research_recap_candidate(
+    state: tauri::State<'_, AppState>,
+    request: GenerateResearchRecapRequest,
+) -> Result<ResearchRecapCandidate, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let instructions = research_recap::validate_instructions(&request.instructions)?;
+        let model = request
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if model
+            .is_some_and(|value| value.chars().count() > 256 || value.chars().any(char::is_control))
+        {
+            return Err("summary model name is invalid".to_string());
+        }
+        let adapter =
+            adapters::ensure_adapter_ready_for_research(state.config(), request.adapter.trim())?;
+        if !adapter.supports_recap_generation {
+            return Err(format!(
+                "{} does not support summary generation",
+                adapter.label
+            ));
+        }
+        let node = state.research_node(&request.node_id)?;
+        if !node.kind.is_run() || node.status != research::ResearchNodeStatus::Complete {
+            return Err("only completed research runs can generate summaries".to_string());
+        }
+        let snapshot = research::read_response_snapshot_with_revision(
+            &state.config().workspace_root,
+            &node.id,
+        )?
+        .ok_or_else(|| "the completed research answer is unavailable".to_string())?;
+        if snapshot.revision != request.expected_response_revision {
+            return Err("the answer changed; reopen summary generation and try again".to_string());
+        }
+        let answer = research_recap::recap_source_for_node(&node, &snapshot.turns)
+            .ok_or_else(|| "the answer is not eligible for summary generation".to_string())?;
+        let workspace = state.research_workspace_for_node(&node.id)?;
+        let text = title_generation::generate_research_recap_with(
+            state.config(),
+            &node,
+            &workspace,
+            &answer,
+            &adapter.id,
+            model,
+            instructions,
+        )?;
+        Ok(ResearchRecapCandidate {
+            id: adapters::new_uuid_v4()?,
+            text,
+            response_revision: snapshot.revision,
+            generated_at: state::now_millis(),
+            adapter: adapter.id,
+            model: model.map(str::to_string),
+            instructions: instructions.to_string(),
+        })
+    })
+    .await
+    .map_err(|err| format!("summary generation task failed: {err}"))?
+}
+
+#[tauri::command(async)]
+fn apply_research_recap_candidate(
+    state: tauri::State<'_, AppState>,
+    request: ApplyResearchRecapCandidateRequest,
+) -> Result<ResearchNode, String> {
+    state.apply_research_recap_candidate(request)
+}
+
 pub(crate) fn ensure_rustls_crypto_provider() -> Result<(), String> {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -4237,6 +4319,9 @@ fn main() {
             app_set_prevent_sleep,
             generate_foundation_tab_title,
             generate_research_agent_title,
+            research_recap_default_instructions,
+            generate_research_recap_candidate,
+            apply_research_recap_candidate,
             menu_bar_set_visible,
             menu_bar_update,
             show_hide_shortcut_get,
