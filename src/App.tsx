@@ -19146,6 +19146,8 @@ function MainApp() {
               onUndoRemove={undoJournalRemove}
               onDismissUndo={dismissJournalUndo}
               onOpenResearchQuery={openRecentResearchQuery}
+              onSetResearchFollowed={setResearchTreeFollowedFlag}
+              onSetResearchBookmarked={setResearchTreeBookmarkedFlag}
               onLoadOlder={loadOlderActivity}
               canGoBack={canGoWorkspaceBack(researchWorkspaceHistory)}
               canGoForward={canGoWorkspaceForward(researchWorkspaceHistory)}

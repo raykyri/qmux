@@ -34,14 +34,26 @@ import {
 import type {
   RecentActivityCursor,
   RecentResearchQuery,
+  ResearchNode,
   ResearchTreeSummary,
 } from "../../types";
 import { IS_MAC, isEditableTarget } from "../../lib/appHelpers";
 import { openExternalUrl } from "../../lib/api";
 import { writeClipboardText } from "../../lib/clipboard";
+import type { ResearchFolderState } from "../../lib/researchFolders";
+import { isActiveResearchStatus } from "../../lib/researchThreads";
 import { TweetEmbed } from "./TweetEmbed";
 import { ResearchDocumentFrame } from "./ResearchDocumentChrome";
 import ActivityMetadataLine from "../ActivityMetadataLine";
+import ResearchThreadActions from "./ResearchThreadActions";
+import { ResearchRecapLine, ResearchRecapPendingLine } from "./ResearchRecap";
+import { ResearchMessageBody, ResearchUserMessage } from "./ResearchMessage";
+import {
+  RESEARCH_TREE_MENU_WIDTH,
+  ResearchTreeDeleteDialog,
+  ResearchTreeMenuItems,
+  ResearchTreeRenameDialog,
+} from "./ResearchTreeMenu";
 import {
   Button,
   DialogActions,
@@ -80,10 +92,26 @@ export function recentActivityAnchorScrollTop(
   return Math.max(0, canvasTop + rowOffset - anchorOffset);
 }
 
+export type ResearchActivityFeedView = "home" | "bookmarks";
+
+const EMPTY_RECAP_PENDING_NODE_IDS: ReadonlySet<string> = new Set<string>();
+
 export interface ResearchActivityFeedProps {
   /** The Home query composer, rendered above the first feed row. */
   composer: ReactNode;
+  /** Home lists every item; Bookmarks lists only queries whose thread is
+   * bookmarked, without the composer or the setup guide. */
+  view?: ResearchActivityFeedView;
+  /** Replaces the empty-state sentence when the Home feed has no rows. */
+  setupGuide?: ReactNode;
+  /** Imports a Markdown report as a research thread. Declared here so the
+   * feed's header slot has a home for it; the control lands with report
+   * import. */
+  onImportReport?: (markdown: string, prompt: string) => Promise<void>;
   items: RecentActivityItem[];
+  /** Runs whose background summary job is in flight; each card holds a
+   * spinner in its summary slot until the summary arrives. */
+  recapPendingNodeIds?: ReadonlySet<string>;
   researchTrees: ResearchTreeSummary[];
   nextCursor: RecentActivityCursor | null;
   loadingOlder: boolean;
@@ -99,6 +127,22 @@ export interface ResearchActivityFeedProps {
   onUndoRemove: () => void;
   onDismissUndo: () => void;
   onOpenResearchQuery: (query: RecentResearchQuery) => void;
+  /** Receives a node whose summary was regenerated from a card's menu.
+   * Declared for the regenerate action that lands with the recap dialog. */
+  onResearchRecapApplied?: (node: ResearchNode) => void;
+  /** Home's per-thread Follow and Bookmark controls; both persist on the tree. */
+  onSetResearchFollowed?: (treeId: string, followed: boolean) => void;
+  onSetResearchBookmarked?: (treeId: string, bookmarked: boolean) => void;
+  /** The per-thread menu. Present together: without them a card's context
+   * menu has nothing to offer and is not opened. */
+  folderState?: ResearchFolderState;
+  onRenameResearch?: (treeId: string, title: string) => Promise<void>;
+  onArchiveResearch?: (treeId: string) => Promise<void>;
+  onRestoreResearch?: (treeId: string) => Promise<void>;
+  onRemoveResearch?: (treeId: string) => Promise<void>;
+  onToggleResearchStar?: (id: string) => void;
+  onRequestCreateFolder?: (treeIds: string[]) => void;
+  onRemoveFromFolder?: (treeIds: string[]) => void;
   onLoadOlder: () => void;
   /** Refetches the feed's first page from the header's Refresh control. */
   onRefresh?: () => void;
@@ -397,7 +441,9 @@ function JournalEntryCard({
   }
   return (
     <article
-      className={`journal-entry ${variant}${menuOpen ? " has-open-menu" : ""}`}
+      className={`journal-entry research-content-card ${variant}${
+        menuOpen ? " has-open-menu" : ""
+      }`}
       title={new Date(entry.createdAt).toLocaleString()}
       onContextMenu={(event) => {
         // Right-clicking a link or the quote card keeps the entry menu too —
@@ -423,37 +469,172 @@ function JournalEntryCard({
   );
 }
 
-function ResearchQueryCard({
+/** A click that landed on a link or a button inside rendered Markdown belongs
+ * to that control, not to the card's open-the-thread target. */
+function isMarkdownInteractiveTarget(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest("a, button"));
+}
+
+/** The passage a targeted follow-up was asked about, shortened to a prefix
+ * that still reads as a phrase. */
+export function recentQueryTargetExcerpt(target: string, maxWords = 5, maxChars = 40) {
+  const normalized = target.split(/\s+/).filter(Boolean).join(" ");
+  const words = normalized.split(" ").filter(Boolean);
+  if (words.length === 0) return "";
+  const wordExcerpt = words.slice(0, maxWords).join(" ");
+  const truncated = words.length > maxWords || Array.from(normalized).length > maxChars;
+  if (!truncated) return wordExcerpt;
+
+  const characterLimit = Math.max(1, maxChars - 1);
+  let excerpt = Array.from(wordExcerpt).slice(0, characterLimit).join("").trimEnd();
+  if (Array.from(wordExcerpt).length > characterLimit) {
+    excerpt = excerpt.replace(/\s+\S*$/u, "").trimEnd() || excerpt;
+  }
+  return `${excerpt}…`;
+}
+
+/** One top-level research question in the feed: the authored prompt rendered
+ * the same way an open thread renders it, its summary, its direct follow-ups,
+ * and a footer carrying the thread actions beside the event metadata. */
+export function ResearchQueryCard({
   query,
+  metadata,
+  recapPending = false,
+  followed = false,
+  bookmarked = false,
+  onToggleFollow,
+  onToggleBookmark,
   onOpen,
+  onContextMenu,
+  onOpenChild,
 }: {
   query: RecentResearchQuery;
+  /** Event metadata (context phrase and relative time), shown on the card's
+   * footer row beside the thread actions. */
+  metadata?: ReactNode;
+  /** A background summary job is in flight for this run. */
+  recapPending?: boolean;
+  followed?: boolean;
+  bookmarked?: boolean;
+  onToggleFollow?: () => void;
+  onToggleBookmark?: () => void;
   onOpen: () => void;
+  onContextMenu: (clientX: number, clientY: number) => void;
+  onOpenChild?: (query: RecentResearchQuery) => void;
 }) {
+  const recap = query.recap?.trim() ?? "";
+  const running = isActiveResearchStatus(query.status);
+  // A running question shows its spinner and nothing else below the prompt;
+  // the thread actions and metadata row appear once the answer settles.
+  const actions =
+    !running && onToggleFollow && onToggleBookmark ? (
+      <ResearchThreadActions
+        followed={followed}
+        bookmarked={bookmarked}
+        onToggleFollow={onToggleFollow}
+        onToggleBookmark={onToggleBookmark}
+      />
+    ) : null;
   return (
-    <article className="recent-query-card">
-      <button className="recent-query-open" type="button" onClick={onOpen}>
-        {query.prompt}
-      </button>
-      <div className="recent-query-actions" aria-label="Query actions">
-        <Button
-          className="recent-query-action"
-          title="Copy query"
-          aria-label="Copy query"
-          onClick={() => void writeClipboardText(query.prompt)}
+    <div
+      className="recent-query-block"
+      onContextMenu={(event) => {
+        if (event.defaultPrevented) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        onContextMenu(event.clientX, event.clientY);
+      }}
+    >
+      <ResearchUserMessage as="article" className="recent-query-card research-prompt">
+        <ResearchMessageBody
+          prompt={query.prompt}
+          attachments={query.attachments}
+          renderPrompt={(content) => (
+            <div
+              className="recent-query-question-link"
+              role="button"
+              tabIndex={0}
+              onClick={(event) => {
+                if (!isMarkdownInteractiveTarget(event.target)) onOpen();
+              }}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                onOpen();
+              }}
+            >
+              {content}
+            </div>
+          )}
+        />
+      </ResearchUserMessage>
+      {running ? (
+        <span
+          className="recent-query-spinner"
+          role="status"
+          aria-label="Generating answer"
+          title="Generating answer"
         >
-          <Copy size={12} aria-hidden="true" />
-        </Button>
-        <Button
-          className="recent-query-action"
-          title="Open research"
-          aria-label="Open research"
-          onClick={onOpen}
+          <LoaderCircle size={14} aria-hidden="true" />
+        </span>
+      ) : null}
+      {recap ? (
+        <ResearchRecapLine text={recap} className="recent-query-recap" />
+      ) : recapPending && !running ? (
+        <ResearchRecapPendingLine className="recent-query-recap" />
+      ) : null}
+      {query.children?.length && onOpenChild ? (
+        <ul
+          className="recent-query-children"
+          aria-label="Follow-up questions"
+          onClick={(event) => event.stopPropagation()}
         >
-          <ExternalLink size={12} aria-hidden="true" />
-        </Button>
-      </div>
-    </article>
+          {query.children.map((child) => {
+            const targetExcerpt = recentQueryTargetExcerpt(child.queryTarget ?? "");
+            return (
+              <li key={child.nodeId} className="recent-query-child">
+                {targetExcerpt ? (
+                  <>
+                    <span
+                      className="recent-query-child-target"
+                      title={child.queryTarget ?? undefined}
+                    >
+                      @{targetExcerpt}
+                    </span>{" "}
+                  </>
+                ) : null}
+                <span
+                  className="recent-query-child-link"
+                  role="button"
+                  tabIndex={0}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onOpenChild(child);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onOpenChild(child);
+                  }}
+                >
+                  <span className="recent-query-child-question">{child.prompt}</span>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+      {!running && (actions || metadata) ? (
+        <div className="recent-query-footer">
+          {actions}
+          {metadata ? <div className="recent-query-metadata">{metadata}</div> : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -571,7 +752,10 @@ function MeasuredActivityRow({
 
 function ResearchActivityFeed({
   composer,
+  view = "home",
+  setupGuide,
   items,
+  recapPendingNodeIds = EMPTY_RECAP_PENDING_NODE_IDS,
   researchTrees,
   nextCursor,
   loadingOlder,
@@ -583,6 +767,16 @@ function ResearchActivityFeed({
   onUndoRemove,
   onDismissUndo,
   onOpenResearchQuery,
+  onSetResearchFollowed,
+  onSetResearchBookmarked,
+  folderState,
+  onRenameResearch,
+  onArchiveResearch,
+  onRestoreResearch,
+  onRemoveResearch,
+  onToggleResearchStar,
+  onRequestCreateFolder,
+  onRemoveFromFolder,
   onLoadOlder,
   onRefresh,
   canGoBack = false,
@@ -590,9 +784,13 @@ function ResearchActivityFeed({
   onBack,
   onForward,
 }: ResearchActivityFeedProps) {
-  const [menu, setMenu] = useState<{ entryId: string; left: number; top: number } | null>(
-    null,
-  );
+  const [menu, setMenu] = useState<
+    | { kind: "journal"; entryId: string; left: number; top: number }
+    | { kind: "tree"; treeId: string; archived: boolean; left: number; top: number }
+    | null
+  >(null);
+  const [renamingTree, setRenamingTree] = useState<ResearchTreeSummary | null>(null);
+  const [deletingTree, setDeletingTree] = useState<ResearchTreeSummary | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const virtualCanvasRef = useRef<HTMLDivElement | null>(null);
@@ -651,10 +849,27 @@ function ResearchActivityFeed({
       mouseTarget?.removeEventListener("mouseup", onMouseUp);
     };
   }, []);
+  const visibleItems = useMemo(() => {
+    if (view !== "bookmarks") return items;
+    const bookmarked = new Set(
+      researchTrees.filter((tree) => tree.bookmarked).map((tree) => tree.id),
+    );
+    return items.filter(
+      (item) => item.kind === "research-query" && bookmarked.has(item.query.treeId),
+    );
+  }, [items, researchTrees, view]);
   const feed = useMemo(
-    () => buildRecentActivityFromItems(items, researchTrees),
-    [items, researchTrees],
+    () => buildRecentActivityFromItems(visibleItems, researchTrees),
+    [researchTrees, visibleItems],
   );
+  const viewTitle = view === "bookmarks" ? "Bookmarks" : "Home";
+  const treeById = useMemo(() => {
+    const map = new Map<string, ResearchTreeSummary>();
+    for (const tree of researchTrees) {
+      map.set(tree.id, tree);
+    }
+    return map;
+  }, [researchTrees]);
   const [dayBoundaryVersion, setDayBoundaryVersion] = useState(0);
   useEffect(() => {
     const nextMidnight = new Date();
@@ -856,13 +1071,24 @@ function ResearchActivityFeed({
     return () => observer.disconnect();
   }, [loadingOlder, nextCursor, olderError, onLoadOlder]);
 
-  const menuActivityItem = menu
-    ? items.find(
-        (item) => item.kind === "journal" && item.entry.id === menu.entryId,
-      )
-    : null;
+  const menuActivityItem =
+    menu?.kind === "journal"
+      ? items.find((item) => item.kind === "journal" && item.entry.id === menu.entryId)
+      : null;
   const menuEntry = menuActivityItem?.kind === "journal" ? menuActivityItem.entry : null;
   const menuItems = menuEntry ? journalEntryMenuItems(menuEntry) : [];
+  const menuTree = menu?.kind === "tree" ? (treeById.get(menu.treeId) ?? null) : null;
+  // The per-thread menu is only offered when the actions behind it exist.
+  const threadMenuAvailable = Boolean(
+    folderState &&
+      onToggleResearchStar &&
+      onRenameResearch &&
+      onArchiveResearch &&
+      onRestoreResearch &&
+      onRemoveResearch &&
+      onRequestCreateFolder &&
+      onRemoveFromFolder,
+  );
 
   function runMenuAction(entry: JournalEntry, action: JournalMenuAction) {
     setMenu(null);
@@ -886,11 +1112,15 @@ function ResearchActivityFeed({
     onRemoveEntry(entry.id);
   }
 
-  function clampedMenuPosition(clientX: number, clientY: number) {
+  function clampedMenuPosition(
+    clientX: number,
+    clientY: number,
+    width = JOURNAL_MENU_WIDTH,
+  ) {
     return {
       left: Math.max(
         JOURNAL_VIEWPORT_MARGIN,
-        Math.min(clientX, window.innerWidth - JOURNAL_MENU_WIDTH - JOURNAL_VIEWPORT_MARGIN),
+        Math.min(clientX, window.innerWidth - width - JOURNAL_VIEWPORT_MARGIN),
       ),
       top: Math.max(
         JOURNAL_VIEWPORT_MARGIN,
@@ -903,19 +1133,33 @@ function ResearchActivityFeed({
   }
 
   function openMenuFromTrigger(entryId: string, trigger: HTMLButtonElement) {
-    if (menu?.entryId === entryId) {
+    if (menu?.kind === "journal" && menu.entryId === entryId) {
       setMenu(null);
       return;
     }
     const rect = trigger.getBoundingClientRect();
     setMenu({
+      kind: "journal",
       entryId,
       ...clampedMenuPosition(rect.right - JOURNAL_MENU_WIDTH, rect.bottom + 4),
     });
   }
 
   function openContextMenu(entryId: string, clientX: number, clientY: number) {
-    setMenu({ entryId, ...clampedMenuPosition(clientX, clientY) });
+    setMenu({ kind: "journal", entryId, ...clampedMenuPosition(clientX, clientY) });
+  }
+
+  function openTreeContextMenu(
+    tree: ResearchTreeSummary,
+    clientX: number,
+    clientY: number,
+  ) {
+    setMenu({
+      kind: "tree",
+      treeId: tree.id,
+      archived: Boolean(tree.archivedAt),
+      ...clampedMenuPosition(clientX, clientY, RESEARCH_TREE_MENU_WIDTH),
+    });
   }
 
   // Menu dismissal and its keycap shortcuts, mirroring the research sidebar
@@ -942,22 +1186,47 @@ function ResearchActivityFeed({
       if (event.metaKey || event.ctrlKey || event.altKey) {
         return;
       }
-      const activityItem = items.find(
-        (candidate) => candidate.kind === "journal" && candidate.entry.id === menu.entryId,
-      );
-      const entry = activityItem?.kind === "journal" ? activityItem.entry : null;
-      if (!entry) {
+      if (menu.kind === "journal") {
+        const activityItem = items.find(
+          (candidate) =>
+            candidate.kind === "journal" && candidate.entry.id === menu.entryId,
+        );
+        const entry = activityItem?.kind === "journal" ? activityItem.entry : null;
+        if (!entry) {
+          return;
+        }
+        const item = journalEntryMenuItems(entry).find(
+          (candidate) => candidate.key.toLowerCase() === event.key.toLowerCase(),
+        );
+        if (!item) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        runMenuAction(entry, item.action);
         return;
       }
-      const item = journalEntryMenuItems(entry).find(
-        (candidate) => candidate.key.toLowerCase() === event.key.toLowerCase(),
-      );
-      if (!item) {
+      const tree = treeById.get(menu.treeId);
+      if (!tree) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      if (key !== "d" && (key !== "a" || menu.archived)) {
         return;
       }
       event.preventDefault();
       event.stopPropagation();
-      runMenuAction(entry, item.action);
+      event.stopImmediatePropagation();
+      if (tree.runningCount > 0) {
+        return;
+      }
+      if (key === "d") {
+        setMenu(null);
+        setDeletingTree(tree);
+        return;
+      }
+      setMenu(null);
+      void onArchiveResearch?.(tree.id);
     };
     const closeOnReflow = () => setMenu(null);
     document.addEventListener("mousedown", closeMenu);
@@ -1013,15 +1282,17 @@ function ResearchActivityFeed({
 
   return (
     <ResearchDocumentFrame
-      title="Recent Activity"
-      headerActions={<JournalFeedMenu onAddEntry={onAddEntry} />}
+      title={viewTitle}
+      headerActions={
+        view === "home" ? <JournalFeedMenu onAddEntry={onAddEntry} /> : undefined
+      }
       navActions={
         onRefresh ? (
           <Button
             variant="icon"
             className="research-history-button"
-            aria-label="Refresh Home"
-            title="Refresh Home"
+            aria-label={`Refresh ${viewTitle}`}
+            title={`Refresh ${viewTitle}`}
             onClick={onRefresh}
           >
             <RotateCw size={16} aria-hidden="true" />
@@ -1037,7 +1308,9 @@ function ResearchActivityFeed({
     >
       <div ref={scrollRef} className="research-document-scroll journal-scroll">
         <div className="journal-column research-reading-surface">
-          {composer ? <div className="journal-composer-container">{composer}</div> : null}
+          {view === "home" && composer ? (
+            <div className="journal-composer-container">{composer}</div>
+          ) : null}
           {pendingUndo ? (
             <div className="journal-undo" role="status">
               <span className="journal-undo-label">
@@ -1089,6 +1362,13 @@ function ResearchActivityFeed({
               style={{ height: metrics.totalSize }}
             >
               {visibleRowEntries.map(({ row, index }) => {
+                const researchTreeId =
+                  row.event.source.kind === "research-query"
+                    ? row.event.source.query.treeId
+                    : null;
+                const researchTree = researchTreeId
+                  ? treeById.get(researchTreeId)
+                  : undefined;
                 return (
                   <MeasuredActivityRow
                     key={row.key}
@@ -1108,22 +1388,64 @@ function ResearchActivityFeed({
                       aria-posinset={row.position}
                       aria-setsize={nextCursor ? -1 : feed.length}
                     >
-                      <ActivityMetadataLine event={row.event} />
                       {row.event.source.kind === "journal" ? (
-                        <JournalEntryCard
-                          entry={row.event.source.entry}
-                          menuOpen={menu?.entryId === row.event.source.entry.id}
-                          onOpenMenu={openMenuFromTrigger}
-                          onOpenContextMenu={openContextMenu}
-                          onRetryTweet={onRetryTweet}
-                        />
+                        <>
+                          <ActivityMetadataLine event={row.event} />
+                          <JournalEntryCard
+                            entry={row.event.source.entry}
+                            menuOpen={
+                              menu?.kind === "journal" &&
+                              menu.entryId === row.event.source.entry.id
+                            }
+                            onOpenMenu={openMenuFromTrigger}
+                            onOpenContextMenu={openContextMenu}
+                            onRetryTweet={onRetryTweet}
+                          />
+                        </>
                       ) : (
                         <ResearchQueryCard
                           query={row.event.source.query}
+                          metadata={<ActivityMetadataLine event={row.event} />}
+                          recapPending={recapPendingNodeIds.has(
+                            row.event.source.query.nodeId,
+                          )}
+                          followed={Boolean(researchTree?.followed)}
+                          bookmarked={Boolean(researchTree?.bookmarked)}
+                          onToggleFollow={
+                            onSetResearchFollowed && researchTreeId
+                              ? () =>
+                                  onSetResearchFollowed(
+                                    researchTreeId,
+                                    !researchTree?.followed,
+                                  )
+                              : undefined
+                          }
+                          onToggleBookmark={
+                            onSetResearchBookmarked && researchTreeId
+                              ? () =>
+                                  onSetResearchBookmarked(
+                                    researchTreeId,
+                                    !researchTree?.bookmarked,
+                                  )
+                              : undefined
+                          }
+                          onOpenChild={onOpenResearchQuery}
                           onOpen={() => {
-                            if (row.event.source.kind === "research-query") {
-                              onOpenResearchQuery(row.event.source.query);
+                            const source = row.event.source;
+                            if (source.kind === "research-query") {
+                              onOpenResearchQuery(source.query);
                             }
+                          }}
+                          onContextMenu={(clientX, clientY) => {
+                            const source = row.event.source;
+                            if (source.kind !== "research-query" || !threadMenuAvailable) {
+                              return;
+                            }
+                            const tree = treeById.get(source.query.treeId);
+                            if (!tree) {
+                              return;
+                            }
+                            openTreeContextMenu(tree, clientX, clientY);
                           }}
                         />
                       )}
@@ -1134,9 +1456,17 @@ function ResearchActivityFeed({
             </div>
             {feed.length === 0 ? (
               <div className="journal-empty-container">
-                <p className="journal-empty">
-                  Research queries and saved sources appear here, newest first.
-                </p>
+                {view === "bookmarks" ? (
+                  <p className="journal-empty">
+                    Bookmarked research appears here, newest first.
+                  </p>
+                ) : setupGuide ? (
+                  <div className="journal-setup-guide">{setupGuide}</div>
+                ) : (
+                  <p className="journal-empty">
+                    Research queries and saved sources appear here, newest first.
+                  </p>
+                )}
               </div>
             ) : null}
             <div
@@ -1170,7 +1500,7 @@ function ResearchActivityFeed({
           </div>
         </div>
       </div>
-      {menu && menuEntry
+      {menu?.kind === "journal" && menuEntry
         ? createPortal(
             <Menu
               ref={menuRef}
@@ -1204,6 +1534,53 @@ function ResearchActivityFeed({
             document.body,
           )
         : null}
+      {menu?.kind === "tree" && menuTree && folderState
+        ? createPortal(
+            <Menu
+              ref={menuRef}
+              className="pane-context-menu research-sidebar-menu"
+              aria-label={`Actions for ${menuTree.title}`}
+              style={{ left: menu.left, top: menu.top }}
+              onMouseDown={(event) => event.stopPropagation()}
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              <ResearchTreeMenuItems
+                tree={menuTree}
+                archived={menu.archived}
+                folderState={folderState}
+                onClose={() => setMenu(null)}
+                onToggleStar={(treeId) => onToggleResearchStar?.(treeId)}
+                onRename={(tree) => {
+                  setMenu(null);
+                  setRenamingTree(tree);
+                }}
+                onArchive={(treeId) => void onArchiveResearch?.(treeId)}
+                onRestore={(treeId) => void onRestoreResearch?.(treeId)}
+                onDelete={(tree) => {
+                  setMenu(null);
+                  setDeletingTree(tree);
+                }}
+                onRemoveFromFolder={(treeIds) => onRemoveFromFolder?.(treeIds)}
+                onRequestCreateFolder={(treeIds) => onRequestCreateFolder?.(treeIds)}
+              />
+            </Menu>,
+            document.body,
+          )
+        : null}
+      {renamingTree && onRenameResearch ? (
+        <ResearchTreeRenameDialog
+          tree={renamingTree}
+          onClose={() => setRenamingTree(null)}
+          onRename={onRenameResearch}
+        />
+      ) : null}
+      {deletingTree && onRemoveResearch ? (
+        <ResearchTreeDeleteDialog
+          tree={deletingTree}
+          onClose={() => setDeletingTree(null)}
+          onRemove={onRemoveResearch}
+        />
+      ) : null}
     </ResearchDocumentFrame>
   );
 }

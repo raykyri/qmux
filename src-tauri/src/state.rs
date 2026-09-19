@@ -4341,6 +4341,7 @@ impl AppState {
             })
             .chain(model.research_nodes.values().filter_map(|node| {
                 (node.kind.is_run()
+                    && node.parent_node_id.is_none()
                     && model
                         .research_trees
                         .get(&node.tree_id)
@@ -13700,29 +13701,14 @@ mod tests {
             RecentActivityItem::Journal { .. } => panic!("expected a research row"),
             RecentActivityItem::ResearchQuery { query, .. } => query.children.clone(),
         };
-        // Follow-ups still surface as their own rows in this build: the
-        // top-level-only predicate ships with the renderer that draws
-        // `children`.
+        // Only top-level run nodes become rows; a follow-up travels as one of
+        // its root's `children`.
         let first = state.list_recent_activity(2, None).unwrap();
         assert_eq!(
             first.items.iter().map(item_id).collect::<Vec<_>>(),
-            vec!["grandchild-query".to_string(), "reply-query".to_string()]
-        );
-        let reply_children = children_of(&first.items[1]);
-        assert_eq!(
-            reply_children
-                .iter()
-                .map(|child| child.node_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["grandchild-query"]
-        );
-        assert!(reply_children[0].children.is_empty());
-        let second = state.list_recent_activity(2, first.next_cursor).unwrap();
-        assert_eq!(
-            second.items.iter().map(item_id).collect::<Vec<_>>(),
             vec!["new-note".to_string(), root_id.clone()]
         );
-        let root_children = children_of(&second.items[1]);
+        let root_children = children_of(&first.items[1]);
         assert_eq!(
             root_children
                 .iter()
@@ -13734,52 +13720,20 @@ mod tests {
             root_children[0].query_target.as_deref(),
             Some("Selected answer")
         );
+        // Only direct children travel with a root: the grandchild is not nested
+        // under the reply, and never becomes a row of its own.
+        assert!(root_children[0].children.is_empty());
+        let second = state.list_recent_activity(2, first.next_cursor).unwrap();
+        assert_eq!(
+            second.items.iter().map(item_id).collect::<Vec<_>>(),
+            vec!["tied-note".to_string(), "older-query".to_string()]
+        );
         let third = state.list_recent_activity(2, second.next_cursor).unwrap();
         assert_eq!(
             third.items.iter().map(item_id).collect::<Vec<_>>(),
-            vec!["tied-note".to_string(), "older-query".to_string()]
-        );
-        let fourth = state.list_recent_activity(2, third.next_cursor).unwrap();
-        assert_eq!(
-            fourth.items.iter().map(item_id).collect::<Vec<_>>(),
             vec!["old-note".to_string()]
         );
-        assert!(fourth.next_cursor.is_none());
-
-        // Children are attached after the page is truncated, so the cursors are
-        // byte-identical to the same fixture with no parent links at all.
-        let cursors = |state: &AppState| {
-            let mut cursors = Vec::new();
-            let mut before = None;
-            loop {
-                let page = state.list_recent_activity(2, before).unwrap();
-                cursors.push(page.next_cursor.clone());
-                match page.next_cursor {
-                    Some(cursor) => before = Some(cursor),
-                    None => break,
-                }
-            }
-            cursors
-        };
-        let with_children = cursors(&state);
-        {
-            let mut model = state.inner.model.lock().unwrap();
-            for id in ["reply-query", "grandchild-query"] {
-                model.research_nodes.get_mut(id).unwrap().parent_node_id = None;
-            }
-        }
-        assert_eq!(cursors(&state), with_children);
-        assert!(
-            state
-                .list_recent_activity(100, None)
-                .unwrap()
-                .items
-                .iter()
-                .all(|item| match item {
-                    RecentActivityItem::Journal { .. } => true,
-                    RecentActivityItem::ResearchQuery { query, .. } => query.children.is_empty(),
-                })
-        );
+        assert!(third.next_cursor.is_none());
 
         {
             let mut model = state.inner.model.lock().unwrap();
@@ -13802,6 +13756,12 @@ mod tests {
             vec!["old-note".to_string()]
         );
         assert!(archived_tail.next_cursor.is_none());
+
+        state.restore_research_tree(&detail.tree.id).unwrap();
+        assert_eq!(
+            state.list_recent_activity(100, None).unwrap().items.len(),
+            5
+        );
     }
 
     #[test]

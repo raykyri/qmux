@@ -102,19 +102,18 @@
   pointer-events: auto;
 }
 
-/* Event metadata sits outside the content surface: a summary on the left
-   and the relative timestamp on the right. */
+/* Event metadata sits outside the content surface as one left-aligned
+   phrase. */
 .activity-metadata {
   display: flex;
   min-width: 0;
   align-items: baseline;
-  justify-content: space-between;
   gap: 8px;
-  padding: 0 3px;
+  padding: 0;
   color: var(--text-subtle);
-  font-size: 11.5px;
+  font-size: var(--research-meta-font-size, 11.5px);
   font-weight: 400;
-  line-height: 1.35;
+  line-height: var(--research-meta-line-height, 1.35);
 }
 
 .activity-metadata-summary {
@@ -125,7 +124,6 @@
 }
 
 .activity-metadata time {
-  flex: none;
   white-space: nowrap;
 }
 
@@ -139,71 +137,133 @@
   padding-block: 16px;
 }
 
-/* Same surface as .research-prompt (the question bubble). */
+.journal-setup-guide {
+  padding-block: 10px;
+}
+
+/* Saved feed entries opt into the shared .research-content-card recipe in
+   markup; only the hover-menu anchoring belongs to the feed. */
 .journal-entry {
   position: relative;
-  padding: 10px 14px;
-  border-radius: 10px;
-  background: var(--content-card-bg);
 }
 
-/* Research queries: the prompt itself is the card (same surface as
-   .research-prompt). No outer frame — metadata already sits above. */
-.recent-query-card {
-  position: relative;
-}
-
-.recent-query-open {
-  display: block;
-  width: 100%;
-  /* Extra right padding keeps the first line clear of the hover actions. */
-  padding: 10px 56px 10px 14px;
-  border: 0;
-  border-radius: 10px;
-  background: var(--content-card-bg);
-  color: inherit;
-  font: inherit;
-  font-size: 14px;
-  line-height: 1.5;
-  text-align: left;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.recent-query-actions {
-  position: absolute;
-  top: 6px;
-  right: 6px;
+/* Research queries use the same unboxed authored-message treatment and
+   Markdown renderer as an open thread. */
+.recent-query-block {
   display: flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 6px;
-  background: var(--content-card-bg);
-  opacity: 0;
-  transition: opacity var(--transition-fast);
+  flex-direction: column;
+  gap: 8px;
 }
 
-.recent-query-card:hover .recent-query-actions,
-.recent-query-card:focus-within .recent-query-actions {
-  opacity: 1;
+.recent-query-question-link {
+  width: fit-content;
+  max-width: 100%;
+  cursor: pointer;
 }
 
-.recent-query-action {
-  display: grid;
-  width: 22px;
-  height: 22px;
-  min-height: 0;
-  place-items: center;
+.recent-query-question-link:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+.recent-query-card.research-prompt {
+  position: relative;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+}
+
+/* Footer row: thread actions first, then the event metadata (context phrase
+   and relative time) left-aligned beside them and vertically centered. */
+.recent-query-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  min-width: 0;
+  /* Adds to the block's 8px gap above the controls. */
+  margin-top: 2px;
+}
+
+.recent-query-metadata {
+  min-width: 0;
+  margin: 0;
+}
+
+.recent-query-metadata .activity-metadata {
+  align-items: center;
+}
+
+/* Placement only: the summary's typography is the shared surface recipe. */
+.recent-query-recap {
+  margin: 0;
   padding: 0;
-  border: 0;
-  border-radius: 5px;
-  color: var(--text-subtle);
-  background: transparent;
 }
 
-.recent-query-action:hover {
+.recent-query-block > .recent-query-spinner {
+  align-self: flex-start;
+}
+
+.recent-query-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0 0 0 10px;
+  list-style: none;
+  cursor: default;
+}
+
+.recent-query-child {
+  --recent-query-child-line-height: 1.3;
+  position: relative;
+  min-width: 0;
+  padding-left: 18px;
+  line-height: var(--recent-query-child-line-height);
+}
+
+.recent-query-child::before {
+  content: "";
+  position: absolute;
+  top: calc(0.15em - 2px);
+  left: 2px;
+  width: 7px;
+  height: 0.5em;
+  border-left: 1px solid var(--text-subtle);
+  border-bottom: 1px solid var(--text-subtle);
+  border-bottom-left-radius: 2px;
+}
+
+.recent-query-child-link {
+  display: inline;
+  min-height: 0;
   color: var(--text-interactive);
-  background: var(--surface-fill-hover);
+  font-size: var(--research-body-font-size);
+  line-height: var(--recent-query-child-line-height);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.recent-query-child-link:hover {
+  text-decoration: none;
+}
+
+.recent-query-child-link:hover .recent-query-child-question {
+  text-decoration: underline;
+}
+
+.recent-query-child-link:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.recent-query-child-target {
+  color: var(--text-subtle);
+  font-size: var(--research-body-font-size);
+  line-height: var(--recent-query-child-line-height);
 }
 
 .recent-activity-load-older {

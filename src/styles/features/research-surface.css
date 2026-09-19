@@ -222,6 +222,12 @@
 /* Shared tweet embed used both as a Home item and as a research-message
    attachment. Home-only placement rules remain in journal.css. */
 
+/* Only feed entries carry the hover menu that occupies the tweet header's
+   top-right corner; embedded tweets inside research messages need no inset. */
+.journal-entry .journal-tweet-head {
+  padding-right: 22px;
+}
+
 .journal-tweet-placeholder {
   display: flex;
   flex-direction: column;
