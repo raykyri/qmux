@@ -430,9 +430,7 @@ test.skip("the agent setup guide appears only when the Home feed is empty", () =
   );
 });
 
-// Enabled in P9, which restores the saved anchor on mount and persists it per
-// page. The helpers it exercises are exported here.
-test.skip("the feed scroll anchor round-trips correctly", () => {
+test("the feed scroll anchor round-trips correctly", () => {
   // Canvas top accounts for elements above the virtualized list.
   const canvasTop = 212;
   for (const [rowOffset, scrollTop] of [

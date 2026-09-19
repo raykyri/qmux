@@ -170,7 +170,6 @@ import {
   resolveResearchScope,
   treeForResearchScope,
   treesForResearchScope,
-  type ResearchFolderScope,
   workspaceIsInResearchScope,
 } from "./lib/researchScope";
 import ResearchDocument from "./components/research/ResearchDocument";
@@ -339,8 +338,13 @@ import {
 } from "./lib/researchShortcuts";
 import { createTranscriptPublicationDraft } from "./lib/publicationDrafts";
 import type { PublicationBinding } from "./lib/publication";
+import { useActivityFeedState } from "./hooks/useActivityFeedState";
 import { useNativeWebOverlayRegion } from "./hooks/useNativeWebOverlayRegion";
 import { useQmuxEvents } from "./hooks/useQmuxEvents";
+import {
+  useResearchNavigationState,
+  RESEARCH_FOLDER_SCOPE_KEY,
+} from "./hooks/useResearchNavigationState";
 import type {
   BrowserOverlayMode,
   BrowserOverlaySize,
@@ -418,7 +422,6 @@ import {
 import {
   canGoWorkspaceBack,
   canGoWorkspaceForward,
-  initResearchWorkspaceHistory,
   pruneResearchWorkspaceHistory,
   pushResearchWorkspaceHistory,
   researchWorkspaceHistoryBack,
@@ -815,8 +818,6 @@ const GLOBAL_TASK_LAUNCHER_HOTKEY_OPTIONS: ReadonlyArray<{
 // persisted last-tab id from an older build is ignored instead of restored.
 const HOME_TAB_ID = "__home__";
 const ACTIVE_RESEARCH_TREE_KEY = "qmux.active-research-tree.v1";
-const RESEARCH_VISIBILITY_FILTER_KEY = "qmux.research-visibility-filter.v1";
-const LEGACY_SHOW_ARCHIVED_RESEARCH_KEY = "qmux.show-archived-research.v1";
 const RESEARCH_VISIBILITY_FILTER_OPTIONS: ReadonlyArray<{
   id: ResearchVisibilityFilter;
   label: string;
@@ -826,10 +827,6 @@ const RESEARCH_VISIBILITY_FILTER_OPTIONS: ReadonlyArray<{
   { id: "all", label: "Show all" },
 ];
 const ACTIVE_RESEARCH_PANE_KEY = "qmux.active-research-pane.v1";
-const RESEARCH_FOLDER_SCOPE_KEY = "qmux.research-folder-scope.v1";
-// Whether the Journal page is forward on the research surface. Selection-level
-// UI state, like the active tree id — the journal's contents live backend-side.
-const JOURNAL_OPEN_KEY = "qmux.journal-open.v1";
 // Agent ids whose Home rail the user has hidden via the group selector. Persisted
 // as a JSON array; a terminal's absence means it's shown (new terminals default
 // visible).
@@ -2289,37 +2286,21 @@ function MainApp() {
         }
       });
   }, []);
-  const [journalOpen, setJournalOpenState] = useState(
-    () => localStorage.getItem(JOURNAL_OPEN_KEY) === "true",
-  );
-  const journalOpenRef = useRef(journalOpen);
-  journalOpenRef.current = journalOpen;
-  const setJournalOpen = useCallback((open: boolean) => {
-    journalOpenRef.current = open;
-    setJournalOpenState(open);
-    localStorage.setItem(JOURNAL_OPEN_KEY, open ? "true" : "false");
-  }, []);
-  const [researchWorkspaceHistory, setResearchWorkspaceHistory] = useState(() =>
-    initResearchWorkspaceHistory(
-      localStorage.getItem(JOURNAL_OPEN_KEY) === "true" ? { kind: "journal" } : null,
-    ),
-  );
-  const researchWorkspaceHistoryRef = useRef(researchWorkspaceHistory);
-  researchWorkspaceHistoryRef.current = researchWorkspaceHistory;
-  const [researchVisibilityFilter, setResearchVisibilityFilter] =
-    useState<ResearchVisibilityFilter>(() => {
-      const stored = localStorage.getItem(RESEARCH_VISIBILITY_FILTER_KEY);
-      if (stored === "active" || stored === "archived" || stored === "all") {
-        return stored;
-      }
-      return localStorage.getItem(LEGACY_SHOW_ARCHIVED_RESEARCH_KEY) === "true"
-        ? "all"
-        : "active";
-    });
-  const changeResearchVisibilityFilter = useCallback((filter: ResearchVisibilityFilter) => {
-    setResearchVisibilityFilter(filter);
-    localStorage.setItem(RESEARCH_VISIBILITY_FILTER_KEY, filter);
-  }, []);
+  const {
+    journalOpen,
+    journalOpenRef,
+    setJournalOpen,
+    researchWorkspaceHistory,
+    researchWorkspaceHistoryRef,
+    setResearchWorkspaceHistory,
+    researchVisibilityFilter,
+    changeResearchVisibilityFilter,
+    researchFolderScope,
+    changeResearchFolderScope,
+  } = useResearchNavigationState();
+  // The Home feed's scroll anchor is owned here, not by the feed: opening a
+  // document unmounts the feed, and a scroll must not rerender App.
+  const activityFeedState = useActivityFeedState();
   // Read by mark-viewed acknowledgment (a stable callback) to decide whether
   // any attention badge was actually lit without threading the lists through
   // its dependencies.
@@ -2327,19 +2308,6 @@ function MainApp() {
   const archivedResearchTreesRef = useRef(archivedResearchTrees);
   researchTreesRef.current = researchTrees;
   archivedResearchTreesRef.current = archivedResearchTrees;
-  // Which single folder the Research sidebar is scoped to. The raw stored
-  // value is resolved against live research workspaces wherever it is read.
-  const [researchFolderScope, setResearchFolderScope] = useState<ResearchFolderScope>(
-    () => localStorage.getItem(RESEARCH_FOLDER_SCOPE_KEY),
-  );
-  const changeResearchFolderScope = useCallback((scope: ResearchFolderScope) => {
-    setResearchFolderScope(scope);
-    if (scope) {
-      localStorage.setItem(RESEARCH_FOLDER_SCOPE_KEY, scope);
-    } else {
-      localStorage.removeItem(RESEARCH_FOLDER_SCOPE_KEY);
-    }
-  }, []);
   const [researchActivity, setResearchActivity] = useState<ResearchNode[]>([]);
   // Runs whose background summary job is in flight. Held only for the session:
   // the jobs die with the process, so a restart correctly shows no spinner.
@@ -19245,6 +19213,7 @@ function MainApp() {
           ) : null}
           {researchStageView === "journal" && config ? (
             <ResearchActivityFeed
+              {...activityFeedState}
               composer={
                 <ResearchQueryComposer
                   adapters={config.adapters}

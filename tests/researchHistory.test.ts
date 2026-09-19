@@ -15,6 +15,7 @@ import {
   researchHistoryBack,
   researchHistoryForward,
   researchSwipeDirection,
+  researchSwipeTailCapturesWheel,
   researchWorkspaceHistoryBack,
   researchWorkspaceHistoryForward,
 } from "../src/lib/researchHistory";
@@ -178,4 +179,13 @@ test("pruning preserves the current visit and returns the same stack when unchan
     entries: [journal],
     index: 0,
   });
+});
+
+test("swipe tail captures horizontal momentum per wheel event", () => {
+  assert.equal(researchSwipeTailCapturesWheel(-40, 0), true);
+  assert.equal(researchSwipeTailCapturesWheel(-12, 4), true);
+  // Vertical scroll on the page the swipe opened is not captured.
+  assert.equal(researchSwipeTailCapturesWheel(0, 30), false);
+  assert.equal(researchSwipeTailCapturesWheel(4, 12), false);
+  assert.equal(researchSwipeTailCapturesWheel(10, -10), false);
 });

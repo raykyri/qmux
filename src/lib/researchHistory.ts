@@ -37,6 +37,13 @@ export function researchSwipeDirection(
   return deltaX < 0 ? -1 : 1;
 }
 
+/** Whether a wheel event is the horizontal momentum tail of a swipe that has
+ * already navigated. Judged per event rather than against the gesture's
+ * running totals, which stay horizontal for as long as the tail lasts. */
+export function researchSwipeTailCapturesWheel(deltaX: number, deltaY: number): boolean {
+  return Math.abs(deltaX) > Math.abs(deltaY);
+}
+
 /** Starts a fresh history at the given entry node (e.g. on a tree switch). */
 export function initResearchHistory(nodeId: string | null): ResearchHistory {
   return nodeId ? { entries: [nodeId], index: 0 } : EMPTY_RESEARCH_HISTORY;

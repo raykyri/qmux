@@ -42,6 +42,7 @@ import { openExternalUrl } from "../../lib/api";
 import { writeClipboardText } from "../../lib/clipboard";
 import type { ResearchFolderState } from "../../lib/researchFolders";
 import { isActiveResearchStatus } from "../../lib/researchThreads";
+import { useResearchSwipeNavigation } from "../../hooks/useResearchSwipeNavigation";
 import { TweetEmbed } from "./TweetEmbed";
 import { ResearchDocumentFrame } from "./ResearchDocumentChrome";
 import ActivityMetadataLine from "../ActivityMetadataLine";
@@ -99,6 +100,10 @@ const EMPTY_RECAP_PENDING_NODE_IDS: ReadonlySet<string> = new Set<string>();
 export interface ResearchActivityFeedProps {
   /** The Home query composer, rendered above the first feed row. */
   composer: ReactNode;
+  /** The anchor to restore on mount. Read once: the feed owns its scroll
+   * position afterwards and reports it through onScrollAnchorChange. */
+  initialScrollAnchor?: RecentActivityScrollAnchor | null;
+  onScrollAnchorChange?: (anchor: RecentActivityScrollAnchor | null) => void;
   /** Home lists every item; Bookmarks lists only queries whose thread is
    * bookmarked, without the composer or the setup guide. */
   view?: ResearchActivityFeedView;
@@ -752,6 +757,8 @@ function MeasuredActivityRow({
 
 function ResearchActivityFeed({
   composer,
+  initialScrollAnchor = null,
+  onScrollAnchorChange,
   view = "home",
   setupGuide,
   items,
@@ -793,12 +800,16 @@ function ResearchActivityFeed({
   const [deletingTree, setDeletingTree] = useState<ResearchTreeSummary | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const initialScrollAnchorRef = useRef(initialScrollAnchor);
+  const onScrollAnchorChangeRef = useRef(onScrollAnchorChange);
+  onScrollAnchorChangeRef.current = onScrollAnchorChange;
   const virtualCanvasRef = useRef<HTMLDivElement | null>(null);
   const loadSentinelRef = useRef<HTMLDivElement | null>(null);
   const onBackRef = useRef(onBack);
   const onForwardRef = useRef(onForward);
   onBackRef.current = onBack;
   onForwardRef.current = onForward;
+  useResearchSwipeNavigation(scrollRef, onBack, onForward);
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented || isEditableTarget(event.target)) {
@@ -958,6 +969,7 @@ function ResearchActivityFeed({
         }
       : null;
     setViewport({ scrollTop: feedScrollTop, height: scroller.clientHeight });
+    onScrollAnchorChangeRef.current?.(anchorRef.current);
     if (scroller.scrollTop <= 60) setNewActivityCount(0);
   }, []);
 
@@ -1004,6 +1016,22 @@ function ResearchActivityFeed({
     }
     captureScrollState();
   }, [captureScrollState, metrics, rows]);
+
+  // Restore the anchor App held while the feed was unmounted. Runs once, from
+  // the ref, so a later save cannot re-scroll the reader.
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    const anchor = initialScrollAnchorRef.current;
+    const index = anchor ? metricsRef.current.indexByKey.get(anchor.key) : undefined;
+    if (scroller && anchor && index !== undefined) {
+      anchorRef.current = anchor;
+      scroller.scrollTop = recentActivityAnchorScrollTop(
+        virtualCanvasRef.current?.offsetTop ?? 0,
+        metricsRef.current.offsets[index],
+        anchor.offset,
+      );
+    }
+  }, []);
 
   useEffect(() => {
     const previousTopId = previousTopItemIdRef.current;
