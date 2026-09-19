@@ -1824,7 +1824,9 @@ pub fn response_preview(
         }
     }
     let text = text_after_last_activity.or(fallback_text)?;
-    let (preview, truncated) = normalized_prefix(text, 220);
+    // Strip before cutting so a `[[Term]]` marker never straddles the cut.
+    let text = crate::wikilinks::strip_wikilinks(text);
+    let (preview, truncated) = normalized_prefix(&text, 220);
     Some(if truncated {
         format!("{}…", preview.trim_end())
     } else {
@@ -2273,6 +2275,24 @@ pub const MAX_RESEARCH_LAUNCH_INSTRUCTION_BYTES: usize = 4 * 1024;
 /// strips the block as qmux-injected machinery rather than user words.
 pub const RESEARCH_LAUNCH_INSTRUCTION_TAG: &str = "research-instructions";
 
+/// The tag wrapping qmux's built-in linking instruction. Same tagged-block
+/// conventions as [`RESEARCH_LAUNCH_INSTRUCTION_TAG`], so display, copies,
+/// previews, and exports strip it the same way.
+pub const RESEARCH_LINKING_INSTRUCTION_TAG: &str = "research-linking";
+
+/// Built-in instruction asking the agent to mark key terms as wikilinks. The
+/// frontend renders `[[Term]]` / `[[Term|shown text]]` as link elements;
+/// previews and copies keep only the display text (see `crate::wikilinks`).
+/// Sent with every research launch, ahead of the user's own instruction block
+/// so the user's text can override it.
+pub const RESEARCH_LINKING_INSTRUCTION: &str = "Mark key terms in your answer as wikilinks so qmux can index and cross-reference them. Wrap a term in double square brackets: [[Term]]. When the wording in the sentence differs from the term's canonical name (plural, possessive, abbreviation, shortened form), write [[Canonical name|wording in the sentence]] so the sentence still reads naturally.
+
+Be thorough. Link every proper noun and named entity: people, organizations, companies, products, projects, papers, books, datasets, models, standards, laws, places, and events. Also link every named technique, method, algorithm, metric, and defined concept a reader might want to look up. Link at least the first occurrence of each term in every section; linking later occurrences is fine. Prefer specific terms over generic words.
+
+When the answer is a list of items, link every item: wrap the item's name or head term at the start of the item, for example \"- [[Item name]]: why it matters\". Do the same for table rows and numbered steps that name something.
+
+Do not put wikilinks inside code spans, code blocks, URLs, headings, or existing Markdown links, and do not nest them. Otherwise write normal Markdown; the brackets are the only addition.";
+
 /// Validates an instruction as entered in settings: trimmed, `None` when
 /// empty (meaning "send prompts unchanged"), refused over the byte cap.
 pub fn sanitized_research_launch_instruction(raw: &str) -> Result<Option<String>, String> {
@@ -2321,28 +2341,47 @@ fn neutralized_instruction_markup(text: &str) -> String {
     result
 }
 
-/// Applies the user's custom launch instruction to a fully assembled research
-/// launch prompt. `None`/empty leaves the prompt untouched — the historical
-/// behavior. Otherwise the instruction rides in a tagged instruction block
+/// Applies qmux's built-in linking instruction and the user's custom launch
+/// instruction to a fully assembled research launch prompt. The linking block
+/// is always sent; the user block follows it when set, so user text can
+/// override the built-in guidance. Both ride in tagged instruction blocks
 /// *before* the prompt, matching the leading-block discipline every strip
 /// path already handles; a prompt that begins with a slash command must keep
 /// it at the very start of the message (the adapter will not recognize it
-/// otherwise), so the block follows the prompt in that form only. Either way
+/// otherwise), so the blocks follow the prompt in that form only. Either way
 /// the prompt stays a contiguous, normalized substring of the sent text, so
 /// response-boundary matching keeps working.
 ///
-/// The byte cap is re-enforced here (cut at a char boundary) so a hand-edited
-/// preferences file cannot ship an argv-breaking prompt.
+/// The byte cap on the user instruction is re-enforced here (cut at a char
+/// boundary) so a hand-edited preferences file cannot ship an argv-breaking
+/// prompt.
 pub fn prompt_with_research_launch_instruction(
     prompt: String,
     instruction: Option<&str>,
 ) -> String {
-    let Some(instruction) = instruction else {
-        return prompt;
-    };
-    let mut trimmed = instruction.trim();
+    let mut blocks = vec![tagged_block(
+        RESEARCH_LINKING_INSTRUCTION_TAG,
+        RESEARCH_LINKING_INSTRUCTION,
+    )];
+    if let Some(user_block) = user_instruction_block(instruction) {
+        blocks.push(user_block);
+    }
+    let blocks = blocks.join("\n\n");
+    if prompt.starts_with('/') {
+        format!("{prompt}\n\n{blocks}")
+    } else {
+        format!("{blocks}\n\n{prompt}")
+    }
+}
+
+fn tagged_block(tag: &str, body: &str) -> String {
+    format!("<{tag}>\n{body}\n</{tag}>")
+}
+
+fn user_instruction_block(instruction: Option<&str>) -> Option<String> {
+    let mut trimmed = instruction?.trim();
     if trimmed.is_empty() {
-        return prompt;
+        return None;
     }
     if trimmed.len() > MAX_RESEARCH_LAUNCH_INSTRUCTION_BYTES {
         let mut cut = MAX_RESEARCH_LAUNCH_INSTRUCTION_BYTES;
@@ -2352,13 +2391,7 @@ pub fn prompt_with_research_launch_instruction(
         trimmed = &trimmed[..cut];
     }
     let body = neutralized_instruction_markup(trimmed);
-    let tag = RESEARCH_LAUNCH_INSTRUCTION_TAG;
-    let block = format!("<{tag}>\n{body}\n</{tag}>");
-    if prompt.starts_with('/') {
-        format!("{prompt}\n\n{block}")
-    } else {
-        format!("{block}\n\n{prompt}")
-    }
+    Some(tagged_block(RESEARCH_LAUNCH_INSTRUCTION_TAG, &body))
 }
 
 /// The synthetic turn that carries a document's markdown through the response
@@ -2653,7 +2686,8 @@ pub fn conversation_preview(turns: &[crate::transcript::Turn]) -> Option<String>
                 _ => None,
             })
         })?;
-    let (preview, truncated) = normalized_prefix(text, 220);
+    let text = crate::wikilinks::strip_wikilinks(text);
+    let (preview, truncated) = normalized_prefix(&text, 220);
     Some(if truncated {
         format!("{}…", preview.trim_end())
     } else {
@@ -3595,6 +3629,44 @@ mod tests {
     }
 
     #[test]
+    fn previews_keep_only_wikilink_display_text() {
+        let turns = vec![
+            export_turn("u1", "user", vec![text_block("Question")]),
+            export_turn(
+                "a1",
+                "assistant",
+                vec![text_block("Use [[Rust]] with [[Tokio|tokio's]] runtime.")],
+            ),
+        ];
+        assert_eq!(
+            response_preview(&turns, None, "Question", &[]).as_deref(),
+            Some("Use Rust with tokio's runtime.")
+        );
+        let exported = conversation_export_turns("node-1", &turns).unwrap();
+        assert_eq!(
+            conversation_preview(&exported).as_deref(),
+            Some("Use Rust with tokio's runtime.")
+        );
+        // Stripping happens before the cut, so a marker near the limit is
+        // never split into a dangling `[[`: the raw `[[Linked term]]` would
+        // straddle the 220-char cut, while its display text fits inside it.
+        let long_lead = format!("{}ab ", "word ".repeat(41));
+        let turns = vec![
+            export_turn("u1", "user", vec![text_block("Question")]),
+            export_turn(
+                "a1",
+                "assistant",
+                vec![text_block(&format!(
+                    "{long_lead}[[Linked term]] continues here"
+                ))],
+            ),
+        ];
+        let preview = response_preview(&turns, None, "Question", &[]).unwrap();
+        assert!(!preview.contains("[["), "{preview}");
+        assert!(preview.contains("Linked term"), "{preview}");
+    }
+
+    #[test]
     fn conversation_prompt_joins_the_first_user_turn_text_blocks() {
         let turns = vec![export_turn(
             "u1",
@@ -3647,15 +3719,24 @@ mod tests {
         assert_eq!(completed_exchange_boundary(&with_rollback), Some(0));
     }
 
+    fn linking_block() -> String {
+        format!("<research-linking>\n{RESEARCH_LINKING_INSTRUCTION}\n</research-linking>")
+    }
+
     #[test]
-    fn research_launch_instructions_wrap_prompts_in_a_leading_tagged_block() {
+    fn research_launch_instructions_wrap_prompts_in_leading_tagged_blocks() {
         let sent = prompt_with_research_launch_instruction(
             "Why is the sky blue?".to_string(),
             Some("Answer concisely,\nin a few short paragraphs."),
         );
+        // Built-in linking guidance first, then the user's block, so the
+        // user's text is the later (overriding) instruction.
         assert_eq!(
             sent,
-            "<research-instructions>\nAnswer concisely,\nin a few short paragraphs.\n</research-instructions>\n\nWhy is the sky blue?"
+            format!(
+                "{}\n\n<research-instructions>\nAnswer concisely,\nin a few short paragraphs.\n</research-instructions>\n\nWhy is the sky blue?",
+                linking_block()
+            )
         );
         // The displayed prompt must stay a normalized substring of the sent
         // prompt so response-boundary matching still finds it.
@@ -3677,22 +3758,39 @@ mod tests {
         // The slash command only registers at the very start of the message.
         assert!(sent.starts_with("/deep-research Why?"), "{sent}");
         assert!(
-            sent.ends_with("<research-instructions>\nKeep it short.\n</research-instructions>"),
+            sent.ends_with(&format!(
+                "{}\n\n<research-instructions>\nKeep it short.\n</research-instructions>",
+                linking_block()
+            )),
             "{sent}"
         );
     }
 
     #[test]
-    fn research_launch_instructions_leave_prompts_unchanged_when_unset() {
+    fn research_launch_instructions_send_only_the_linking_block_when_unset() {
         let prompt = "Why is the sky blue?".to_string();
+        let expected = format!("{}\n\nWhy is the sky blue?", linking_block());
         assert_eq!(
             prompt_with_research_launch_instruction(prompt.clone(), None),
-            prompt
+            expected
         );
         assert_eq!(
             prompt_with_research_launch_instruction(prompt.clone(), Some("   \n\t ")),
-            prompt
+            expected
         );
+        assert!(!expected.contains("<research-instructions>"));
+        // The built-in block strips like any other injected instruction.
+        assert_eq!(
+            crate::transcript::strip_leading_tagged_instruction_blocks(&expected),
+            Some("\nWhy is the sky blue?")
+        );
+    }
+
+    #[test]
+    fn the_linking_instruction_is_plain_prose_that_cannot_break_its_wrapper() {
+        assert!(!RESEARCH_LINKING_INSTRUCTION.contains('<'));
+        assert!(RESEARCH_LINKING_INSTRUCTION.contains("[[Term]]"));
+        assert!(RESEARCH_LINKING_INSTRUCTION.contains("list"));
     }
 
     #[test]
@@ -3747,9 +3845,9 @@ mod tests {
         // ...and the apply path re-enforces the cap defensively (a hand-edited
         // preferences file), cutting at a char boundary.
         let sent = prompt_with_research_launch_instruction("Q".to_string(), Some(&oversized));
-        let block_body_len = sent
-            .strip_prefix("<research-instructions>\n")
-            .and_then(|rest| rest.find("\n</research-instructions>"))
+        let user_block_start = sent.find("<research-instructions>\n").expect("user block");
+        let block_body_len = sent[user_block_start + "<research-instructions>\n".len()..]
+            .find("\n</research-instructions>")
             .expect("wrapped block");
         assert!(block_body_len <= MAX_RESEARCH_LAUNCH_INSTRUCTION_BYTES);
         assert!(

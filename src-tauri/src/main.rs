@@ -43,6 +43,7 @@ mod transcript;
 mod turn_queue;
 mod updater;
 mod user_notifications;
+mod wikilinks;
 mod workspace;
 
 use adapters::{
