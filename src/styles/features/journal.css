@@ -681,7 +681,8 @@
   cursor: pointer;
 }
 
-.encyclopedia-source-link:hover:not(:disabled) {
+.encyclopedia-source-link:hover:not(:disabled),
+.encyclopedia-source-link:focus-visible {
   text-decoration: underline;
   text-underline-offset: 2px;
 }

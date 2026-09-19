@@ -24,9 +24,21 @@ saved links and X posts, newest first.
   context. Opening one selects its thread and scrolls to the passage; the
   request is recorded under `qmux.research-navigation.v1` and cleared once the
   document lands on it.
+- The Encyclopedia section between the journal rows and the research list holds
+  pages grown from wikilinks. Clicking (or focusing and pressing Enter or Space
+  on) a `[[Term]]` in an answer opens the term's page, creating it on first
+  click: the surrounding block, the other linked terms in that block, and the
+  thread's question are sent to the model so it writes about the sense the
+  answer meant. Pages are stored per research folder under
+  `encyclopedia-v1/` inside the workspace state directory, list the passages
+  that mention them under "Mentioned in", and link onward to other pages through
+  their own wikilinks. The page header offers Rewrite and Delete. An OpenRouter
+  key in Settings writes pages through OpenRouter; without one they are written
+  by the answering agent.
 - `Ctrl-Tab` and `Shift-Ctrl-Tab` step through Home, Bookmarks and Highlights,
-  then the scoped research threads, then the visible research terminals,
-  wrapping both ways. `Cmd-1` through `Cmd-9` stay assigned to threads only.
+  then the scoped encyclopedia pages, then the scoped research threads, then the
+  visible research terminals, wrapping both ways. `Cmd-1` through `Cmd-9` stay
+  assigned to threads only.
 - A card's context menu renames, archives or restores, deletes, stars, and
   groups a thread into a folder — the same actions as its sidebar row.
 - The feed's header menu ("Feed actions") holds Refresh and

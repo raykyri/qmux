@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import type { ReactNode } from "react";
 import { LoaderCircle, RotateCw, Trash2 } from "lucide-react";
 import type { EncyclopediaPage, EncyclopediaSource } from "../../types";
 import { IS_MAC } from "../../lib/appHelpers";
@@ -21,7 +20,6 @@ export interface EncyclopediaPageViewProps {
   canGoForward?: boolean;
   onBack?: () => void;
   onForward?: () => void;
-  navActions?: ReactNode;
 }
 
 const SOURCE_EXCERPT_LIMIT = 220;
@@ -67,7 +65,6 @@ export default function EncyclopediaPageView({
   canGoForward = false,
   onBack,
   onForward,
-  navActions,
 }: EncyclopediaPageViewProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   useEffect(() => {
@@ -87,12 +84,10 @@ export default function EncyclopediaPageView({
       forwardTitle={`Forward (${IS_MAC ? "⌘]" : "Ctrl+]"})`}
       onBack={onBack}
       onForward={onForward}
-      navActions={navActions}
       headerActions={
         page ? (
           <div className="encyclopedia-page-actions">
             <Button
-              variant="icon"
               className="research-history-button"
               onClick={onRegenerate}
               disabled={generating}
@@ -102,7 +97,6 @@ export default function EncyclopediaPageView({
               <RotateCw size={16} aria-hidden="true" />
             </Button>
             <Button
-              variant="icon"
               className="research-history-button"
               onClick={() => setConfirmingDelete(true)}
               aria-label="Delete page"

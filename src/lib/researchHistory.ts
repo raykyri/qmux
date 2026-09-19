@@ -121,7 +121,9 @@ export function sameResearchWorkspaceVisit(
   if (left.kind !== right.kind) return false;
   if (left.kind === "journal" && right.kind === "journal") return true;
   if (left.kind === "document" && right.kind === "document") return left.treeId === right.treeId;
-  if (left.kind === "encyclopedia" && right.kind === "encyclopedia") return left.slug === right.slug;
+  if (left.kind === "encyclopedia" && right.kind === "encyclopedia") {
+    return left.slug === right.slug;
+  }
   return false;
 }
 

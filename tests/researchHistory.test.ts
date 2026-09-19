@@ -145,6 +145,36 @@ test("re-opening the current workspace page does not grow the stack", () => {
   assert.equal(pushResearchWorkspaceHistory(history, { kind: "journal" }), history);
 });
 
+test("encyclopedia pages are workspace pages of their own, told apart by slug", () => {
+  const journal = { kind: "journal" } as const;
+  const alpha = { kind: "encyclopedia", slug: "alpha" } as const;
+  const beta = { kind: "encyclopedia", slug: "beta" } as const;
+  let history = initResearchWorkspaceHistory(journal);
+  history = pushResearchWorkspaceHistory(history, alpha);
+  // A different slug is a new page; the same slug is the page already shown, so
+  // following a link to the open page must not grow the stack.
+  history = pushResearchWorkspaceHistory(history, beta);
+  assert.equal(pushResearchWorkspaceHistory(history, beta), history);
+  assert.deepEqual(history, { entries: [journal, alpha, beta], index: 2 });
+
+  const back = researchWorkspaceHistoryBack(history);
+  assert.ok(back);
+  assert.deepEqual(back.visit, alpha);
+  const forward = researchWorkspaceHistoryForward(back.history);
+  assert.ok(forward);
+  assert.deepEqual(forward.visit, beta);
+});
+
+test("pruning removed trees keeps encyclopedia visits, which no tree owns", () => {
+  const alpha = { kind: "encyclopedia", slug: "alpha" } as const;
+  const docA = { kind: "document", treeId: "tree-a" } as const;
+  const history = { entries: [alpha, docA], index: 0 };
+  assert.deepEqual(pruneResearchWorkspaceHistory(history, () => false), {
+    entries: [alpha],
+    index: 0,
+  });
+});
+
 test("pruning removed trees from workspace history keeps the cursor on the current page", () => {
   const journal = { kind: "journal" } as const;
   const docA = { kind: "document", treeId: "tree-a" } as const;
