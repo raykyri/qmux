@@ -25,6 +25,7 @@ import ActivityMetadataLine, {
 } from "../src/components/ActivityMetadataLine";
 import {
   buildRecentActivityVirtualRows,
+  ResearchQueryCard,
   virtualActivityRange,
 } from "../src/components/research/ResearchActivityFeed";
 import type { JournalEntry } from "../src/lib/journal";
@@ -192,21 +193,27 @@ test("live follow-ups stay under their root and survive root updates", () => {
   assert.deepEqual(upsertRecentActivityResearchNode([], child), []);
 });
 
-test("run nodes enter history while documents do not", () => {
-  const node = {
-    id: "root",
-    treeId: tree.id,
-    parentNodeId: null,
-    prompt: "Question",
-    adapter: "codex",
-    groupId: "workspace",
-    worktreeDir: "/tmp/workspace",
-    status: "complete",
-    createdAt: 100,
-    highlights: [],
-  } satisfies ResearchNode;
-  assert.equal(recentResearchQueryFromNode(node)?.nodeId, "root");
-  assert.equal(recentResearchQueryFromNode({ ...node, kind: "document" }), null);
+const feedNode = {
+  id: "root",
+  treeId: tree.id,
+  parentNodeId: null,
+  prompt: "Question",
+  adapter: "codex",
+  groupId: "workspace",
+  worktreeDir: "/tmp/workspace",
+  status: "complete",
+  createdAt: 100,
+  highlights: [],
+} satisfies ResearchNode;
+
+test("only top-level run nodes enter the Home feed", () => {
+  assert.equal(recentResearchQueryFromNode(feedNode)?.nodeId, "root");
+  assert.equal(recentResearchQueryFromNode({ ...feedNode, parentNodeId: "root" }), null);
+  assert.equal(recentResearchQueryFromNode({ ...feedNode, kind: "document" }), null);
+});
+
+test("run nodes carry their recap and targeted passage into the feed", () => {
+  const node = feedNode;
   // Follow-ups are only produced when the caller asks for them; they travel as
   // a root's children, not as rows of their own.
   const reply = {
@@ -361,6 +368,69 @@ test("variable-height virtualization returns a small overscanned window", () => 
   assert.ok(range.start > 0);
   assert.ok(range.end < sizes.length);
   assert.ok(range.end - range.start < 50);
+});
+
+test("home-feed research prompts render markdown links", () => {
+  const html = renderToStaticMarkup(
+    createElement(ResearchQueryCard, {
+      query: {
+        ...query,
+        prompt:
+          "what would solving the alignment problem this way look like?\nhttps://x.com/OrionJohnston/status/2097801834224312595",
+      },
+      onOpen: () => {},
+      onContextMenu: () => {},
+    }),
+  );
+
+  assert.match(html, /turn-markdown/);
+  assert.match(html, /href="https:\/\/x\.com\/OrionJohnston\/status\/2097801834224312595"/);
+  // The card renders the authored message, not a plain-text open button.
+  assert.doesNotMatch(html, /recent-query-open/);
+});
+
+test("home-feed research prompts show a recap below the question", () => {
+  const withRecap = renderToStaticMarkup(
+    createElement(ResearchQueryCard, {
+      query: { ...query, recap: "The result is ready." },
+      onOpen: () => {},
+      onContextMenu: () => {},
+    }),
+  );
+  const withoutRecap = renderToStaticMarkup(
+    createElement(ResearchQueryCard, {
+      query,
+      onOpen: () => {},
+      onContextMenu: () => {},
+    }),
+  );
+
+  assert.ok(
+    withRecap.indexOf("turn-markdown") < withRecap.indexOf("Summary: The result is ready."),
+  );
+  assert.doesNotMatch(withoutRecap, /Summary:/);
+});
+
+test("home-feed cards hold the recap slot while a summary generates", () => {
+  const answered: RecentResearchQuery = { ...query, status: "complete" };
+  const card = (overrides: Record<string, unknown>) =>
+    renderToStaticMarkup(
+      createElement(ResearchQueryCard, {
+        query: answered,
+        onOpen: () => {},
+        onContextMenu: () => {},
+        ...overrides,
+      }),
+    );
+
+  assert.match(card({ recapPending: true }), /Generating summary/);
+  assert.doesNotMatch(card({}), /Generating summary/);
+  // The generated summary replaces the placeholder rather than joining it.
+  const generated = card({ query: { ...answered, recap: "Ready." }, recapPending: true });
+  assert.match(generated, /Summary: Ready\./);
+  assert.doesNotMatch(generated, /Generating summary/);
+  // A run still answering already shows its own spinner below the prompt.
+  assert.doesNotMatch(card({ query, recapPending: true }), /Generating summary/);
 });
 
 test("virtual feed rows omit day dividers and retain feed positions", () => {
