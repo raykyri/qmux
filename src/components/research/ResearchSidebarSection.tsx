@@ -6,7 +6,6 @@ import type {
 import { createPortal } from "react-dom";
 import {
   Archive,
-  ArchiveRestore,
   ChevronRight,
   FileText,
   Folder,
@@ -15,7 +14,6 @@ import {
   LoaderCircle,
   MoreHorizontal,
   Pencil,
-  RefreshCw,
   Star,
   StarOff,
   Terminal,
@@ -47,8 +45,12 @@ import {
   type ResearchFolderState,
   type ResearchSidebarUnit,
 } from "../../lib/researchFolders";
+import {
+  RESEARCH_TREE_MENU_WIDTH,
+  ResearchTreeMenuItems,
+} from "./ResearchTreeMenu";
 
-const RESEARCH_MENU_WIDTH = 190;
+const RESEARCH_MENU_WIDTH = RESEARCH_TREE_MENU_WIDTH;
 const RESEARCH_MENU_HEIGHT_ESTIMATE = 132;
 const RESEARCH_MENU_GAP = 4;
 const VIEWPORT_MARGIN = 8;
@@ -1430,131 +1432,20 @@ function ResearchSidebarSection({
               onMouseDown={(event) => event.stopPropagation()}
               onContextMenu={(event) => event.preventDefault()}
             >
-              <div className="group-context-actions">
-                {menu.archived ? (
-                  <button className="control-button"
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMenu(null);
-                      void onRestore(menuTree.id);
-                    }}
-                  >
-                    <ArchiveRestore size={13} aria-hidden="true" />
-                    <span>Unarchive research</span>
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      className="control-button"
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setMenu(null);
-                        onToggleStar(menuTree.id);
-                      }}
-                    >
-                      {isResearchStarred(folderState, menuTree.id) ? (
-                        <StarOff size={13} aria-hidden="true" />
-                      ) : (
-                        <Star size={13} aria-hidden="true" />
-                      )}
-                      <span>
-                        {isResearchStarred(folderState, menuTree.id) ? "Unstar" : "Star"}
-                      </span>
-                    </button>
-                    <button className="control-button"
-                      type="button"
-                      role="menuitem"
-                      onClick={() => openRenameDialog(menuTree)}
-                    >
-                      <Pencil size={13} aria-hidden="true" />
-                      <span>Rename</span>
-                    </button>
-                    {menuTree.kind === "run" ? (
-                      // Only run roots have a selected research model. Documents
-                      // and exported conversations keep their content-derived titles.
-                      <button className="control-button"
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenu(null);
-                          void onRegenerateTitle(menuTree.id);
-                        }}
-                      >
-                        <RefreshCw size={13} aria-hidden="true" />
-                        <span>Regenerate title</span>
-                      </button>
-                    ) : null}
-                    {folderState.membership[menuTree.id] ? (
-                      <button
-                        className="control-button"
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenu(null);
-                          onRemoveFromFolder([menuTree.id]);
-                        }}
-                      >
-                        <FolderMinus size={13} aria-hidden="true" />
-                        <span>Remove from folder</span>
-                      </button>
-                    ) : null}
-                    <button
-                      className="control-button"
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setMenu(null);
-                        onRequestCreateFolder([menuTree.id]);
-                      }}
-                    >
-                      <FolderPlus size={13} aria-hidden="true" />
-                      <span>New folder with item</span>
-                    </button>
-                  </>
-                )}
-                {!menu.archived ? (
-                  <>
-                    <div className="context-menu-divider" role="separator" />
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="control-button context-menu-has-shortcut"
-                      disabled={menuTree.runningCount > 0}
-                      title={
-                        menuTree.runningCount > 0
-                          ? "Research with active runs cannot be archived"
-                          : undefined
-                      }
-                      onClick={() => {
-                        setMenu(null);
-                        void onArchive(menuTree.id);
-                      }}
-                    >
-                      <Archive size={13} aria-hidden="true" />
-                      <span>Archive</span>
-                      <kbd className="context-menu-shortcut is-keycap">A</kbd>
-                    </button>
-                  </>
-                ) : null}
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="control-button context-menu-danger context-menu-has-shortcut"
-                  disabled={menuTree.runningCount > 0}
-                  title={
-                    menuTree.runningCount > 0
-                      ? "Research with active runs cannot be deleted"
-                      : undefined
-                  }
-                  onClick={() => openDeleteDialog(menuTree)}
-                >
-                  <Trash2 size={13} aria-hidden="true" />
-                  <span>Delete</span>
-                  <kbd className="context-menu-shortcut is-keycap">D</kbd>
-                </button>
-              </div>
+              <ResearchTreeMenuItems
+                tree={menuTree}
+                archived={menu.archived}
+                folderState={folderState}
+                onClose={() => setMenu(null)}
+                onToggleStar={onToggleStar}
+                onRename={openRenameDialog}
+                onArchive={(treeId) => void onArchive(treeId)}
+                onRestore={(treeId) => void onRestore(treeId)}
+                onDelete={openDeleteDialog}
+                onRemoveFromFolder={onRemoveFromFolder}
+                onRequestCreateFolder={onRequestCreateFolder}
+                onRegenerateTitle={(treeId) => void onRegenerateTitle(treeId)}
+              />
             </div>,
             document.body,
           )

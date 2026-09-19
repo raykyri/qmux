@@ -28,7 +28,10 @@ export interface ActivityEvent<TSource = unknown> {
   };
   context?: { kind: "research" | "source" | "workspace"; label: string };
   relationship?: { kind: "top-level" | "follow-up"; label: string };
-  execution?: { adapter: string; model?: string | null };
+  /** `origin` is typed here ahead of its producer: the imported-conversation
+   * arm in ActivityMetadataLine must compile before research nodes carry an
+   * origin. Nothing populates it yet. */
+  execution?: { adapter: string; model?: string | null; origin?: string | null };
   state?: { kind: ResearchNodeStatus | "ready"; label: string };
   occurredAt: number;
   source: TSource;

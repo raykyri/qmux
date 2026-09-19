@@ -20,6 +20,7 @@ import {
 } from "../src/lib/journal";
 import ActivityMetadataLine, {
   formatActivityMetadataSummary,
+  formatResearchModelSummary,
 } from "../src/components/ActivityMetadataLine";
 import {
   buildRecentActivityVirtualRows,
@@ -67,34 +68,29 @@ test("research metadata follows the shared actor/action/object grammar", () => {
   assert.equal(event.state?.label, "Running");
 });
 
-test("research metadata names the model or the thread, with the timestamp on the right", () => {
+test("research metadata names thread prompts and left-aligned Home activity", () => {
   const followUp = activityEventFromResearchQuery(query, tree);
-  assert.equal(formatActivityMetadataSummary(followUp), "Follow-up in 'Collective memory'");
+  assert.equal(formatActivityMetadataSummary(followUp), "Replied in “Collective memory”");
 
   const topLevel = activityEventFromResearchQuery(
     { ...query, parentNodeId: null, adapter: "claude", model: "fable" },
     tree,
   );
-  assert.equal(formatActivityMetadataSummary(topLevel), "You asked Claude Fable");
-  assert.equal(
-    formatActivityMetadataSummary({
-      ...topLevel,
-      execution: { adapter: "claude", model: null },
-    }),
-    "You asked Claude",
-  );
-  assert.equal(
-    formatActivityMetadataSummary({
-      ...topLevel,
-      execution: { adapter: "claude", model: "claude-opus-4-6" },
-    }),
-    "You asked Claude",
-  );
+  assert.equal(formatActivityMetadataSummary(topLevel), "");
+  assert.equal(formatResearchModelSummary("claude", "fable"), "Claude Fable");
+  assert.equal(formatResearchModelSummary("claude", null), "Claude");
+  assert.equal(formatResearchModelSummary("claude", "claude-opus-4-6"), "Claude");
+  assert.equal(formatResearchModelSummary("", null), "");
+  assert.equal(formatResearchModelSummary("claude", "fable", "imported"), "Imported");
 
-  const html = renderToStaticMarkup(createElement(ActivityMetadataLine, { event: topLevel }));
+  const html = renderToStaticMarkup(
+    createElement(ActivityMetadataLine, {
+      event: { ...topLevel, occurredAt: Date.now() - 2 * 60 * 60 * 1000 },
+    }),
+  );
   assert.ok(html.includes('class="activity-metadata-summary"'));
-  assert.ok(!html.includes("activity-metadata-primary"));
-  assert.ok(html.indexOf("You asked Claude Fable") < html.indexOf("<time"));
+  assert.match(html, /activity-metadata-summary"><time/);
+  assert.match(html, />2 hr ago<\/time>/);
 });
 
 test("saved metadata resolves type and source context", () => {
@@ -108,6 +104,7 @@ test("saved metadata resolves type and source context", () => {
   assert.equal(event.object.label, "Link");
   assert.equal(event.context?.label, "example.com");
   assert.equal(event.state, undefined);
+  assert.equal(formatActivityMetadataSummary(event), "Saved");
 });
 
 test("mixed activity sorts deterministically and malformed saved dates last", () => {

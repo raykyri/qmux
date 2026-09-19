@@ -22,40 +22,59 @@ function humanReadableModelName(adapter: string, model?: string | null): string 
   return label;
 }
 
-/** One-line summary for Recent Activity. Research asks name the model when
- * it is a readable preset; follow-ups name the thread instead. */
-export function formatActivityMetadataSummary(event: ActivityEvent): string {
-  if (event.object.kind === "research-query") {
-    if (event.relationship?.kind === "follow-up") {
-      return `Follow-up in '${event.context?.label ?? "Research"}'`;
-    }
-    const adapterLabel = adapterDisplayLabel(event.execution?.adapter ?? "");
-    const modelName = humanReadableModelName(
-      event.execution?.adapter ?? "",
-      event.execution?.model,
-    );
-    if (adapterLabel && modelName) return `You asked ${adapterLabel} ${modelName}`;
-    if (adapterLabel) return `You asked ${adapterLabel}`;
-    return "You asked";
-  }
-  return [event.actor.label, event.action.label, event.object.label].filter(Boolean).join(" ");
+/** The model that answered a thread's root prompt, as "Claude Fable" or just
+ * "Claude" when the model id has no preset name. Empty for unknown adapters. */
+export function formatResearchModelSummary(
+  adapter: string,
+  model?: string | null,
+  origin?: string | null,
+): string {
+  if (origin === "imported") return "Imported";
+  const adapterLabel = adapterDisplayLabel(adapter);
+  const modelName = humanReadableModelName(adapter, model);
+  if (adapterLabel && modelName) return `${adapterLabel} ${modelName}`;
+  return adapterLabel;
 }
 
-/** App-wide renderer for activity grammar slots. Metadata stays outside the
+/** Concise action label for Home's chronological feed. The content card carries
+ * the provider/object details, so this line only orients the reader in time and
+ * names the containing thread when a reply belongs to one. */
+export function formatActivityMetadataSummary(event: ActivityEvent): string {
+  if (event.object.kind === "research-query") {
+    if (event.execution?.origin === "imported") return "Imported";
+    if (event.relationship?.kind === "follow-up") {
+      return `Replied in “${event.context?.label ?? "Research"}”`;
+    }
+    return "";
+  }
+  if (event.action.kind === "saved") {
+    return "Saved";
+  }
+  const label = event.action.label.trim();
+  return label ? `${label[0].toUpperCase()}${label.slice(1)}` : "Activity";
+}
+
+/** Renderer for activity grammar slots. Metadata stays outside the
  * content surface because it describes the event, not the object payload. */
 export default function ActivityMetadataLine({ event }: { event: ActivityEvent }) {
   const finiteTime = Number.isFinite(event.occurredAt);
+  const summary = formatActivityMetadataSummary(event);
   return (
     <div
       className="activity-metadata"
       title={finiteTime ? new Date(event.occurredAt).toLocaleString() : undefined}
     >
-      <span className="activity-metadata-summary">{formatActivityMetadataSummary(event)}</span>
-      {finiteTime ? (
-        <time dateTime={new Date(event.occurredAt).toISOString()}>
-          {formatRelativeTime(event.occurredAt)}
-        </time>
-      ) : null}
+      <span className="activity-metadata-summary">
+        {summary}
+        {finiteTime ? (
+          <>
+            {summary ? " " : null}
+            <time dateTime={new Date(event.occurredAt).toISOString()}>
+              {formatRelativeTime(event.occurredAt)}
+            </time>
+          </>
+        ) : null}
+      </span>
     </div>
   );
 }
