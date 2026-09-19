@@ -3,7 +3,6 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-  activityDayLabel,
   activityEventFromJournalEntry,
   activityEventFromResearchQuery,
   buildRecentActivity,
@@ -250,13 +249,6 @@ test("run nodes enter history while documents do not", () => {
   );
 });
 
-test("day labels provide stable nearby buckets", () => {
-  const now = new Date(2026, 7, 30, 12).getTime();
-  assert.equal(activityDayLabel(new Date(2026, 7, 30, 8).getTime(), now), "Today");
-  assert.equal(activityDayLabel(new Date(2026, 7, 29, 23).getTime(), now), "Yesterday");
-  assert.equal(activityDayLabel(Number.NEGATIVE_INFINITY, now), "Earlier");
-});
-
 test("mixed activity pages merge by one deterministic source-aware order", () => {
   const note = recentActivityItemFromJournalEntry({
     kind: "note",
@@ -371,16 +363,14 @@ test("variable-height virtualization returns a small overscanned window", () => 
   assert.ok(range.end - range.start < 50);
 });
 
-test("virtual feed rows retain day headers and feed positions", () => {
+test("virtual feed rows omit day dividers and retain feed positions", () => {
   const events = buildRecentActivity(
     [{ kind: "note", id: "note", createdAt: "1970-01-01T00:00:00.300Z", text: "n" }],
     [query],
     [tree],
   );
   const rows = buildRecentActivityVirtualRows(events);
-  assert.equal(rows.filter((row) => row.kind === "event").length, 2);
-  assert.deepEqual(
-    rows.filter((row) => row.kind === "event").map((row) => row.position),
-    [1, 2],
-  );
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => row.position), [1, 2]);
+  assert.deepEqual(rows.map((row) => row.key), events.map((event) => event.id));
 });

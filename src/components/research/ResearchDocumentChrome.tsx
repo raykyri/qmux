@@ -52,6 +52,8 @@ interface ResearchDocumentFrameProps {
   /** Single inert breadcrumb entry naming the page. */
   title: string;
   hidden?: boolean;
+  /** Extra icon controls rendered beside the back/forward pair. */
+  navActions?: ReactNode;
   headerActions?: ReactNode;
   children: ReactNode;
   canGoBack?: boolean;
@@ -110,6 +112,7 @@ export function ResearchSidebarRestoreButton({
 export function ResearchDocumentFrame({
   title,
   hidden = false,
+  navActions,
   headerActions,
   children,
   canGoBack,
@@ -131,6 +134,7 @@ export function ResearchDocumentFrame({
             onBack={onBack}
             onForward={onForward}
           />
+          {navActions}
           <div className="research-breadcrumb" aria-label="Research path">
             <span>
               <button className="control-button" type="button" disabled>

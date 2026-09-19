@@ -4,22 +4,50 @@
    drop the padding so the tweet card IS the entry — a feed of tweets, not
    tweets framed inside content items. */
 
+/* The column owns the horizontal inset so the row dividers can run its full
+   width; the scroller only scrolls. */
 .journal-scroll {
-  padding: 28px clamp(20px, 4vw, 48px) 48px;
+  --journal-content-padding: clamp(20px, 4vw, 48px);
+  padding: 0;
 }
 
-/* "300–400px" column, left aligned. */
+/* The reading column: full width up to the shared feed measure, left aligned,
+   closed on the right by a continuous rule. */
 .journal-column {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  width: min(100%, 380px);
+  width: 100%;
+  min-height: 100%;
+  max-width: calc(var(--research-feed-max-width) + 2 * var(--journal-content-padding));
+  padding-bottom: 48px;
+  border-right: 1px solid var(--surface-border-default);
+}
+
+/* Keeps the column edge continuous while the scroller rubberbands at the top. */
+.journal-column::before {
+  content: "";
+  position: absolute;
+  right: -1px;
+  bottom: 100%;
+  height: 100vh;
+  border-right: 1px solid var(--surface-border-default);
+  pointer-events: none;
+}
+
+/* The dividers span the column, so the inset lives on the content instead. */
+.journal-composer-container,
+.recent-activity-unit,
+.journal-empty-container,
+.recent-activity-load-boundary {
+  width: 100%;
+  padding-inline: var(--journal-content-padding);
 }
 
 /* The query composer occupies the top of the page; the feed's own creation
    affordance (links, notes, X posts) lives in the header actions menu. */
 .journal-composer-container {
-  width: 100%;
+  padding-block: 26px;
 }
 
 .journal-feed-menu {
@@ -30,6 +58,7 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  border-top: 1px solid var(--surface-border-default);
 }
 
 .recent-activity-virtual-canvas {
@@ -42,29 +71,15 @@
   top: 0;
   left: 0;
   width: 100%;
-  padding-bottom: 10px;
+  border-bottom: 1px solid var(--surface-border-default);
   will-change: transform;
-}
-
-.recent-activity-day {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.recent-activity-day-label {
-  margin: 0 0 1px;
-  color: var(--text-subtle);
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .recent-activity-unit {
   display: flex;
   flex-direction: column;
   gap: 5px;
+  padding-block: 22px 24px;
 }
 
 .recent-activity-new-status {
@@ -118,6 +133,10 @@
   margin: 6px 0 0;
   color: var(--text-subtle);
   font-size: 13px;
+}
+
+.journal-empty-container {
+  padding-block: 16px;
 }
 
 /* Same surface as .research-prompt (the question bubble). */
@@ -267,6 +286,8 @@
   border-radius: 10px;
   color: var(--text-subtle);
   font-size: 12.5px;
+  width: calc(100% - 2 * var(--journal-content-padding));
+  margin: 0 var(--journal-content-padding) 14px;
 }
 
 .journal-undo-label {

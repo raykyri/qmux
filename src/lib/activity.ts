@@ -272,19 +272,3 @@ export function buildRecentActivityFromItems(
     )
     .sort((left, right) => right.occurredAt - left.occurredAt || right.id.localeCompare(left.id));
 }
-
-export function activityDayLabel(timestamp: number, now = Date.now()): string {
-  if (!Number.isFinite(timestamp)) {
-    return "Earlier";
-  }
-  const date = new Date(timestamp);
-  const today = new Date(now);
-  // UTC calendar ordinals avoid 23/25-hour daylight-saving days shifting a
-  // local date into the wrong bucket.
-  const startToday = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
-  const startDate = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
-  const days = Math.round((startToday - startDate) / 86_400_000);
-  if (days === 0) return "Today";
-  if (days === 1) return "Yesterday";
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: date.getFullYear() === today.getFullYear() ? undefined : "numeric" });
-}

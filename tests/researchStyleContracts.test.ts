@@ -109,6 +109,10 @@ test("shared tweet and attachment recipes do not depend on Home CSS", () => {
   );
   assert.doesNotMatch(journalCss, /journal-tweet/);
   assert.doesNotMatch(journalCss, /\.research-message-attachments\.has-prompt\s*\{/);
-  // The .journal-column max-width assertion is enabled in P7, which replaces
-  // the feed column's 380px with the shared --research-feed-max-width.
+  const journalColumn = ruleBody(journalCss, ".journal-column");
+  assert.match(journalColumn, /width:\s*100%/);
+  assert.match(
+    journalColumn,
+    /max-width:\s*calc\(var\(--research-feed-max-width\) \+ 2 \* var\(--journal-content-padding\)\)/,
+  );
 });

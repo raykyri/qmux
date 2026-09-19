@@ -28,7 +28,6 @@ import {
   type RecentActivityItem,
 } from "../../lib/journal";
 import {
-  activityDayLabel,
   buildRecentActivityFromItems,
   type RecentActivityEvent,
 } from "../../lib/activity";
@@ -56,6 +55,31 @@ import {
   useAnchoredPopover,
 } from "../ui";
 
+/** Scroll anchor tracking the row key under the top edge of the viewport and
+ * its pixel offset. */
+export interface RecentActivityScrollAnchor {
+  key: string;
+  offset: number;
+}
+
+/** Where an anchored row sits relative to the viewport's top edge. */
+export function recentActivityAnchorOffset(
+  canvasTop: number,
+  rowOffset: number,
+  scrollTop: number,
+): number {
+  return canvasTop + rowOffset - scrollTop;
+}
+
+/** The scrollTop that restores an anchored row to its saved offset. */
+export function recentActivityAnchorScrollTop(
+  canvasTop: number,
+  rowOffset: number,
+  anchorOffset: number,
+): number {
+  return Math.max(0, canvasTop + rowOffset - anchorOffset);
+}
+
 export interface ResearchActivityFeedProps {
   /** The Home query composer, rendered above the first feed row. */
   composer: ReactNode;
@@ -76,6 +100,8 @@ export interface ResearchActivityFeedProps {
   onDismissUndo: () => void;
   onOpenResearchQuery: (query: RecentResearchQuery) => void;
   onLoadOlder: () => void;
+  /** Refetches the feed's first page from the header's Refresh control. */
+  onRefresh?: () => void;
   canGoBack?: boolean;
   canGoForward?: boolean;
   onBack?: () => void;
@@ -431,32 +457,42 @@ function ResearchQueryCard({
   );
 }
 
-type VirtualActivityRow =
-  | { kind: "day"; key: string; label: string }
-  | { kind: "event"; key: string; event: RecentActivityEvent; position: number };
+type VirtualActivityRow = {
+  kind: "event";
+  key: string;
+  event: RecentActivityEvent;
+  position: number;
+};
 
+/** The feed is one uninterrupted column: every row is an event, and each one
+ * carries the relative time in its own metadata line. */
 export function buildRecentActivityVirtualRows(
   feed: RecentActivityEvent[],
 ): VirtualActivityRow[] {
-  const rows: VirtualActivityRow[] = [];
-  let previousDay: string | null = null;
-  for (const [index, event] of feed.entries()) {
-    const label = activityDayLabel(event.occurredAt);
-    if (label !== previousDay) {
-      rows.push({ kind: "day", key: `day:${label}`, label });
-      previousDay = label;
-    }
-    rows.push({ kind: "event", key: event.id, event, position: index + 1 });
-  }
-  return rows;
+  return feed.map((event, index) => ({
+    kind: "event",
+    key: event.id,
+    event,
+    position: index + 1,
+  }));
 }
 
+/** First-paint guesses only; every mounted row is measured. Calibrated for the
+ * feed column at --research-feed-max-width, so they move with that width. */
 function estimatedActivityRowHeight(row: VirtualActivityRow): number {
-  if (row.kind === "day") return 29;
-  if (row.event.source.kind === "research-query") return 84;
+  if (row.event.source.kind === "research-query") {
+    if (
+      row.event.source.query.attachments?.some(
+        (attachment) => attachment.status === "resolved" && attachment.tweet,
+      )
+    ) {
+      return row.event.source.query.recap?.trim() ? 430 : 384;
+    }
+    return row.event.source.query.recap?.trim() ? 136 : 90;
+  }
   const entry = row.event.source.entry;
-  if (entry.kind === "tweet" && entry.hydration === "ok") return 320;
-  return entry.kind === "note" ? 105 : 92;
+  if (entry.kind === "tweet" && entry.hydration === "ok") return 326;
+  return 104;
 }
 
 export interface VirtualActivityRange {
@@ -548,6 +584,7 @@ function ResearchActivityFeed({
   onDismissUndo,
   onOpenResearchQuery,
   onLoadOlder,
+  onRefresh,
   canGoBack = false,
   canGoForward = false,
   onBack,
@@ -676,7 +713,7 @@ function ResearchActivityFeed({
     return entries;
   }, [focusedRowKey, metrics.indexByKey, range.end, range.start, rows]);
   const [newActivityCount, setNewActivityCount] = useState(0);
-  const anchorRef = useRef<{ key: string; offset: number } | null>(null);
+  const anchorRef = useRef<RecentActivityScrollAnchor | null>(null);
   const knownItemIdsRef = useRef(new Set(items.map(recentActivityItemId)));
   const previousTopItemIdRef = useRef(items[0] ? recentActivityItemId(items[0]) : null);
 
@@ -696,7 +733,14 @@ function ResearchActivityFeed({
     ).start;
     const row = currentRows[visible];
     anchorRef.current = row
-      ? { key: row.key, offset: canvasTop + geometry.offsets[visible] - scroller.scrollTop }
+      ? {
+          key: row.key,
+          offset: recentActivityAnchorOffset(
+            canvasTop,
+            geometry.offsets[visible],
+            scroller.scrollTop,
+          ),
+        }
       : null;
     setViewport({ scrollTop: feedScrollTop, height: scroller.clientHeight });
     if (scroller.scrollTop <= 60) setNewActivityCount(0);
@@ -731,7 +775,11 @@ function ResearchActivityFeed({
     if (!scroller || !anchor || scroller.scrollTop <= Math.max(60, canvasTop)) return;
     const index = metrics.indexByKey.get(anchor.key);
     if (index === undefined) return;
-    const desired = canvasTop + metrics.offsets[index] - anchor.offset;
+    const desired = recentActivityAnchorScrollTop(
+      canvasTop,
+      metrics.offsets[index],
+      anchor.offset,
+    );
     if (Math.abs(scroller.scrollTop - desired) > 0.5) {
       scroller.scrollTop = desired;
       setViewport({
@@ -967,6 +1015,19 @@ function ResearchActivityFeed({
     <ResearchDocumentFrame
       title="Recent Activity"
       headerActions={<JournalFeedMenu onAddEntry={onAddEntry} />}
+      navActions={
+        onRefresh ? (
+          <Button
+            variant="icon"
+            className="research-history-button"
+            aria-label="Refresh Home"
+            title="Refresh Home"
+            onClick={onRefresh}
+          >
+            <RotateCw size={16} aria-hidden="true" />
+          </Button>
+        ) : undefined
+      }
       canGoBack={canGoBack}
       canGoForward={canGoForward}
       backTitle={`Back (${IS_MAC ? "⌘[" : "Ctrl+["})`}
@@ -975,7 +1036,7 @@ function ResearchActivityFeed({
       onForward={onForward}
     >
       <div ref={scrollRef} className="research-document-scroll journal-scroll">
-        <div className="journal-column">
+        <div className="journal-column research-reading-surface">
           {composer ? <div className="journal-composer-container">{composer}</div> : null}
           {pendingUndo ? (
             <div className="journal-undo" role="status">
@@ -1041,44 +1102,42 @@ function ResearchActivityFeed({
                       }
                     }}
                   >
-                    {row.kind === "day" ? (
-                      <h2 className="recent-activity-day-label">{row.label}</h2>
-                    ) : (
-                      <div
-                        className="recent-activity-unit"
-                        role="article"
-                        aria-posinset={row.position}
-                        aria-setsize={nextCursor ? -1 : feed.length}
-                      >
-                        <ActivityMetadataLine event={row.event} />
-                        {row.event.source.kind === "journal" ? (
-                          <JournalEntryCard
-                            entry={row.event.source.entry}
-                            menuOpen={menu?.entryId === row.event.source.entry.id}
-                            onOpenMenu={openMenuFromTrigger}
-                            onOpenContextMenu={openContextMenu}
-                            onRetryTweet={onRetryTweet}
-                          />
-                        ) : (
-                          <ResearchQueryCard
-                            query={row.event.source.query}
-                            onOpen={() => {
-                              if (row.event.source.kind === "research-query") {
-                                onOpenResearchQuery(row.event.source.query);
-                              }
-                            }}
-                          />
-                        )}
-                      </div>
-                    )}
+                    <div
+                      className="recent-activity-unit"
+                      role="article"
+                      aria-posinset={row.position}
+                      aria-setsize={nextCursor ? -1 : feed.length}
+                    >
+                      <ActivityMetadataLine event={row.event} />
+                      {row.event.source.kind === "journal" ? (
+                        <JournalEntryCard
+                          entry={row.event.source.entry}
+                          menuOpen={menu?.entryId === row.event.source.entry.id}
+                          onOpenMenu={openMenuFromTrigger}
+                          onOpenContextMenu={openContextMenu}
+                          onRetryTweet={onRetryTweet}
+                        />
+                      ) : (
+                        <ResearchQueryCard
+                          query={row.event.source.query}
+                          onOpen={() => {
+                            if (row.event.source.kind === "research-query") {
+                              onOpenResearchQuery(row.event.source.query);
+                            }
+                          }}
+                        />
+                      )}
+                    </div>
                   </MeasuredActivityRow>
                 );
               })}
             </div>
             {feed.length === 0 ? (
-              <p className="journal-empty">
-                Notes, links, posts, and research queries appear here, newest first.
-              </p>
+              <div className="journal-empty-container">
+                <p className="journal-empty">
+                  Research queries and saved sources appear here, newest first.
+                </p>
+              </div>
             ) : null}
             <div
               ref={loadSentinelRef}
