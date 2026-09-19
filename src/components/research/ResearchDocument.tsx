@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Check, ChevronDown, Copy, ExternalLink, Highlighter, LoaderCircle, MoreHorizontal, Pencil, RefreshCw, ScrollText, Share2, Terminal, Trash2, Wrench, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Copy, ExternalLink, Highlighter, LoaderCircle, MoreHorizontal, Pencil, RefreshCw, Reply, ScrollText, Share2, Terminal, Trash2, Wrench, X } from "lucide-react";
 import {
   IS_MAC,
   isEditableTarget,
@@ -34,6 +34,7 @@ import {
   researchSwipeDirection,
 } from "../../lib/researchHistory";
 import { researchBranchInfo } from "../../lib/researchBranches";
+import { formatRelativeTime } from "../../lib/transcriptSessions";
 import { listenToResearchFollowupsFocus } from "../../lib/researchShortcuts";
 import {
   conversationActivityToolCalls,
@@ -93,6 +94,7 @@ import type {
   ResearchTreeDetail,
   UpdateResearchDocumentResult,
 } from "../../types";
+import { formatResearchModelSummary } from "../ActivityMetadataLine";
 import { ComposerSubmitShortcutGlyph } from "../ComposerSubmitShortcut";
 import DomSearchBar from "../DomSearchBar";
 import type { PublishDialogTarget } from "../PublishDialog";
@@ -114,6 +116,10 @@ import {
   ResearchSidebarRestoreButton,
 } from "./ResearchDocumentChrome";
 import ResearchRecap from "./ResearchRecap";
+import {
+  ResearchMessageBody,
+  ResearchUserMessage,
+} from "./ResearchMessage";
 import ResearchThreadActions from "./ResearchThreadActions";
 
 interface ResearchDocumentProps {
@@ -554,6 +560,33 @@ function quoteDisplayText(exact: string) {
   return exact.split(/\s+/).join(" ").trim();
 }
 
+const RESEARCH_REPLY_SNIPPET_WORDS = 8;
+
+/** First ~8 words of the previous answer for the follow-up reply line. Punctuation
+ * tokens (em dashes, heading markers) don't count, and a trailing ellipsis marks
+ * a cut; CSS still ellipsizes if those words would wrap. */
+export function formatResearchReplySnippet(
+  answer: string,
+  maxWords = RESEARCH_REPLY_SNIPPET_WORDS,
+): string {
+  const tokens = quoteDisplayText(answer.replace(/^#{1,6}\s+/gm, "")).split(" ").filter(Boolean);
+  if (tokens.length === 0) {
+    return "";
+  }
+  const kept: string[] = [];
+  let wordCount = 0;
+  for (const token of tokens) {
+    if (/[\p{L}\p{N}]/u.test(token)) {
+      if (wordCount >= maxWords) {
+        return `${kept.join(" ")}…`;
+      }
+      wordCount += 1;
+    }
+    kept.push(token);
+  }
+  return kept.join(" ");
+}
+
 /** Where the action bar sits for a selection: beside the final rendered line,
  * with a below-the-line fallback when the remaining viewport is too narrow. */
 function highlightActionPlacement(range: Range, reservedWidth = 260) {
@@ -876,6 +909,9 @@ interface ThreadSegmentProps {
    * segment renders bail out of reconciliation. */
   node: ResearchNode;
   index: number;
+  /** The previous segment's answer, quoted in truncated form above a
+   * follow-up's own question. */
+  replyToAnswer: string | null;
   /** Thread-level Follow / Bookmark state, rendered on the root prompt's
    * footer row. */
   followed: boolean;
@@ -1487,8 +1523,15 @@ export const ResearchSegmentPrompt = memo(function ResearchSegmentPrompt({
   parentNodeId,
   queryQuote,
   prompt,
+  attachments = [],
+  adapter,
+  model,
+  origin,
+  createdAt,
+  running = false,
   followed = false,
   bookmarked = false,
+  replyToAnswer,
   onSelectNode,
   onToggleFollow,
   onToggleBookmark,
@@ -1498,8 +1541,18 @@ export const ResearchSegmentPrompt = memo(function ResearchSegmentPrompt({
   parentNodeId: string | null;
   queryQuote: string | null;
   prompt: string;
+  attachments?: ResearchNode["attachments"];
+  adapter: string;
+  model?: string | null;
+  origin?: ResearchNode["origin"];
+  /** When the root prompt was asked; shown as relative time on its footer. */
+  createdAt?: number;
+  /** The question is still being answered: the footer row (thread actions,
+   * model, time) stays hidden until the answer settles. */
+  running?: boolean;
   followed?: boolean;
   bookmarked?: boolean;
+  replyToAnswer?: string | null;
   onSelectNode: (nodeId: string) => void;
   onToggleFollow?: () => void;
   onToggleBookmark?: () => void;
@@ -1507,41 +1560,65 @@ export const ResearchSegmentPrompt = memo(function ResearchSegmentPrompt({
   if (!visible) {
     return null;
   }
-  // Thread-level actions belong to the root prompt only, and only where the
-  // host wired them; every other segment renders the bubble alone.
-  const threadActions =
-    index === 0 && onToggleFollow && onToggleBookmark ? (
-      <div className="research-prompt-footer">
-        <ResearchThreadActions
-          followed={followed}
-          bookmarked={bookmarked}
-          onToggleFollow={onToggleFollow}
-          onToggleBookmark={onToggleBookmark}
-        />
-      </div>
-    ) : null;
+  const replySnippet = index > 0 ? formatResearchReplySnippet(replyToAnswer ?? "") : "";
+  const modelSummary = index === 0 ? formatResearchModelSummary(adapter, model, origin) : "";
+  const askedAt = index === 0 && createdAt != null && Number.isFinite(createdAt) ? createdAt : null;
+  const showFooter = index === 0 && !running;
   return (
-    <>
-      <div className={`research-prompt${threadActions ? " has-footer" : ""}`}>
-        {index === 0 && parentNodeId ? (
-          <button
-            type="button"
-            className="control-button research-parent-link"
-            onClick={() => onSelectNode(parentNodeId)}
+    <div className="research-prompt-block">
+      {index === 0 && parentNodeId ? (
+        <button
+          type="button"
+          className="control-button research-parent-link"
+          onClick={() => onSelectNode(parentNodeId)}
+        >
+          <ArrowLeft size={13} aria-hidden="true" />
+          Back
+        </button>
+      ) : null}
+      {index > 0 && replySnippet ? (
+        <div className="research-prompt-metadata research-prompt-reply">
+          <Reply size={12} aria-hidden="true" />
+          <span className="research-prompt-reply-text">{`Reply to: ${replySnippet}`}</span>
+        </div>
+      ) : null}
+      {queryQuote ? (
+        <blockquote className="research-prompt-quote">{quoteDisplayText(queryQuote)}</blockquote>
+      ) : null}
+      <ResearchUserMessage
+        className={`research-prompt${showFooter ? " has-trailing-metadata" : ""}`}
+      >
+        <ResearchMessageBody prompt={prompt} attachments={attachments} />
+      </ResearchUserMessage>
+      {showFooter ? (
+        <div className="research-prompt-metadata is-after-prompt research-prompt-footer">
+          {onToggleFollow && onToggleBookmark ? (
+            <ResearchThreadActions
+              followed={followed}
+              bookmarked={bookmarked}
+              onToggleFollow={onToggleFollow}
+              onToggleBookmark={onToggleBookmark}
+            />
+          ) : null}
+          <span
+            className="research-prompt-footer-meta"
+            title={askedAt !== null ? new Date(askedAt).toLocaleString() : undefined}
           >
-            <ArrowLeft size={13} aria-hidden="true" />
-            Back
-          </button>
-        ) : null}
-        {queryQuote ? (
-          <blockquote className="research-prompt-quote">
-            {quoteDisplayText(queryQuote)}
-          </blockquote>
-        ) : null}
-        <TranscriptMarkdown text={prompt} imageBehavior="open" />
-      </div>
-      {threadActions}
-    </>
+            {modelSummary}
+            {modelSummary && askedAt !== null ? (
+              <span className="research-prompt-footer-separator" aria-hidden="true">
+                {" · "}
+              </span>
+            ) : null}
+            {askedAt !== null ? (
+              <time dateTime={new Date(askedAt).toISOString()}>
+                {formatRelativeTime(askedAt)}
+              </time>
+            ) : null}
+          </span>
+        </div>
+      ) : null}
+    </div>
   );
 });
 
@@ -1552,6 +1629,7 @@ const ThreadSegment = memo(function ThreadSegment({
   view,
   node,
   index,
+  replyToAnswer,
   followed,
   bookmarked,
   onToggleFollow,
@@ -1607,8 +1685,15 @@ const ThreadSegment = memo(function ThreadSegment({
         parentNodeId={node.parentNodeId ?? null}
         queryQuote={node.queryAnchor?.exact ?? null}
         prompt={node.prompt}
+        attachments={node.attachments}
+        adapter={node.adapter}
+        model={node.model}
+        origin={node.origin}
+        createdAt={node.createdAt}
+        running={isActiveResearchStatus(node.status)}
         followed={followed}
         bookmarked={bookmarked}
+        replyToAnswer={replyToAnswer}
         onSelectNode={onSelectNode}
         onToggleFollow={onToggleFollow}
         onToggleBookmark={onToggleBookmark}
@@ -5256,6 +5341,13 @@ function ResearchDocument({
         view={view}
         node={node}
         index={index}
+        replyToAnswer={
+          index > 0
+            ? segmentViews[index - 1]?.rawAnswer.trim() ||
+              segmentViews[index - 1]?.node.responsePreview?.trim() ||
+              null
+            : null
+        }
         followed={treeFollowed}
         bookmarked={treeBookmarked}
         onToggleFollow={handleToggleFollow}

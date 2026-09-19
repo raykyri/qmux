@@ -800,7 +800,35 @@
   --transcript-line-height-delta: 0.12;
 }
 
-/* Keep the user's prompt visually distinct from the plain-text answer below. */
+/* One question and everything that frames it: the Back link, the reply or
+   asked-model line, the quoted passage, and the question itself. */
+.research-prompt-block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.research-prompt-reply {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.research-prompt-reply svg {
+  flex: none;
+}
+
+.research-prompt-reply-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Keep the user's prompt visually distinct from the plain-text answer below.
+   The negative inline start offset lets the bubble's text keep the answer
+   column's left edge. */
 .research-prompt {
   width: fit-content;
   max-width: min(100%, 640px);
@@ -818,31 +846,36 @@
    question on the follow-up's own page. Typography comes from the shared
    .research-prompt-quote recipe in research-surface.css. */
 .research-prompt-quote {
-  margin: 0 0 8px;
+  width: fit-content;
+  max-width: min(100%, 640px);
+  margin: 0;
   padding-left: 10px;
-  border-left: 3px solid var(--accent-color);
+  border-left: 1.5px solid var(--accent-color);
 }
 
+/* Only the color is a prompt decision; the scale is the shared prose recipe. */
 .research-prompt .turn-markdown {
-  color: #f0f2ef;
-  font-size: calc(14px + var(--research-answer-font-delta));
+  color: var(--text-interactive);
   font-weight: 400;
-  line-height: 1.5;
 }
 
-/* The root prompt's footer row sits outside the question bubble, so the
-   bubble hands it the bottom margin it would otherwise keep for itself. */
-.research-prompt.has-footer {
-  margin-bottom: 8px;
-}
-
+/* The root prompt's footer: Follow / Bookmark first, then the answering model
+   and relative time left-aligned beside them, vertically centered on the row. */
 .research-prompt-footer {
   display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 10px;
   min-width: 0;
-  margin: 0 0 26px;
+  /* Adds to the prompt stack's 5px gap above the controls. */
+  margin-top: 6px;
+}
+
+.research-prompt-footer-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .research-response-grid {
