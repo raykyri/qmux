@@ -682,127 +682,9 @@
   margin-bottom: 10px;
 }
 
-.research-workspace {
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  color: #dfe3df;
-  background: var(--research-workspace-bg);
-  /* Shared size for the answer meta line, the parent-response link, and
-     follow-up card body text, so the document's secondary text stays uniform. */
-  --research-meta-font-size: calc(13px + var(--transcript-font-delta, 0px));
-}
-
-.research-document {
-  position: relative;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  /* The implicit column is an auto track, and auto tracks never shrink below
-     an item's min-content contribution — so a breadcrumb carrying a long
-     untitled prompt widened the track far past the viewport and shoved the
-     centered document column off screen (the page rendered blank). A
-     minmax(0, 1fr) column keeps the track at the container's width and lets
-     the breadcrumb's own overflow/ellipsis rules do their job. */
-  grid-template-columns: minmax(0, 1fr);
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-}
-
 .research-document > .pane-search {
   top: 58px;
   --pane-search-right: 16px;
-}
-
-.research-document-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 48px;
-  padding: 8px 18px;
-  border-bottom: 1px solid var(--surface-border-subtle);
-  background: var(--chrome-header-bg);
-}
-
-/* Browser-style back/forward, left of the breadcrumbs. Link styling — no
-   button chrome — so they read as quiet affordances beside the path. */
-.research-history-nav {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 2px;
-}
-
-.research-history-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
-  min-height: 24px;
-  padding: 0 3px;
-  border: 0;
-  color: #aeb6b1;
-  background: transparent;
-  cursor: pointer;
-}
-
-.research-history-button:hover:not(:disabled) {
-  color: #f0f2ef;
-}
-
-.research-history-button:disabled {
-  color: #4b524e;
-  cursor: default;
-}
-
-.research-breadcrumb {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  align-items: center;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.research-breadcrumb > span {
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-}
-
-.research-breadcrumb button {
-  display: block;
-  min-width: 0;
-  min-height: 24px;
-  padding: 0 3px;
-  overflow: hidden;
-  border: 0;
-  color: #aeb6b1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  background: transparent;
-}
-
-.research-breadcrumb button:hover:not(:disabled) {
-  color: #f0f2ef;
-}
-
-.research-breadcrumb button:disabled {
-  cursor: default;
-}
-
-.research-breadcrumb-separator {
-  margin: 0 5px;
-  color: #59615d;
-}
-
-/* Stand-in for the collapsed middle of a deep path; its tooltip carries the
-   hidden step count. */
-.research-breadcrumb-ellipsis {
-  padding: 0 3px;
-  color: #78817c;
-  cursor: default;
 }
 
 .research-document-followup-count {
@@ -900,22 +782,6 @@
   color: #e8a1a1;
 }
 
-.research-document-scroll {
-  width: 100%;
-  min-height: 0;
-  padding: 44px clamp(24px, 5vw, 72px) 40px;
-  /* Vertical only. Wide content (tables, code blocks) scrolls inside its own
-     inner scrollers, so this container never scrolls sideways legitimately.
-     With plain `auto`, transient horizontal overflow — the WebKit var()-drop
-     layouts documented on .research-document-content could momentarily let a
-     streaming answer overrun the right edge — made it horizontally
-     scrollable, and a trackpad deltaX then shifted scrollLeft. Nothing reset
-     it on navigation, so the left padding looked collapsed or erratic
-     between questions, follow-ups, and freshly posted replies. */
-  overflow: hidden auto;
-  overscroll-behavior: contain;
-}
-
 .research-document-content {
   width: min(100%, 1160px);
   min-width: 0;
@@ -949,15 +815,12 @@
 }
 
 /* The quoted passage a targeted follow-up was asked about, shown above the
-   question on the follow-up's own page. */
+   question on the follow-up's own page. Typography comes from the shared
+   .research-prompt-quote recipe in research-surface.css. */
 .research-prompt-quote {
   margin: 0 0 8px;
   padding-left: 10px;
   border-left: 3px solid var(--accent-color);
-  color: #a6aea9;
-  font-size: calc(13px + var(--research-answer-font-delta));
-  font-style: italic;
-  line-height: 1.45;
 }
 
 .research-prompt .turn-markdown {
@@ -980,54 +843,6 @@
   gap: 10px;
   min-width: 0;
   margin: 0 0 26px;
-}
-
-/* Follow / Bookmark pair shared by an open thread's root prompt and, later,
-   Home cards: inline link-style text and icon on one footer row. */
-.research-thread-actions {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 10px;
-}
-
-.research-thread-action {
-  min-height: 0;
-  padding: 0 2px;
-  border: 0;
-  border-radius: 0;
-  color: var(--text-activity);
-  font-size: 12px;
-  line-height: 1.4;
-  background: transparent;
-  transition: color var(--transition-fast);
-}
-
-.research-thread-action:hover:not(:disabled) {
-  color: var(--text-secondary);
-}
-
-.research-thread-action.is-active {
-  color: var(--text-interactive);
-}
-
-.research-thread-action:disabled {
-  color: var(--text-disabled);
-  cursor: default;
-}
-
-/* An outer ring, so the focus indicator does not paint across the label the
-   way the base inset ring would on a zero-padding text control. */
-.research-thread-action:focus-visible {
-  border-radius: var(--radius-sm);
-  box-shadow: 0 0 0 1px var(--focus-ring);
-}
-
-.research-thread-bookmark svg {
-  flex: none;
-  /* Optical centering against the text baseline. */
-  position: relative;
-  top: -1px;
 }
 
 .research-response-grid {
@@ -1055,20 +870,9 @@
 }
 
 /* Recaps are plain derived text, outside the answer's highlight projection.
-   They sit outside .research-response-content-root, so they do not inherit the
-   answer's font delta; the size and line-height are pinned here so the line box
-   matches the answer body. TODO(P5): this typography moves into
-   research-surface.css, which drops the pin. */
-.research-summary-text {
-  margin: 0 0 28px;
-  color: var(--text-muted);
-  font-size: calc(14px + var(--research-answer-font-delta, 0.5px));
-  font-style: italic;
-  font-weight: 400;
-  line-height: 1.5;
-  white-space: normal;
-}
-
+   Their typography is the shared .research-summary-text recipe in
+   research-surface.css; only the spacing below the line is a document-view
+   decision. */
 .research-recap {
   margin: 0 0 28px;
 }

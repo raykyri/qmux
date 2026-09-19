@@ -1,0 +1,706 @@
+/* Shared page chrome and reading recipes for Home and research threads.
+   Surface-specific layout belongs in research.css or journal.css; rules here
+   should apply to both destinations without depending on import order.
+   Generic control chrome belongs in primitives.css or styles/components/ —
+   the rules below only carry the deltas research adds on top of it. */
+
+.research-workspace {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  color: var(--text-body-soft);
+  background: var(--research-workspace-bg);
+  /* Shared size for the answer meta line, the parent-response link, and
+     follow-up card body text, so the document's secondary text stays uniform.
+     .research-reading-surface below restates it for subtrees that opt into the
+     shared reading scale; the two resolve to the same length. */
+  --research-meta-font-size: calc(13px + var(--transcript-font-delta, 0px));
+}
+
+.research-document {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  /* The implicit column is an auto track, and auto tracks never shrink below
+     an item's min-content contribution — so a breadcrumb carrying a long
+     untitled prompt widened the track far past the viewport and shoved the
+     centered document column off screen (the page rendered blank). A
+     minmax(0, 1fr) column keeps the track at the container's width and lets
+     the breadcrumb's own overflow/ellipsis rules do their job. */
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.research-document-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--surface-border-subtle);
+  background: var(--chrome-header-bg);
+}
+
+/* Browser-style back/forward, left of the breadcrumbs. The buttons carry
+   .icon-button for their chrome, so only the compact metrics and the quieter
+   palette live here — they read as affordances beside the path, not controls. */
+.research-history-nav {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.research-history-button {
+  min-width: 0;
+  min-height: 24px;
+  padding: 0 3px;
+  color: var(--text-tertiary);
+}
+
+.research-history-button:hover:not(:disabled) {
+  color: var(--text-interactive);
+}
+
+.research-history-button:disabled {
+  color: var(--text-ghost);
+  cursor: default;
+}
+
+.research-breadcrumb {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.research-breadcrumb > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.research-breadcrumb button {
+  display: block;
+  min-width: 0;
+  min-height: 24px;
+  padding: 0 3px;
+  overflow: hidden;
+  border: 0;
+  color: var(--text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+}
+
+.research-breadcrumb button:hover:not(:disabled) {
+  color: var(--text-interactive);
+}
+
+.research-breadcrumb button:disabled {
+  cursor: default;
+}
+
+.research-breadcrumb-separator {
+  margin: 0 5px;
+  color: var(--text-dim);
+}
+
+/* Stand-in for the collapsed middle of a deep path; its tooltip carries the
+   hidden step count. */
+.research-breadcrumb-ellipsis {
+  padding: 0 3px;
+  color: var(--text-subtle);
+  cursor: default;
+}
+
+.research-document-scroll {
+  width: 100%;
+  min-height: 0;
+  padding: 44px clamp(24px, 5vw, 72px) 40px;
+  /* Vertical only. Wide content (tables, code blocks) scrolls inside its own
+     inner scrollers, so this container never scrolls sideways legitimately.
+     With plain `auto`, transient horizontal overflow — the WebKit var()-drop
+     layouts documented on .research-document-content could momentarily let a
+     streaming answer overrun the right edge — made it horizontally
+     scrollable, and a trackpad deltaX then shifted scrollLeft. Nothing reset
+     it on navigation, so the left padding looked collapsed or erratic
+     between questions, follow-ups, and freshly posted replies. */
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+}
+
+/* Home and a thread use the same reading scale even though their layouts
+   differ. --font-ui-size-offset is the user's UI size preference; it is not
+   defined yet, so every reference carries a 0px fallback. */
+.research-reading-surface {
+  --research-body-font-size: calc(var(--fs-input) - 0.5px);
+  --research-body-line-height: 1.5;
+  --research-summary-font-size: var(--research-body-font-size);
+  --research-summary-line-height: var(--research-body-line-height);
+  --research-meta-font-size: calc(var(--fs-input) - 2px);
+  --research-meta-line-height: 1.35;
+  --research-compact-font-size: var(--research-meta-font-size);
+  --research-compact-line-height: 1.45;
+  --research-quote-font-size: calc(var(--research-meta-font-size) + 0.5px);
+  --research-quote-line-height: 1.45;
+  /* Transcript children add the face offset at their own declarations. Remove
+     it from this baseline delta so research prose receives it exactly once. */
+  --research-markdown-font-delta: calc(
+    var(--research-body-font-size) - 14px - var(--font-ui-size-offset, 0px)
+  );
+  --research-markdown-line-height-delta: 0.12;
+}
+
+/* Shared saved-item surface. Authored user messages deliberately remain
+   unboxed; journal entries opt into this card recipe directly. */
+.research-content-card {
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--content-card-bg);
+}
+
+/* The generic Markdown renderer still uses transcript variables for its
+   internal heading scale. Adapt those variables on the prose component — not a
+   page/grid ancestor — so moving content cannot silently change its type. */
+.turn-markdown.research-prose {
+  --transcript-font-delta: var(--research-markdown-font-delta);
+  --transcript-line-height-delta: var(--research-markdown-line-height-delta);
+  font-size: var(--research-body-font-size);
+  line-height: var(--research-body-line-height);
+}
+
+.turn-markdown.research-prose--compact {
+  --transcript-font-delta: calc(
+    var(--research-compact-font-size) - 14px - var(--font-ui-size-offset, 0px)
+  );
+  color: var(--text-interactive);
+  font-size: var(--research-compact-font-size);
+  line-height: var(--research-compact-line-height);
+}
+
+.research-summary-text {
+  color: var(--text-muted);
+  font-size: var(--research-summary-font-size);
+  font-style: italic;
+  font-weight: 400;
+  line-height: var(--research-summary-line-height);
+  white-space: normal;
+}
+
+.research-prompt-quote {
+  color: var(--text-tertiary);
+  font-size: var(--research-quote-font-size);
+  font-style: italic;
+  line-height: var(--research-quote-line-height);
+}
+
+/* The secondary line that names who answered and when, or which answer a
+   follow-up replies to. research.css places it; the scale is shared. */
+.research-prompt-metadata {
+  max-width: min(100%, 640px);
+  color: var(--text-subtle);
+  font-size: var(--research-meta-font-size);
+  line-height: var(--research-meta-line-height);
+}
+
+/* The metadata line sits directly under the prompt, so the prompt hands it the
+   bottom margin it would otherwise keep for itself. */
+.research-prompt.has-trailing-metadata {
+  margin-bottom: 0;
+}
+
+.research-prompt-metadata.is-after-prompt {
+  margin-bottom: 26px;
+}
+
+/* Shared tweet embed used both as a Home item and as a research-message
+   attachment. Home-only placement rules remain in journal.css. */
+
+.journal-tweet-placeholder {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.journal-tweet-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-subtle);
+  font-size: 12.5px;
+}
+
+.journal-tweet-loading svg {
+  animation: journal-spin 1s linear infinite;
+}
+
+@keyframes journal-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.journal-tweet-error {
+  margin: 0;
+  color: var(--text-subtle);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.journal-tweet-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  padding: 3px 8px;
+  border: 1px solid var(--surface-border-default);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+/* — Tweet card: a timeline post, not an embed. Avatar in its own column,
+     one-line header (name · handle · age), everything else in the content
+     column beside it. — */
+
+.journal-tweet {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 10px;
+  cursor: pointer;
+}
+
+/* The card and its quoted mini-card are both link targets, so both need a
+   visible ring when reached with the keyboard. */
+.journal-tweet:focus-visible,
+.journal-tweet-quote:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+.journal-tweet-avatar-link {
+  display: block;
+  line-height: 0;
+}
+
+.journal-tweet-main {
+  min-width: 0;
+}
+
+.journal-tweet-head {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  margin-bottom: 2px;
+  /* Clear the entry's hover menu trigger in the card's top-right corner. */
+  padding-right: 22px;
+}
+
+.journal-tweet-who {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.journal-tweet-avatar {
+  flex: none;
+  border-radius: 50%;
+  user-select: none;
+  object-fit: cover;
+}
+
+.journal-tweet-avatar-fallback {
+  display: grid;
+  place-items: center;
+  color: var(--lightbox-caption-fg);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.journal-tweet-quote-head .journal-tweet-avatar-fallback {
+  font-size: 9px;
+}
+
+.journal-tweet-author {
+  /* The display name gives way first: a truncated name still reads, while a
+     truncated handle stops identifying anyone. */
+  flex: 0 8 auto;
+  min-width: 3ch;
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.journal-tweet-who:hover .journal-tweet-author {
+  text-decoration: underline;
+}
+
+.journal-tweet-verified {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  align-self: center;
+  color: var(--link-external-fg);
+}
+
+.journal-tweet-handle {
+  flex: 0 1 auto;
+  color: var(--text-subtle);
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.journal-tweet-dot,
+.journal-tweet-age {
+  flex: none;
+  color: var(--text-subtle);
+  font-size: 13.5px;
+  text-decoration: none;
+}
+
+.journal-tweet-age:hover {
+  text-decoration: underline;
+}
+
+.journal-tweet-reply {
+  margin: 0 0 3px;
+  color: var(--text-subtle);
+  font-size: 13px;
+}
+
+.journal-tweet-reply span {
+  color: var(--accent-color);
+}
+
+.journal-tweet-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.journal-tweet-text.is-quote {
+  font-size: 13.5px;
+}
+
+.journal-tweet-text a {
+  color: var(--accent-color);
+  text-decoration: none;
+}
+
+.journal-tweet-text a:hover {
+  text-decoration: underline;
+}
+
+/* The timeline's own affordance for a post that runs past its preview. */
+.journal-tweet-more {
+  display: inline-block;
+  margin-top: 2px;
+  color: var(--accent-color);
+  font-size: 13.5px;
+  text-decoration: none;
+}
+
+a.journal-tweet-more:hover {
+  text-decoration: underline;
+}
+
+/* Link preview: a bordered card under the text. The large variant stacks its
+   image over the copy; the small one sets a square thumbnail beside it. */
+.journal-tweet-card {
+  display: flex;
+  flex-direction: row;
+  margin-top: 8px;
+  border: 1px solid var(--surface-border-default);
+  border-radius: 12px;
+  color: inherit;
+  text-decoration: none;
+  overflow: hidden;
+}
+
+.journal-tweet-card.is-large {
+  flex-direction: column;
+}
+
+.journal-tweet-card:hover {
+  background: var(--surface-fill-hover);
+}
+
+.journal-tweet-card-media {
+  flex: none;
+  display: block;
+  width: 84px;
+  align-self: stretch;
+  border-right: 1px solid var(--surface-border-default);
+  background: var(--surface-fill-hover);
+}
+
+.journal-tweet-card.is-large .journal-tweet-card-media {
+  width: auto;
+  aspect-ratio: 1.91 / 1;
+  border-right: 0;
+  border-bottom: 1px solid var(--surface-border-default);
+}
+
+.journal-tweet-card-media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.journal-tweet-card-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 8px 11px;
+}
+
+.journal-tweet-card-domain {
+  color: var(--text-subtle);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.journal-tweet-card-title,
+.journal-tweet-card-desc {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 13.5px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.journal-tweet-card-desc {
+  color: var(--text-subtle);
+  font-size: 13px;
+}
+
+/* Captured engagement, rendered as metadata: no hover, no target, nothing
+   here reaches X. */
+.journal-tweet-stats {
+  display: flex;
+  gap: 18px;
+  margin-top: 8px;
+  color: var(--text-subtle);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.journal-tweet-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.journal-tweet-stat svg {
+  width: 14px;
+  height: 14px;
+}
+
+.journal-tweet-media {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.journal-tweet-media.is-sensitive .journal-tweet-media-item {
+  filter: blur(18px);
+  pointer-events: none;
+}
+
+.journal-tweet-sensitive-reveal {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  z-index: 1;
+  padding: 7px 11px;
+  border: 1px solid var(--surface-border-strong-alpha);
+  border-radius: 999px;
+  color: var(--lightbox-caption-fg);
+  background: var(--lightbox-scrim-bg);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+}
+
+.journal-tweet-sensitive-reveal:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.journal-tweet-media.is-multi {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.journal-tweet-media-item {
+  display: block;
+  min-width: 0;
+}
+
+.journal-tweet-media img {
+  display: block;
+  width: 100%;
+  max-height: 340px;
+  overflow: hidden;
+  border: 1px solid var(--surface-border-subtle);
+  border-radius: 10px;
+  color: transparent; /* hide alt text while the image loads or if it fails */
+  background: var(--surface-fill-hover);
+  object-fit: cover;
+}
+
+.journal-tweet-media.is-multi img,
+.journal-tweet-media.is-compact img {
+  max-height: 180px;
+}
+
+.journal-tweet-video {
+  position: relative;
+}
+
+.journal-tweet-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--lightbox-caption-fg);
+  background: var(--lightbox-caption-bg);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.journal-tweet-quote {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--surface-border-default);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+
+.journal-tweet-quote:hover {
+  background: var(--surface-fill-hover);
+}
+
+.journal-tweet-quote-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-bottom: 3px;
+}
+
+.journal-tweet-quote-head .journal-tweet-author {
+  font-size: 13px;
+}
+
+.journal-tweet-quote-head .journal-tweet-handle {
+  font-size: 12.5px;
+}
+
+.journal-tweet-quote-head .journal-tweet-verified {
+  width: 13px;
+  height: 13px;
+}
+/* Tweet attachments reuse the shared embed without inheriting the Home entry
+   wrapper. Each attachment gets its own inset outline so it reads as an embed,
+   rather than being separated from the authored prompt by a horizontal rule. */
+.research-message-attachments {
+  margin-bottom: 2px;
+}
+
+.research-message-attachments.has-prompt {
+  margin-top: 10px;
+}
+
+.research-message-attachment {
+  width: min(100%, var(--research-feed-max-width));
+  padding: 12px 14px 11px;
+  border: 1px solid var(--surface-border-default);
+  border-radius: 12px;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast);
+}
+
+.research-message-attachment:hover {
+  border-color: var(--surface-border-overlay-strong);
+  background-color: color-mix(in srgb, var(--surface-fill-hover) 25%, transparent);
+}
+
+.research-message-attachment + .research-message-attachment {
+  margin-top: 10px;
+}
+
+/* Follow / Bookmark pair shared by Home cards and an open thread's root
+   prompt: inline link-style text and icon on one footer row. The button chrome
+   comes from .link-button / .icon-button; only palette and metrics live here. */
+.research-thread-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+.research-thread-action {
+  padding: 0 2px;
+  /* Square off .icon-button's radius; the focus ring below supplies its own. */
+  border-radius: 0;
+  color: var(--text-activity);
+  font-size: var(--research-meta-font-size, 12px);
+  line-height: var(--research-meta-line-height, 1.4);
+  transition: color var(--transition-fast);
+}
+
+.research-thread-action:hover:not(:disabled) {
+  color: var(--text-secondary);
+}
+
+.research-thread-action.is-active {
+  color: var(--text-interactive);
+}
+
+.research-thread-action:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+/* An outer ring, so the focus indicator does not paint across the label the
+   way the base inset ring would on a zero-padding text control. */
+.research-thread-action:focus-visible {
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
+.research-thread-bookmark svg {
+  flex: none;
+  /* Optical centering against the text baseline. */
+  position: relative;
+  top: -1px;
+}

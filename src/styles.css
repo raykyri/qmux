@@ -5,6 +5,7 @@
 @import "./styles/primitives.css" layer(primitives);
 @import "./styles/components/dialog.css" layer(components);
 @import "./styles/components/select.css" layer(components);
+@import "./styles/features/research-surface.css" layer(features);
 @import "./styles/features/research.css" layer(features);
 @import "./styles/features/journal.css" layer(features);
 @import "./styles/features/shell.css" layer(features);

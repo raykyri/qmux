@@ -26,7 +26,7 @@ export function ResearchHistoryNav({
     <div className="research-history-nav" aria-label="Research history">
       <button
         type="button"
-        className="control-button research-history-button"
+        className="icon-button research-history-button"
         disabled={!canGoBack}
         title={backTitle}
         aria-label="Back"
@@ -36,7 +36,7 @@ export function ResearchHistoryNav({
       </button>
       <button
         type="button"
-        className="control-button research-history-button"
+        className="icon-button research-history-button"
         disabled={!canGoForward}
         title={forwardTitle}
         aria-label="Forward"
