@@ -28,6 +28,9 @@ export interface AgentAdapterMetadata {
   supportsFork: boolean;
   /** Whether the adapter has a supported research runtime. */
   supportsResearch: boolean;
+  /** Whether the adapter supports the isolated structured-output request used
+   * for research recap generation. */
+  supportsRecapGeneration: boolean;
   /** Whether the adapter can fork from a chosen message rather than the session
    * head. Gates the transcript's per-message fork action, which is hidden
    * rather than disabled for adapters without it. */
@@ -42,6 +45,7 @@ export interface AgentAdapterMetadata {
   auth: "authenticated" | "unauthenticated" | "unknown";
   checkedAt: number | null;
   loginCommand: string | null;
+  installCommand: string | null;
   installUrl: string | null;
   updateCommand: string | null;
   instanceId: string;

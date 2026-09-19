@@ -78,6 +78,27 @@ impl JsonlProcess {
         stderr_log: &Path,
         label: &str,
     ) -> Result<Self, String> {
+        Self::spawn_with_stdin(binary, args, cwd, stderr_log, label, None)
+    }
+
+    /// Same as [`Self::spawn`], but with the child's stdin connected to a file
+    /// when `input` is set. Prompts too large for an argv entry are passed this
+    /// way.
+    pub fn spawn_with_stdin(
+        binary: &str,
+        args: &[String],
+        cwd: &Path,
+        stderr_log: &Path,
+        label: &str,
+        input: Option<&Path>,
+    ) -> Result<Self, String> {
+        let stdin = match input {
+            Some(path) => Stdio::from(
+                std::fs::File::open(path)
+                    .map_err(|err| format!("failed to open research input: {err}"))?,
+            ),
+            None => Stdio::null(),
+        };
         if let Some(parent) = stderr_log.parent() {
             fs::create_dir_all(parent).map_err(|err| {
                 format!(
@@ -107,7 +128,7 @@ impl JsonlProcess {
         let mut child = Command::new(binary)
             .args(args)
             .current_dir(cwd)
-            .stdin(Stdio::null())
+            .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0)

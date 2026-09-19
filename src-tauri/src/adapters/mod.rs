@@ -1015,6 +1015,7 @@ impl AdapterRegistry {
                     default: adapter.id() == "claude",
                     supports_fork: adapter.supports_fork(),
                     supports_research: adapter.supports_research(),
+                    supports_recap_generation: matches!(adapter.id(), "claude" | "codex" | "grok"),
                     supports_fork_at_message: adapter.supports_fork_at_message(),
                     supports_remote: adapter.supports_remote(),
                     configured_binary,
@@ -1039,6 +1040,7 @@ impl AdapterRegistry {
                     auth: AdapterAuthState::Unknown,
                     checked_at: None,
                     login_command,
+                    install_command: adapter_install_command(adapter.id()).map(str::to_string),
                     install_url: adapter_install_url(adapter.id()).map(str::to_string),
                     update_command: adapter_update_command(
                         adapter.id(),
@@ -1081,6 +1083,9 @@ pub struct AdapterMetadata {
     pub supports_fork: bool,
     /// Whether the adapter can run and branch through the research harness.
     pub supports_research: bool,
+    /// Whether the adapter supports the isolated structured-output request used
+    /// for research recap generation.
+    pub supports_recap_generation: bool,
     /// Whether the adapter can fork from a chosen message rather than the
     /// session head. Gates the transcript's per-message fork action, which is
     /// hidden rather than disabled for adapters without it.
@@ -1099,6 +1104,7 @@ pub struct AdapterMetadata {
     pub auth: AdapterAuthState,
     pub checked_at: Option<u64>,
     pub login_command: Option<String>,
+    pub install_command: Option<String>,
     pub install_url: Option<String>,
     pub update_command: Option<String>,
     /// Stable provider-instance identity. The first implementation has one
@@ -1160,12 +1166,21 @@ fn adapter_login_command(adapter_id: &str, binary: &str) -> Option<String> {
     }
 }
 
+fn adapter_install_command(adapter_id: &str) -> Option<&'static str> {
+    match adapter_id {
+        "claude" => Some("curl -fsSL https://claude.ai/install.sh | bash"),
+        "codex" => Some("curl -fsSL https://chatgpt.com/codex/install.sh | sh"),
+        "grok" => Some("curl -fsSL https://x.ai/cli/install.sh | bash"),
+        _ => None,
+    }
+}
+
 fn adapter_install_url(adapter_id: &str) -> Option<&'static str> {
     match adapter_id {
         "claude" => Some("https://docs.anthropic.com/en/docs/claude-code/setup"),
         "codex" => Some("https://developers.openai.com/codex/cli"),
         "opencode" => Some("https://opencode.ai/docs/"),
-        "grok" => Some("https://docs.x.ai/docs/grok-code-fast-1"),
+        "grok" => Some("https://docs.x.ai/build/overview"),
         "pi" => Some("https://github.com/badlogic/pi-mono"),
         "cursor" => Some("https://cursor.com/docs/cli/overview"),
         "devin" => Some("https://docs.devin.ai/work-with-devin/devin-cli"),
@@ -2280,6 +2295,29 @@ mod tests {
         assert_eq!(metadata[8].id, "antigravity");
         assert!(!metadata[8].default);
         assert_eq!(metadata[8].login_command.as_deref(), Some("'agy'"));
+        assert!(
+            metadata
+                .iter()
+                .find(|adapter| adapter.id == "claude")
+                .is_some_and(|adapter| adapter
+                    .install_command
+                    .as_deref()
+                    .is_some_and(|command| command.contains("claude.ai/install.sh")))
+        );
+        assert!(
+            metadata
+                .iter()
+                .filter(|adapter| matches!(adapter.id.as_str(), "claude" | "codex" | "grok"))
+                .all(|adapter| adapter.supports_recap_generation
+                    && adapter.install_command.is_some())
+        );
+        assert!(
+            metadata
+                .iter()
+                .filter(|adapter| !matches!(adapter.id.as_str(), "claude" | "codex" | "grok"))
+                .all(|adapter| !adapter.supports_recap_generation
+                    && adapter.install_command.is_none())
+        );
         assert!(
             metadata
                 .iter()
