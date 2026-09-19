@@ -1892,18 +1892,19 @@
 }
 
 .research-parent-link {
-  justify-self: start;
+  align-self: flex-start;
   min-height: 0;
-  margin: 0 0 8px;
+  /* Adds to the prompt stack's 5px gap for 10px beneath Back. */
+  margin: 0 0 5px;
   padding: 0;
   border: 0;
-  color: #8f9893;
+  color: var(--text-activity);
   font-size: var(--research-meta-font-size);
   background: transparent;
 }
 
 .research-parent-link:hover {
-  color: #c6cdc9;
+  color: var(--text-secondary);
 }
 
 /* New research — the modal reuses the agent launcher's composer surface: the
