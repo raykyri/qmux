@@ -4,9 +4,13 @@ import GhosttyTerminal
 import GhosttyTheme
 
 /// qmux's terminal color themes: the built-in qmux palette plus the
-/// iTerm2-Color-Schemes catalog bundled with libghostty-spm. Themes apply the
-/// same colors to both appearance slots — qmux keeps its own dark chrome and
-/// never restyles panes on OS light/dark switches.
+/// iTerm2-Color-Schemes catalog bundled with libghostty-spm. Every theme puts
+/// the same colors in both of Ghostty's appearance slots, so panes never
+/// restyle themselves on an OS light/dark switch. Appearance is an application
+/// setting instead: while the built-in qmux theme is selected, qmux picks one
+/// of the four variants below to match the app-selected appearance and color
+/// theme. An explicitly chosen catalog theme keeps its authored colors in every
+/// appearance.
 enum QmuxTerminalTheme {
     /// Settings value naming the built-in qmux colors. Kept out of the
     /// catalog namespace: no iTerm2 scheme is called "qmux".
@@ -14,6 +18,12 @@ enum QmuxTerminalTheme {
     /// Internal variant used when Warm blob is active with the built-in qmux
     /// terminal theme. It stays out of the user-facing terminal theme catalog.
     static let warmName = "qmux-warm"
+    /// Internal variant used under the light appearance with the built-in qmux
+    /// terminal theme. Also kept out of the user-facing catalog.
+    static let lightName = "qmux-light"
+    /// Internal variant used under the light appearance with Warm blob. Also
+    /// kept out of the user-facing catalog.
+    static let warmLightName = "qmux-warm-light"
 
     /// The default colors qmux shipped with before named themes existed. Also
     /// the fallback for stale settings naming a theme the catalog no longer has.
@@ -37,12 +47,41 @@ enum QmuxTerminalTheme {
         selectionForeground: "f4f4ef"
     )
 
+    /// Light companions of the two dark variants. Their backgrounds must stay
+    /// equal to --terminal-pane-bg in src/styles/tokens.css for the matching
+    /// appearance, or a pane paints a dark rectangle before its first frame.
+    static let lightDefinition = GhosttyThemeDefinition(
+        name: lightName,
+        background: "f7f8f7",
+        foreground: "23282a",
+        cursorColor: "9a6b12",
+        cursorText: "ffffff",
+        selectionBackground: "cfe0ea",
+        selectionForeground: "15191a"
+    )
+
+    static let warmLightDefinition = GhosttyThemeDefinition(
+        name: warmLightName,
+        background: "f8f6f3",
+        foreground: "23282a",
+        cursorColor: "9a6b12",
+        cursorText: "ffffff",
+        selectionBackground: "cfe0ea",
+        selectionForeground: "15191a"
+    )
+
     static func definition(named name: String) -> GhosttyThemeDefinition {
         if name == defaultName {
             return defaultDefinition
         }
         if name == warmName {
             return warmDefinition
+        }
+        if name == lightName {
+            return lightDefinition
+        }
+        if name == warmLightName {
+            return warmLightDefinition
         }
         return GhosttyThemeCatalog.theme(named: name) ?? defaultDefinition
     }

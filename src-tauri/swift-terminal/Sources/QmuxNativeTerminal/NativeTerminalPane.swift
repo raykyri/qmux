@@ -167,7 +167,10 @@ final class NativeTerminalPane: NSObject,
         // is Alabaster/Afterglow, which follows the OS appearance — Alabaster
         // would repaint every pane white whenever macOS reports light mode.
         // QmuxTerminalTheme puts the same colors in both appearance slots, so
-        // panes track the selected qmux theme instead of the OS appearance.
+        // panes track the selected qmux theme instead of the OS appearance —
+        // including after the app sets the window theme from its own light/dark
+        // setting. Following that setting is the host's job: it passes one of
+        // QmuxTerminalTheme's light variants as themeName.
         controller = TerminalController(
             theme: QmuxTerminalTheme.theme(named: themeName)
         ) { builder in

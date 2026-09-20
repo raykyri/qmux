@@ -156,6 +156,7 @@ import {
   type UserNotificationTone,
 } from "./components/UserNotificationStack";
 import { shouldShowTerminalPip, shouldShowTerminalPipToggle } from "./lib/terminalPip";
+import { terminalThemeNameFor } from "./lib/terminalThemeName";
 import TurnOverlay, {
   formatTurnsTranscript,
   type ConversationHistorySegment,
@@ -864,7 +865,6 @@ const ACTIVE_RESEARCH_PANE_KEY = "qmux.active-research-pane.v1";
 // visible).
 const HOME_HIDDEN_TERMINALS_KEY = "qmux.home-hidden-terminals.v1";
 const HOME_DRAFTS_VISIBLE_KEY = "qmux.home-drafts-visible.v1";
-const WARM_QMUX_TERMINAL_THEME_ID = "qmux-warm";
 // Browser-overlay / link-action owner for a research tree's document. Keyed
 // per tree so an overlay opened from one tree's links doesn't follow the user
 // into another tree (each tree keeps its own overlay, like panes do).
@@ -2841,13 +2841,15 @@ function MainApp() {
   const terminalNativeFontFamily = nativeFontFamilyFor(settings.fontId);
   const terminalLetterSpacing = letterSpacingFor(settings.fontId);
   const terminalScrollSensitivity = scrollSensitivityFor(settings.mouseWheelSensitivity);
-  // The application color theme only adjusts qmux's built-in terminal palette;
-  // explicitly selected Ghostty themes keep their authored backgrounds.
+  // The application color theme and the light/dark appearance only adjust
+  // qmux's built-in terminal palette; explicitly selected Ghostty themes keep
+  // their authored backgrounds.
   const effectiveThemeId = previewThemeId ?? settings.themeId;
-  const terminalThemeName =
-    effectiveThemeId === DEFAULT_THEME_ID && settings.colorTheme === "orange-blob"
-      ? WARM_QMUX_TERMINAL_THEME_ID
-      : effectiveThemeId;
+  const terminalThemeName = terminalThemeNameFor({
+    themeId: effectiveThemeId,
+    colorTheme: settings.colorTheme,
+    appearance: settings.appearance,
+  });
 
   // Apply the app accent before paint so switching (and restoring) color themes
   // does not flash the default green palette.
@@ -2860,11 +2862,22 @@ function MainApp() {
   }, [settings.colorTheme]);
 
   // Light/dark is a user choice, independent of the system appearance. The root
-  // attribute drives every token override; the Ghostty panes keep qmux's own
-  // dark chrome, so the window theme is deliberately left alone here.
+  // attribute drives every token override. The window theme is set from the
+  // same value because it reaches surfaces CSS cannot: window vibrancy, native
+  // scrollbars and form controls, and prefers-color-scheme inside sandboxed
+  // preview iframes. Ghostty panes are unaffected — NativeTerminalPane passes
+  // an explicit theme, so they follow the selected qmux terminal theme rather
+  // than the window's effective appearance.
   useLayoutEffect(() => {
     const root = document.documentElement;
     root.dataset.appearance = settings.appearance;
+    if ("__TAURI_INTERNALS__" in window) {
+      // Best effort: a platform without window theming rejects here, and the
+      // CSS-driven appearance is already applied.
+      void getCurrentWindow()
+        .setTheme(settings.appearance)
+        .catch(() => {});
+    }
     return () => {
       delete root.dataset.appearance;
     };

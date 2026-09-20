@@ -9,6 +9,7 @@
     "core:window:default",
     "core:window:allow-start-dragging",
     "core:window:allow-hide",
+    "core:window:allow-set-theme",
     "clipboard-manager:allow-write-text"
   ]
 }
