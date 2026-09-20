@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Check, Copy, ExternalLink, RefreshCw } from "lucide-react";
 import type { AgentAdapterMetadata } from "../types";
 import { ADAPTER_ICON_BY_ID, adapterIconClassName } from "../lib/adapterIcons";
@@ -95,6 +96,40 @@ export default function AgentSetupGuide({
     : -1;
   const panelId = `${tabsId}-panel`;
 
+  /** Roving tablist: only the selected tab is tabbable, and the arrow keys move
+   * the selection the way a tablist is expected to. */
+  function focusTab(index: number) {
+    const adapter = adapters[index];
+    if (!adapter) {
+      return;
+    }
+    setSelectedInstanceId(adapter.instanceId);
+    document.getElementById(`${tabsId}-tab-${index}`)?.focus();
+  }
+
+  function handleTabKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, index: number) {
+    const last = adapters.length - 1;
+    switch (event.key) {
+      case "ArrowRight":
+      case "ArrowDown":
+        focusTab(index === last ? 0 : index + 1);
+        break;
+      case "ArrowLeft":
+      case "ArrowUp":
+        focusTab(index === 0 ? last : index - 1);
+        break;
+      case "Home":
+        focusTab(0);
+        break;
+      case "End":
+        focusTab(last);
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+  }
+
   return (
     <div className="agent-setup">
       <div className="agent-setup-head">
@@ -121,6 +156,8 @@ export default function AgentSetupGuide({
                   className="agent-setup-tab"
                   aria-selected={adapter.instanceId === selected.instanceId}
                   aria-controls={panelId}
+                  tabIndex={adapter.instanceId === selected.instanceId ? 0 : -1}
+                  onKeyDown={(event) => handleTabKeyDown(event, index)}
                   onClick={() => setSelectedInstanceId(adapter.instanceId)}
                 >
                   <span

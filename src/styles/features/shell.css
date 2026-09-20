@@ -1856,6 +1856,13 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   gap: 10px;
 }
 
+.settings-agents-heading-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
 .settings-agents-heading h3 {
   margin: 0 0 4px;
   color: var(--text-heading);
@@ -1863,6 +1870,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
 }
 
 .settings-agent-refresh,
+.settings-agents-heading-actions .control-button,
 .settings-agent-actions .control-button {
   display: inline-flex;
   align-items: center;
@@ -2224,8 +2232,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   cursor: pointer;
 }
 
-.settings-agent-summary:hover,
-.settings-agent-summary[aria-expanded="true"] {
+.settings-agent-summary:hover {
   background: var(--surface-fill-subtle);
 }
 
@@ -2283,9 +2290,11 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   transform: rotate(0);
 }
 
+/* The open panel is a second hit target for collapsing the row, so it reads as
+   clickable and drops the tint that used to mark the row as expanded. */
 .settings-agent-detail {
   padding: 0 10px 10px 34px;
-  background: var(--surface-fill-subtle);
+  cursor: pointer;
 }
 
 .settings-agent-details {

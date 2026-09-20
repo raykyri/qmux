@@ -275,3 +275,18 @@
   color: var(--control-fg-muted);
   font-size: var(--fs-sm);
 }
+
+/* The Agents dialog is wider than the shared confirm dialog: the nine-adapter
+   tab strip and the install command lines both need the room. */
+.agent-setup-dialog {
+  width: min(520px, 100%);
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+}
+
+.agent-setup-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}

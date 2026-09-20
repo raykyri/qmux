@@ -24,6 +24,7 @@ import type {
   SetStateAction,
 } from "react";
 import {
+  Bot,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -105,6 +106,7 @@ import {
   getDiagramLightbox,
   subscribeDiagramLightbox,
 } from "./lib/diagramLightbox";
+import AgentSetupGuide from "./components/AgentSetupGuide";
 import ConfirmDialogActionButton from "./components/ConfirmDialogActionButton";
 import {
   Button,
@@ -2567,6 +2569,10 @@ function MainApp() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // The guided Agents dialog. It stands beside the Settings "Agents" tab
+  // rather than replacing it: the guide is task-ordered, the tab is per-binary
+  // detail. Only one of the two is ever open.
+  const [agentsOpen, setAgentsOpen] = useState(false);
   const [themePickerOpen, setThemePickerOpen] = useState(false);
   const [previewThemeId, setPreviewThemeId] = useState<string | null>(null);
   const themePickerRef = useRef<HTMLDivElement | null>(null);
@@ -6358,6 +6364,7 @@ function MainApp() {
   );
   const nativeModalOccluded = Boolean(
     settingsOpen ||
+      agentsOpen ||
       imageLightbox !== null ||
       diagramLightbox !== null ||
       newAgentOpen ||
@@ -11765,11 +11772,11 @@ function MainApp() {
   }, [config, refreshAdapterReadiness]);
 
   useEffect(() => {
-    if (!settingsOpen || settingsTab !== "agents") {
+    if (!agentsOpen && !(settingsOpen && settingsTab === "agents")) {
       return;
     }
     void refreshAdapterReadiness().catch(() => undefined);
-  }, [refreshAdapterReadiness, settingsOpen, settingsTab]);
+  }, [refreshAdapterReadiness, agentsOpen, settingsOpen, settingsTab]);
 
   useEffect(() => {
     if (!settingsOpen || settingsTab !== "remotes") {
@@ -12103,7 +12110,18 @@ function MainApp() {
       hint: "⌘,",
       action: () => {
         setSettingsMenu(null);
+        setAgentsOpen(false);
         setSettingsOpen(true);
+      },
+    });
+    commands.push({
+      id: "action:agent-setup",
+      section: "Actions",
+      title: "Agent setup",
+      action: () => {
+        setSettingsMenu(null);
+        setSettingsOpen(false);
+        setAgentsOpen(true);
       },
     });
     if (visibleAgent) {
@@ -14021,6 +14039,7 @@ function MainApp() {
     commandPaletteOpen ||
     conversationHistoryOpen ||
     settingsOpen ||
+    agentsOpen ||
     newAgentOpen ||
     terminalMapOpen ||
     Boolean(publicationTarget) ||
@@ -14876,6 +14895,7 @@ function MainApp() {
           return;
         case "openSettings":
           setSettingsMenu(null);
+          setAgentsOpen(false);
           setSettingsOpen(true);
           return;
         case "openCommandPalette":
@@ -17215,17 +17235,28 @@ function MainApp() {
                 <div className="context-menu-divider" role="separator" />
               </>
             ) : null}
-            <button className="control-button"
-              type="button"
+            <Button
               role="menuitem"
               onClick={() => {
                 setSettingsMenu(null);
+                setSettingsOpen(false);
+                setAgentsOpen(true);
+              }}
+            >
+              <Bot size={13} aria-hidden="true" />
+              <span>Agent setup</span>
+            </Button>
+            <Button
+              role="menuitem"
+              onClick={() => {
+                setSettingsMenu(null);
+                setAgentsOpen(false);
                 setSettingsOpen(true);
               }}
             >
               <Settings size={13} aria-hidden="true" />
               <span>Settings</span>
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}
@@ -17655,6 +17686,34 @@ function MainApp() {
         onLaunch={launchHistoryEntry}
       />
 
+      {agentsOpen ? (
+        <DialogRoot onDismiss={() => setAgentsOpen(false)}>
+          <Dialog className="agent-setup-dialog" aria-labelledby="agent-setup-dialog-title">
+            <div className="agent-setup-dialog-head">
+              <DialogTitle id="agent-setup-dialog-title">Agents</DialogTitle>
+              <Button
+                variant="icon"
+                aria-label="Close agents"
+                title="Close agents"
+                onClick={() => setAgentsOpen(false)}
+              >
+                <X size={14} aria-hidden="true" />
+              </Button>
+            </div>
+            <AgentSetupGuide
+              adapters={config?.adapters ?? []}
+              loading={adapterProbeLoading}
+              error={adapterProbeError}
+              onRefresh={() =>
+                void refreshAdapterReadiness({ force: true }).catch(() => undefined)
+              }
+              onCopied={showAppToast}
+              onError={setAdapterProbeError}
+            />
+          </Dialog>
+        </DialogRoot>
+      ) : null}
+
       {settingsOpen ? (
         <div
           className="settings-backdrop"
@@ -17744,22 +17803,34 @@ function MainApp() {
                       qmux uses your existing coding agent subscriptions.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    className="control-button settings-agent-refresh"
-                    disabled={adapterProbeLoading}
-                    aria-label={adapterProbeLoading ? "Checking agent providers" : "Check again"}
-                    title={adapterProbeLoading ? "Checking agent providers" : "Check again"}
-                    onClick={() =>
-                      void refreshAdapterReadiness({ force: true }).catch(() => undefined)
-                    }
-                  >
-                    <RefreshCw
-                      size={13}
-                      className={adapterProbeLoading ? "is-spinning" : undefined}
-                      aria-hidden="true"
-                    />
-                  </button>
+                  <div className="settings-agents-heading-actions">
+                    {/* Second entry point for the guide: users who already have
+                        a thread never see the empty-Home placement. */}
+                    <Button
+                      onClick={() => {
+                        setSettingsOpen(false);
+                        setAgentsOpen(true);
+                      }}
+                    >
+                      <Bot size={13} aria-hidden="true" />
+                      <span>Agent setup</span>
+                    </Button>
+                    <Button
+                      className="settings-agent-refresh"
+                      disabled={adapterProbeLoading}
+                      aria-label={adapterProbeLoading ? "Checking agent providers" : "Check again"}
+                      title={adapterProbeLoading ? "Checking agent providers" : "Check again"}
+                      onClick={() =>
+                        void refreshAdapterReadiness({ force: true }).catch(() => undefined)
+                      }
+                    >
+                      <RefreshCw
+                        size={13}
+                        className={adapterProbeLoading ? "is-spinning" : undefined}
+                        aria-hidden="true"
+                      />
+                    </Button>
+                  </div>
                 </div>
                 {adapterProbeError ? (
                   <p className="settings-agent-error" role="alert">
@@ -17770,9 +17841,21 @@ function MainApp() {
                   {readyAdaptersFirst(config?.adapters ?? []).map((adapter) => {
                     const isExpanded = expandedSettingsAgentIds.has(adapter.instanceId);
                     const researchSummary = settingsAgentResearchSummary(adapter);
+                    const binaryPath = adapter.resolvedBinary ?? adapter.configuredBinary;
                     const safeInstanceId = encodeURIComponent(adapter.instanceId);
                     const summaryId = `settings-agent-summary-${safeInstanceId}`;
                     const detailsId = `settings-agent-details-${safeInstanceId}`;
+                    const toggleExpanded = () => {
+                      setExpandedSettingsAgentIds((current) => {
+                        const next = new Set(current);
+                        if (next.has(adapter.instanceId)) {
+                          next.delete(adapter.instanceId);
+                        } else {
+                          next.add(adapter.instanceId);
+                        }
+                        return next;
+                      });
+                    };
                     return (
                       <section
                         className="settings-agent-card"
@@ -17785,17 +17868,7 @@ function MainApp() {
                           className="settings-agent-summary"
                           aria-expanded={isExpanded}
                           aria-controls={detailsId}
-                          onClick={() => {
-                            setExpandedSettingsAgentIds((current) => {
-                              const next = new Set(current);
-                              if (next.has(adapter.instanceId)) {
-                                next.delete(adapter.instanceId);
-                              } else {
-                                next.add(adapter.instanceId);
-                              }
-                              return next;
-                            });
-                          }}
+                          onClick={toggleExpanded}
                         >
                           <img
                             src={ADAPTER_ICON_BY_ID[adapter.id]}
@@ -17809,6 +17882,11 @@ function MainApp() {
                               {adapter.version ?? (adapter.resolvedBinary ? "Checking…" : "—")}
                               {researchSummary ? ` · ${researchSummary}` : null}
                             </span>
+                            {isExpanded && binaryPath ? (
+                              <span className="settings-agent-summary-meta" title={binaryPath}>
+                                {binaryPath}
+                              </span>
+                            ) : null}
                           </span>
                           <span className={`settings-agent-status is-${adapter.readiness}`}>
                             {adapterReadinessLabel(adapter)}
@@ -17825,14 +17903,9 @@ function MainApp() {
                             className="settings-agent-detail"
                             role="region"
                             aria-labelledby={summaryId}
+                            onClick={toggleExpanded}
                           >
                             <dl className="settings-agent-details">
-                              <div>
-                                <dt>Binary</dt>
-                                <dd title={adapter.resolvedBinary ?? adapter.configuredBinary}>
-                                  {adapter.resolvedBinary ?? adapter.configuredBinary}
-                                </dd>
-                              </div>
                               <div>
                                 <dt>Checked</dt>
                                 <dd>
@@ -17848,7 +17921,10 @@ function MainApp() {
                             {adapter.message ? (
                               <p className="settings-agent-message">{adapter.message}</p>
                             ) : null}
-                            <div className="settings-agent-actions">
+                            <div
+                              className="settings-agent-actions"
+                              onClick={(event) => event.stopPropagation()}
+                            >
                               {adapter.updateCommand &&
                               (adapter.readiness === "unsupportedVersion" ||
                                 adapter.researchReadiness === "unsupportedVersion") ? (
@@ -19723,11 +19799,28 @@ function MainApp() {
                   requireCmdEnterToSend={settings.requireCmdEnterToSend}
                   workspaceId={researchScope}
                   onOpenAgentSettings={() => {
-                    setSettingsTab("agents");
-                    setSettingsOpen(true);
+                    setSettingsOpen(false);
+                    setAgentsOpen(true);
                   }}
                   onCreate={submitNewResearch}
                 />
+              }
+              setupGuide={
+                // Only while nothing can run research: once an agent is usable,
+                // the empty feed's own sentence is the right explanation and the
+                // full walkthrough stays in the Agents dialog.
+                config.adapters.some(adapterCanLaunchResearch) ? undefined : (
+                  <AgentSetupGuide
+                    adapters={config.adapters}
+                    loading={adapterProbeLoading}
+                    error={adapterProbeError}
+                    onRefresh={() =>
+                      void refreshAdapterReadiness({ force: true }).catch(() => undefined)
+                    }
+                    onCopied={showAppToast}
+                    onError={setAdapterProbeError}
+                  />
+                )
               }
               items={recentActivityItems}
               recapPendingNodeIds={recapPendingNodeIds}

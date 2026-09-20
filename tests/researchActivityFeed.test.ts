@@ -402,8 +402,7 @@ test("the feed keeps a reachable path for saving links, notes and posts", () => 
   assert.deepEqual(added, ["https://example.com/paper"]);
 });
 
-// Enabled in P16, which supplies the agent setup guide this slot renders.
-test.skip("the agent setup guide appears only when the Home feed is empty", () => {
+test("the agent setup guide appears only when the Home feed is empty", () => {
   const setupGuide = createElement("div", null, "Agent setup guide");
 
   const emptyWithGuide = renderFeed({ setupGuide });
