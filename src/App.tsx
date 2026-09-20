@@ -16746,6 +16746,13 @@ function MainApp() {
             folderPickerBusy={folderPickerStatus !== null}
             shortcutHintsShown={shortcutHintsShown}
             onSelectScope={(scope) => {
+              // An encyclopedia page belongs to the folder it was generated
+              // in. Leaving another folder's page on the stage would show it
+              // with no sidebar row, and a wikilink clicked on it would write
+              // a new page back into the departed folder, out of sight.
+              if (scope !== researchScope) {
+                leaveEncyclopediaPage();
+              }
               changeResearchFolderScope(scope);
               setResearchMultiSelectIds([]);
               // Keep the selection inside the new scope: an active document
