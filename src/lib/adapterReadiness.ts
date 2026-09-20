@@ -85,7 +85,12 @@ export function adapterReadinessMessage(adapter: AgentAdapterMetadata) {
   return `${adapter.label} was not found. Install ${adapter.configuredBinary} or configure its binary path.`;
 }
 
+/** Undefined for a research-ready adapter: the agent pickers only surface a
+ * detail line when it says something the user must act on. */
 export function researchReadinessLabel(adapter: AgentAdapterMetadata) {
+  if (adapter.researchReadiness === "ready") {
+    return undefined;
+  }
   if (adapter.researchReadiness === "unsupportedVersion") {
     return "Needs update";
   }
