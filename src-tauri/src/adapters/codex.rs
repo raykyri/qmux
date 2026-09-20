@@ -1109,7 +1109,9 @@ impl CodexAdapter {
 }
 
 /// Reasoning levels accepted by the Codex CLI's `model_reasoning_effort`
-/// config across supported models.
+/// config. Union across supported models: GPT-6 Astra and GPT-5.6 (Sol, Terra,
+/// Luna) accept the full range while GPT-5.4 tops out at xhigh; the CLI rejects
+/// a level the selected model does not support.
 const CODEX_REASONING_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
 
 #[derive(Clone, Debug, Default, Deserialize)]
