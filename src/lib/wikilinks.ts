@@ -14,7 +14,13 @@
 // Dependency-free on purpose: `turnTimeline.ts` imports the strip helper and
 // must stay loadable by the node test runner without the markdown packages.
 
-import { closesFence, markerRunAtLineStart, type MarkdownFence } from "./markdownMathDelimiters";
+import {
+  backtickRunLength,
+  closesFence,
+  markerRunAtLineStart,
+  matchingBacktickRunEnd,
+  type MarkdownFence,
+} from "./markdownMathDelimiters";
 
 export const MAX_WIKILINK_CHARS = 160;
 
@@ -40,15 +46,78 @@ export function parseWikilinkBody(term: string, alias?: string): Wikilink | null
   return { term: trimmedTerm, label: trimmedAlias || trimmedTerm };
 }
 
-/** Replace every wikilink with its display text. */
+function stripWikilinksInProse(segment: string): string {
+  return segment.replace(WIKILINK_PATTERN, (match, term: string, alias?: string) => {
+    const link = parseWikilinkBody(term, alias);
+    return link ? link.label : match;
+  });
+}
+
+/** Rewrite the stretches of one line that sit outside code spans, leaving the
+ * spans — and any unmatched backtick run, which is literal text — verbatim. */
+function stripWikilinksOutsideCodeSpans(line: string): string {
+  let output = "";
+  let cursor = 0;
+  while (cursor < line.length) {
+    const tick = line.indexOf("`", cursor);
+    if (tick === -1) {
+      output += stripWikilinksInProse(line.slice(cursor));
+      break;
+    }
+    output += stripWikilinksInProse(line.slice(cursor, tick));
+    const runLength = backtickRunLength(line, tick);
+    const spanEnd = matchingBacktickRunEnd(line, tick + runLength, runLength);
+    if (spanEnd === null) {
+      output += line.slice(tick, tick + runLength);
+      cursor = tick + runLength;
+      continue;
+    }
+    output += line.slice(tick, spanEnd);
+    cursor = spanEnd;
+  }
+  return output;
+}
+
+/** Replace every wikilink with its display text, skipping fenced code blocks,
+ * indented code lines, and code spans. The mdast transform below skips `code`
+ * and `inlineCode` nodes, so the plain-text derivations must skip them too:
+ * these helpers also run over terminal agent output, where `if [[ -f x ]]` and
+ * Lua `t[[str]]` would otherwise lose their brackets on copy or export. The
+ * block-level scan is the same conservative one `escapeWikilinkTablePipes`
+ * uses. */
 export function stripWikilinks(text: string): string {
   if (!text.includes("[[")) {
     return text;
   }
-  return text.replace(WIKILINK_PATTERN, (match, term: string, alias?: string) => {
-    const link = parseWikilinkBody(term, alias);
-    return link ? link.label : match;
-  });
+  const lines = text.split("\n");
+  let fence: MarkdownFence | null = null;
+  let changed = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (fence) {
+      if (closesFence(line, fence)) {
+        fence = null;
+      }
+      continue;
+    }
+    const openingFence = markerRunAtLineStart(line);
+    if (openingFence) {
+      fence = openingFence;
+      continue;
+    }
+    if (line.startsWith("    ") || line.startsWith("\t")) {
+      continue;
+    }
+    if (!line.includes("[[")) {
+      continue;
+    }
+    const stripped = stripWikilinksOutsideCodeSpans(line);
+    if (stripped !== line) {
+      lines[i] = stripped;
+      changed = true;
+    }
+  }
+  return changed ? lines.join("\n") : text;
 }
 
 // An alias wikilink whose `|` is not already escaped. Used to escape the pipe

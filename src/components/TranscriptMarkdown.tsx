@@ -324,16 +324,22 @@ function MarkdownLink({
   const wikilinks = useContext(WikilinkActionsContext);
   // A wikilink (`[[Term]]` in the source, marked by the remark transform)
   // resolves against the encyclopedia through context: a page's status becomes
-  // a state class, and activating the link opens or creates the page. Without a
-  // provider it renders as a focusable link that goes nowhere, so the term
-  // still reads as linked and the DOM text projection highlights anchor to is
-  // the display text alone. Checked before href handling because the node
-  // carries no href.
+  // a state class, and activating the link opens or creates the page. Checked
+  // before href handling because the node carries no href.
   const wikilinkTerm = node?.properties?.dataWikilink;
   if (typeof wikilinkTerm === "string") {
-    const status = wikilinks?.resolve(wikilinkTerm) ?? null;
+    // Outside a provider — every terminal pane transcript and turn pane — there
+    // is nothing to activate, so the term renders as a plain span: an anchor
+    // there would be a dead tab stop wearing the link styling, and terminal
+    // agents were never asked to write wikilinks in the first place. The marker
+    // attribute stays so the DOM text projection still anchors to the display
+    // text alone.
+    if (!wikilinks) {
+      return <span {...props} data-wikilink={wikilinkTerm} />;
+    }
+    const status = wikilinks.resolve(wikilinkTerm) ?? null;
     const className = [props.className, status ? `is-${status}` : null].filter(Boolean).join(" ");
-    const activate = (element: HTMLElement) => wikilinks?.activate(wikilinkTerm, element);
+    const activate = (element: HTMLElement) => wikilinks.activate(wikilinkTerm, element);
     return (
       <a
         {...props}
@@ -342,11 +348,9 @@ function MarkdownLink({
         tabIndex={0}
         data-wikilink={wikilinkTerm}
         title={
-          !wikilinks
-            ? undefined
-            : status
-              ? `Open encyclopedia page: ${wikilinkTerm}`
-              : `Create encyclopedia page: ${wikilinkTerm}`
+          status
+            ? `Open encyclopedia page: ${wikilinkTerm}`
+            : `Create encyclopedia page: ${wikilinkTerm}`
         }
         onClick={(event) => {
           event.preventDefault();

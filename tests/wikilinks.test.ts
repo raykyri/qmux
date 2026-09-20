@@ -3,6 +3,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import TranscriptMarkdown, {
+  TranscriptWikilinkActionsProvider,
   transcriptMathPluginsReady,
 } from "../src/components/TranscriptMarkdown";
 import {
@@ -16,8 +17,17 @@ function render(text: string, inline = false) {
   return renderToStaticMarkup(createElement(TranscriptMarkdown, { text, inline }));
 }
 
+// Outside a wikilink provider the term is a plain span: nothing to activate, so
+// nothing focusable. `LINKED` is the interactive form a provider renders.
 const LINK = (term: string, label = term) =>
-  `<a class="research-wikilink" data-wikilink="${term}" role="link" tabindex="0">${label}</a>`;
+  `<span class="research-wikilink" data-wikilink="${term}">${label}</span>`;
+const LINKED = (
+  term: string,
+  label = term,
+  className = "research-wikilink",
+  title = `Create encyclopedia page: ${term}`,
+) =>
+  `<a class="${className}" data-wikilink="${term}" role="link" tabindex="0" title="${title}">${label}</a>`;
 
 // Before the math chunk resolves the renderer runs the base plugin list; the
 // wikilink transform must be present there too, or links appear only after
@@ -142,6 +152,72 @@ test("stripWikilinks keeps only display text and mirrors the parser", () => {
   for (const literal of ["[[]]", "[[ ]]", "[[unclosed", "[[two|pipes|here]]", "[[a]b]]"]) {
     assert.equal(stripWikilinks(literal), literal);
   }
+});
+
+test("stripWikilinks leaves fenced code blocks alone", () => {
+  const fenced = 'Check it:\n\n```bash\nif [[ -f x ]]; then echo hi; fi\n```\n\nDone.';
+  assert.equal(stripWikilinks(fenced), fenced);
+  const tildes = '~~~\nif [[ -n "$VAR" ]]; then :; fi\n~~~';
+  assert.equal(stripWikilinks(tildes), tildes);
+  const indented = "text\n\n    if [[ -d dir ]]; then :; fi\n";
+  assert.equal(stripWikilinks(indented), indented);
+  // An unclosed fence runs to the end of the text.
+  assert.equal(
+    stripWikilinks("before [[Rust]]\n```\n[[ -f x ]]\nstill code [[Term]]"),
+    "before Rust\n```\n[[ -f x ]]\nstill code [[Term]]",
+  );
+});
+
+test("stripWikilinks leaves code spans alone", () => {
+  assert.equal(
+    stripWikilinks('Use `[[ -n "$VAR" ]]` to test.'),
+    'Use `[[ -n "$VAR" ]]` to test.',
+  );
+  assert.equal(
+    stripWikilinks("Lua ``t[[str]]`` and arr `[[1]]`."),
+    "Lua ``t[[str]]`` and arr `[[1]]`.",
+  );
+  // An unmatched backtick run is literal text, so the prose around it strips.
+  assert.equal(stripWikilinks("a ` stray tick and [[Term]]"), "a ` stray tick and Term");
+});
+
+test("stripWikilinks still strips genuine wikilinks beside code", () => {
+  assert.equal(
+    stripWikilinks("See [[Rust]].\n\n```bash\n[[ -f x ]]\n```\n\nAnd [[Tokio|tokio]]."),
+    "See Rust.\n\n```bash\n[[ -f x ]]\n```\n\nAnd tokio.",
+  );
+  assert.equal(
+    stripWikilinks("[[Rust]] uses `[[Term]]` then [[Tokio]]"),
+    "Rust uses `[[Term]]` then Tokio",
+  );
+});
+
+test("the renderer and stripWikilinks agree about code", () => {
+  const source = 'Use [[Rust]] and `[[ -n "$VAR" ]]`.';
+  const html = render(source);
+  assert.ok(html.includes(LINK("Rust")), html);
+  assert.ok(html.includes("<code>[[ -n &quot;$VAR&quot; ]]</code>"), html);
+  assert.equal((html.match(/research-wikilink/g) ?? []).length, 1, html);
+  assert.equal(stripWikilinks(source), 'Use Rust and `[[ -n "$VAR" ]]`.');
+});
+
+test("a provider turns the term into an activatable link", () => {
+  const html = renderToStaticMarkup(
+    createElement(
+      TranscriptWikilinkActionsProvider,
+      {
+        actions: { resolve: (term: string) => (term === "Rust" ? "ready" : null), activate: () => {} },
+      },
+      createElement(TranscriptMarkdown, { text: "See [[Rust]] and [[Tokio]]." }),
+    ),
+  );
+  assert.ok(
+    html.includes(
+      LINKED("Rust", "Rust", "research-wikilink is-ready", "Open encyclopedia page: Rust"),
+    ),
+    html,
+  );
+  assert.ok(html.includes(LINKED("Tokio")), html);
 });
 
 test("splitWikilinkText returns null when a text node has nothing to link", () => {

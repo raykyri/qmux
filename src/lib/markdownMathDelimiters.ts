@@ -21,7 +21,8 @@ export function closesFence(line: string, fence: MarkdownFence): boolean {
   return cursor - indentation >= fence.length && /^[\t \r]*$/.test(line.slice(cursor));
 }
 
-function backtickRunLength(source: string, start: number): number {
+/** Length of the run of backticks starting at `start`, zero when none. */
+export function backtickRunLength(source: string, start: number): number {
   let end = start;
   while (source[end] === "`") {
     end += 1;
@@ -29,7 +30,9 @@ function backtickRunLength(source: string, start: number): number {
   return end - start;
 }
 
-function matchingBacktickRunEnd(source: string, start: number, length: number): number | null {
+/** Index just past the next backtick run of exactly `length`, or null when the
+ * opener is unmatched and its backticks are literal text. */
+export function matchingBacktickRunEnd(source: string, start: number, length: number): number | null {
   let cursor = start;
   while (cursor < source.length) {
     const candidate = source.indexOf("`", cursor);
