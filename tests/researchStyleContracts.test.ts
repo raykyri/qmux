@@ -18,9 +18,7 @@ function ruleBody(css: string, selector: string) {
   return match[1];
 }
 
-// Enabled in P18, which introduces --font-ui-size-offset and the DM Sans body
-// font. research-surface.css already references the token with a 0px fallback.
-test.skip("DM Sans adds one optical half-pixel to UI type but not monospace text", () => {
+test("DM Sans adds one optical half-pixel to UI type but not monospace text", () => {
   const root = ruleBody(tokensCss, ":root");
   for (const token of ["xs", "sm", "base", "input"]) {
     assert.match(

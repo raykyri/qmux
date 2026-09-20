@@ -15,7 +15,7 @@
   box-shadow: var(--shadow-md);
   color: var(--text-primary);
   font-family: var(--font-ui);
-  font-size: 10.5px;
+  font-size: calc(10.5px + var(--font-ui-size-offset));
 }
 
 .agent-debug-titlebar {
@@ -88,7 +88,7 @@
   display: grid;
   gap: 3px;
   color: var(--text-faint);
-  font-size: 9px;
+  font-size: calc(9px + var(--font-ui-size-offset));
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -101,7 +101,7 @@
   border-radius: 5px;
   background: var(--chrome-control-bg);
   color: var(--text-primary);
-  font-size: 10.5px;
+  font-size: calc(10.5px + var(--font-ui-size-offset));
   letter-spacing: normal;
   text-transform: none;
 }
@@ -127,7 +127,7 @@
 
 .agent-debug-status-primary strong {
   color: var(--text-strong);
-  font-size: 11px;
+  font-size: calc(11px + var(--font-ui-size-offset));
 }
 
 .agent-debug-status dl {
@@ -166,7 +166,7 @@
   border: 1px solid var(--surface-divider);
   border-radius: 999px;
   color: var(--text-faint);
-  font-size: 9px;
+  font-size: calc(9px + var(--font-ui-size-offset));
 }
 
 .agent-debug-chip.is-active {
@@ -207,7 +207,7 @@
 .agent-debug-actions h3 {
   margin: 0 0 1px;
   color: var(--text-faint);
-  font-size: 9px;
+  font-size: calc(9px + var(--font-ui-size-offset));
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -230,7 +230,7 @@
   background: var(--chrome-control-bg);
   color: var(--text-primary);
   font-family: var(--font-ui);
-  font-size: 10.5px;
+  font-size: calc(10.5px + var(--font-ui-size-offset));
   text-align: left;
   cursor: pointer;
 }

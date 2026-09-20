@@ -54,11 +54,11 @@
 }
 
 .publication-dialog h2 {
-  font-size: 15px;
+  font-size: calc(15px + var(--font-ui-size-offset));
 }
 
 .publication-dialog h3 {
-  font-size: 16px;
+  font-size: calc(16px + var(--font-ui-size-offset));
 }
 
 .publication-dialog-body {
@@ -307,7 +307,7 @@
 .publication-link-row input {
   min-width: 0;
   font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-size: calc(var(--fs-xs) - var(--font-ui-size-offset));
 }
 
 .publication-success .publication-dialog-actions {

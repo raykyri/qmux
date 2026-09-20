@@ -217,7 +217,7 @@
   background: var(--transcript-code-bg);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-size: calc(var(--fs-sm) - var(--font-ui-size-offset));
 }
 
 .agent-setup-command code {

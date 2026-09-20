@@ -395,7 +395,7 @@
   overflow: hidden;
   color: var(--accent-color);
   font-family: var(--font-mono);
-  font-size: calc(var(--fs-base) - 1px);
+  font-size: calc(var(--fs-base) - 1px - var(--font-ui-size-offset));
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -418,7 +418,7 @@
 .composer-menu-label {
   padding: 4px 10px 2px;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: calc(10px + var(--font-ui-size-offset));
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }

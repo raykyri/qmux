@@ -14,7 +14,9 @@
      follow-up card body text, so the document's secondary text stays uniform.
      .research-reading-surface below restates it for subtrees that opt into the
      shared reading scale; the two resolve to the same length. */
-  --research-meta-font-size: calc(13px + var(--transcript-font-delta, 0px));
+  --research-meta-font-size: calc(
+    13px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset)
+  );
 }
 
 .research-document {
@@ -152,7 +154,7 @@
   /* Transcript children add the face offset at their own declarations. Remove
      it from this baseline delta so research prose receives it exactly once. */
   --research-markdown-font-delta: calc(
-    var(--research-body-font-size) - 14px - var(--font-ui-size-offset, 0px)
+    var(--research-body-font-size) - 14px - var(--font-ui-size-offset)
   );
   --research-markdown-line-height-delta: 0.12;
 }
@@ -177,7 +179,7 @@
 
 .turn-markdown.research-prose--compact {
   --transcript-font-delta: calc(
-    var(--research-compact-font-size) - 14px - var(--font-ui-size-offset, 0px)
+    var(--research-compact-font-size) - 14px - var(--font-ui-size-offset)
   );
   color: var(--text-interactive);
   font-size: var(--research-compact-font-size);
@@ -240,7 +242,7 @@
   gap: 6px;
   margin: 0;
   color: var(--text-subtle);
-  font-size: 12.5px;
+  font-size: calc(12.5px + var(--font-ui-size-offset));
 }
 
 .journal-tweet-loading svg {
@@ -256,7 +258,7 @@
 .journal-tweet-error {
   margin: 0;
   color: var(--text-subtle);
-  font-size: 12.5px;
+  font-size: calc(12.5px + var(--font-ui-size-offset));
   overflow-wrap: anywhere;
 }
 
@@ -268,7 +270,7 @@
   padding: 3px 8px;
   border: 1px solid var(--surface-border-default);
   border-radius: 6px;
-  font-size: 12px;
+  font-size: calc(12px + var(--font-ui-size-offset));
 }
 
 /* — Tweet card: a timeline post, not an embed. Avatar in its own column,
@@ -333,12 +335,12 @@
   display: grid;
   place-items: center;
   color: var(--lightbox-caption-fg);
-  font-size: 15px;
+  font-size: calc(15px + var(--font-ui-size-offset));
   font-weight: 700;
 }
 
 .journal-tweet-quote-head .journal-tweet-avatar-fallback {
-  font-size: 9px;
+  font-size: calc(9px + var(--font-ui-size-offset));
 }
 
 .journal-tweet-author {
@@ -346,7 +348,7 @@
      truncated handle stops identifying anyone. */
   flex: 0 8 auto;
   min-width: 3ch;
-  font-size: 14px;
+  font-size: calc(14px + var(--font-ui-size-offset));
   font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
@@ -368,7 +370,7 @@
 .journal-tweet-handle {
   flex: 0 1 auto;
   color: var(--text-subtle);
-  font-size: 13.5px;
+  font-size: calc(13.5px + var(--font-ui-size-offset));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -378,7 +380,7 @@
 .journal-tweet-age {
   flex: none;
   color: var(--text-subtle);
-  font-size: 13.5px;
+  font-size: calc(13.5px + var(--font-ui-size-offset));
   text-decoration: none;
 }
 
@@ -389,7 +391,7 @@
 .journal-tweet-reply {
   margin: 0 0 3px;
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: calc(13px + var(--font-ui-size-offset));
 }
 
 .journal-tweet-reply span {
@@ -398,14 +400,14 @@
 
 .journal-tweet-text {
   margin: 0;
-  font-size: 14px;
+  font-size: calc(14px + var(--font-ui-size-offset));
   line-height: 1.4;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .journal-tweet-text.is-quote {
-  font-size: 13.5px;
+  font-size: calc(13.5px + var(--font-ui-size-offset));
 }
 
 .journal-tweet-text a {
@@ -422,7 +424,7 @@
   display: inline-block;
   margin-top: 2px;
   color: var(--accent-color);
-  font-size: 13.5px;
+  font-size: calc(13.5px + var(--font-ui-size-offset));
   text-decoration: none;
 }
 
@@ -484,7 +486,7 @@ a.journal-tweet-more:hover {
 
 .journal-tweet-card-domain {
   color: var(--text-subtle);
-  font-size: 12.5px;
+  font-size: calc(12.5px + var(--font-ui-size-offset));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -494,7 +496,7 @@ a.journal-tweet-more:hover {
 .journal-tweet-card-desc {
   display: -webkit-box;
   overflow: hidden;
-  font-size: 13.5px;
+  font-size: calc(13.5px + var(--font-ui-size-offset));
   line-height: 1.35;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -502,7 +504,7 @@ a.journal-tweet-more:hover {
 
 .journal-tweet-card-desc {
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: calc(13px + var(--font-ui-size-offset));
 }
 
 /* Captured engagement, rendered as metadata: no hover, no target, nothing
@@ -514,7 +516,7 @@ a.journal-tweet-more:hover {
   gap: 18px;
   margin-top: 8px;
   color: var(--text-subtle);
-  font-size: 12.5px;
+  font-size: calc(12.5px + var(--font-ui-size-offset));
   font-variant-numeric: tabular-nums;
   /* The glyphs and their counts share one optical row. */
   line-height: 1;
@@ -632,11 +634,11 @@ a.journal-tweet-more:hover {
 }
 
 .journal-tweet-quote-head .journal-tweet-author {
-  font-size: 13px;
+  font-size: calc(13px + var(--font-ui-size-offset));
 }
 
 .journal-tweet-quote-head .journal-tweet-handle {
-  font-size: 12.5px;
+  font-size: calc(12.5px + var(--font-ui-size-offset));
 }
 
 .journal-tweet-quote-head .journal-tweet-verified {

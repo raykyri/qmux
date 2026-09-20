@@ -43,7 +43,7 @@
   border: 1px solid var(--surface-border);
   border-radius: 999px;
   color: var(--text-secondary);
-  font-size: calc(11.5px + var(--transcript-font-delta, 0px));
+  font-size: calc(11.5px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .turn-conversation-history-button:hover:not(:disabled) {
@@ -58,7 +58,7 @@
 .turn-conversation-history-error {
   max-width: 360px;
   color: var(--text-muted);
-  font-size: calc(11px + var(--transcript-font-delta, 0px));
+  font-size: calc(11px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   text-align: center;
 }
 
@@ -69,7 +69,7 @@
   gap: 9px;
   margin: 8px 0 4px;
   color: var(--text-muted);
-  font-size: calc(10.5px + var(--transcript-font-delta, 0px));
+  font-size: calc(10.5px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   line-height: 1;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -87,7 +87,7 @@
 .turn-conversation-current-empty {
   padding: 14px 0 8px;
   color: var(--text-muted);
-  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   text-align: center;
 }
 
@@ -241,7 +241,7 @@
 .turn-empty-state {
   flex-direction: column;
   gap: 6px;
-  font-size: calc(14px + var(--transcript-font-delta, 0px));
+  font-size: calc(14px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 /* Empty-queue placeholder shown above the composer when the queue and transcript
@@ -256,7 +256,7 @@
   /* Same muted gray as the placeholder above it (.empty-state); a missing
      transcript is an ordinary state, not a warning. */
   color: var(--text-tertiary);
-  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   line-height: calc(1.4 + var(--transcript-line-height-delta, 0));
 }
 
@@ -269,7 +269,7 @@
   gap: 7px;
   padding: 4px 10px 2px;
   color: var(--text-activity);
-  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   user-select: none;
 }
 
@@ -304,7 +304,7 @@
   border: 0;
   background: transparent;
   color: var(--text-tertiary);
-  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   line-height: calc(1.4 + var(--transcript-line-height-delta, 0));
   cursor: pointer;
   transition: color var(--transition-fast);
@@ -523,7 +523,7 @@
   margin: 3px 0 4px;
   padding: 0 10px;
   color: var(--text-muted);
-  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   line-height: 1.3;
   letter-spacing: 0.01em;
   user-select: none;
@@ -664,7 +664,7 @@
   align-items: center;
   gap: 8px;
   color: var(--accent-color);
-  font-size: calc(11.5px + var(--transcript-font-delta, 0px));
+  font-size: calc(11.5px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   font-weight: 700;
   text-transform: uppercase;
   /* Don't let the role label ("User"/"Claude") get caught in a transcript
@@ -679,7 +679,7 @@
 .turn-context-status {
   margin-left: auto;
   color: var(--text-muted);
-  font-size: calc(10px + var(--transcript-font-delta, 0px));
+  font-size: calc(10px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   font-weight: 500;
   letter-spacing: 0;
   text-transform: none;
@@ -776,7 +776,7 @@
   border: 1px solid var(--surface-border-default);
   border-radius: 999px;
   color: var(--text-subtle);
-  font-size: 10.5px;
+  font-size: calc(10.5px + var(--font-ui-size-offset));
   line-height: 1.4;
   letter-spacing: 0.02em;
 }
@@ -809,7 +809,7 @@ header + .turn-blocks {
 .turn-markdown {
   min-width: 0;
   color: var(--text-strong);
-  font-size: calc(14px + var(--transcript-font-delta, 0px));
+  font-size: calc(14px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   /* Valley Sans' standard ligatures include `(c)` -> `©`. Transcript prose
      should display the source text literally, especially for enumerated lists. */
   font-variant-ligatures: no-common-ligatures;
@@ -1000,7 +1000,7 @@ header + .turn-blocks {
   padding: 0 1px;
   color: var(--text-activity);
   font: inherit;
-  font-size: calc(14px + var(--transcript-font-delta, 0px));
+  font-size: calc(14px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   line-height: 1.35;
   overflow: hidden;
   text-align: left;
@@ -1041,7 +1041,7 @@ header + .turn-blocks {
   padding: 3px 6px;
   color: var(--text-body-soft);
   font: inherit;
-  font-size: calc(12.5px + var(--transcript-font-delta, 0px));
+  font-size: calc(12.5px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   cursor: pointer;
 }
 
@@ -1066,14 +1066,14 @@ header + .turn-blocks {
   max-height: 96px;
   margin: 0;
   color: var(--text-secondary);
-  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   overflow: hidden;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
 .long-user-message > .turn-text {
-  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .turn-markdown > :first-child {
@@ -1121,32 +1121,32 @@ header + .turn-blocks {
 }
 
 .turn-markdown h1 {
-  font-size: calc(21px + var(--transcript-font-delta, 0px));
+  font-size: calc(21px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   line-height: 1.25;
 }
 
 .turn-markdown h2 {
-  font-size: calc(17.5px + var(--transcript-font-delta, 0px));
+  font-size: calc(17.5px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .turn-markdown h3 {
-  font-size: calc(15.5px + var(--transcript-font-delta, 0px));
+  font-size: calc(15.5px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .turn-markdown h4 {
-  font-size: calc(14px + var(--transcript-font-delta, 0px));
+  font-size: calc(14px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 /* Below h4 the size floor is body text; separation comes from weight, a muted
    tone, and (at the deepest level) uppercase rather than an ever-smaller size. */
 .turn-markdown h5 {
-  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   color: var(--text-body-soft);
 }
 
 .turn-markdown h6 {
   margin-bottom: 5px;
-  font-size: calc(12px + var(--transcript-font-delta, 0px));
+  font-size: calc(12px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-tertiary);
@@ -1338,7 +1338,7 @@ header + .turn-blocks {
 
 .turn-visualization-attachment-copy span {
   color: var(--text-subtle);
-  font-size: calc(11.5px + var(--transcript-font-delta, 0px));
+  font-size: calc(11.5px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .turn-visualization-attachment-action {
@@ -1346,7 +1346,7 @@ header + .turn-blocks {
   align-items: center;
   gap: 5px;
   color: var(--text-muted);
-  font-size: calc(11.5px + var(--transcript-font-delta, 0px));
+  font-size: calc(11.5px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .turn-visualization-attachment-action svg {
@@ -1514,7 +1514,7 @@ html.wrap-code-blocks .turn-markdown-code-block pre code {
   width: 100%;
   margin: 0;
   border-collapse: collapse;
-  font-size: calc(13.5px + var(--transcript-font-delta, 0px));
+  font-size: calc(13.5px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 /* TeX math (remark-math + rehype-mathjax SVG). MathJax injects its own
@@ -1581,7 +1581,7 @@ html.wrap-code-blocks .turn-markdown-code-block pre code {
   background: transparent;
   padding: 1px 4px;
   color: var(--text-activity);
-  font-size: calc(11px + var(--transcript-font-delta, 0px));
+  font-size: calc(11px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   cursor: pointer;
   border-radius: var(--radius-sm);
 }
@@ -1628,7 +1628,7 @@ html.wrap-code-blocks .turn-markdown-code-block pre code {
 .turn-diagram-loading {
   padding: 12px;
   color: var(--text-subtle);
-  font-size: calc(12px + var(--transcript-font-delta, 0px));
+  font-size: calc(12px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .turn-diagram-error {
@@ -1638,7 +1638,7 @@ html.wrap-code-blocks .turn-markdown-code-block pre code {
 .turn-diagram-error-msg {
   margin-bottom: 6px;
   color: var(--status-active-fg);
-  font-size: calc(12px + var(--transcript-font-delta, 0px));
+  font-size: calc(12px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .turn-diagram-source {
@@ -1686,12 +1686,12 @@ html.wrap-code-blocks .turn-markdown-code-block pre code {
 .activity-group-block {
   background: transparent;
   color: var(--text-body-soft);
-  font-size: calc(12px + var(--transcript-font-delta, 0px));
+  font-size: calc(12px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   overflow: visible;
 }
 
 .activity-group-block {
-  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .tool-block > summary,
@@ -1804,7 +1804,7 @@ html.wrap-code-blocks .turn-markdown-code-block pre code {
 
 .tool-summary-main {
   color: var(--text-activity);
-  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   font-weight: 400;
 }
 
@@ -1826,7 +1826,7 @@ html.wrap-code-blocks .turn-markdown-code-block pre code {
 
 .tool-summary-meta {
   color: var(--text-activity);
-  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .tool-summary-error {
@@ -1846,7 +1846,7 @@ html.wrap-code-blocks .turn-markdown-code-block pre code {
 .tool-payload-label {
   padding: 6px 8px 0;
   color: var(--text-activity);
-  font-size: calc(11px + var(--transcript-font-delta, 0px));
+  font-size: calc(11px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -1897,7 +1897,7 @@ html.wrap-code-blocks .turn-markdown-code-block pre code {
   border-radius: var(--radius-md);
   background: var(--content-inset-bg);
   color: var(--text-activity);
-  font-size: calc(12px + var(--transcript-font-delta, 0px));
+  font-size: calc(12px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -1919,7 +1919,7 @@ html.wrap-code-blocks .turn-markdown-code-block pre code {
 }
 
 .thinking-block > summary > span {
-  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  font-size: calc(13px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .activity-group-children {

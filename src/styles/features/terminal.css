@@ -44,7 +44,7 @@
 }
 
 .remote-connection-state {
-  font-size: 13px;
+  font-size: calc(13px + var(--font-ui-size-offset));
   font-weight: 600;
 }
 
@@ -56,13 +56,14 @@
 .remote-connection-detail {
   max-width: 560px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: calc(12px + var(--font-ui-size-offset));
   line-height: 1.45;
   white-space: pre-line;
 }
 
 .remote-connection-message {
   font-family: var(--font-mono);
+  font-size: 12px;
 }
 
 .remote-connection-details-text {

@@ -133,12 +133,16 @@
 }
 
 :root {
+  /* Optical compensation for the selected UI face. DM Sans reads slightly
+     smaller than the other body-font options at the same nominal size. */
+  --font-ui-size-offset: 0px;
+
   /* Type scale. Controls and body share --fs-base; the two main typing surfaces
      (composer + launcher) use --fs-input; xs/sm are for hints, badges, meta. */
-  --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-base: 13px;
-  --fs-input: 15px;
+  --fs-xs: calc(11px + var(--font-ui-size-offset));
+  --fs-sm: calc(12px + var(--font-ui-size-offset));
+  --fs-base: calc(13px + var(--font-ui-size-offset));
+  --fs-input: calc(15px + var(--font-ui-size-offset));
 
   /* Control heights. sm = inline/table actions, md = default, lg = composer + launcher. */
   --control-h-sm: 26px;
@@ -341,6 +345,10 @@
   font-synthesis: none;
   line-height: 1.5;
   text-rendering: optimizeLegibility;
+}
+
+:root[data-body-font="dm-sans"] {
+  --font-ui-size-offset: 0.5px;
 }
 
 :root,

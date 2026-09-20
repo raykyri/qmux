@@ -4,12 +4,18 @@
   min-width: 0;
   min-height: 0;
   background: var(--right-pane-bg);
-  /* Add the terminal-zoom delta (set on the app shell, 0 by default) to the type
-     scale so every right-pane element sized off these vars — composer, queue,
-     etc. — grows with the terminal. Hard-coded px sizes add the delta directly. */
-  --fs-xs: calc(11.5px + var(--turn-font-delta, 0px));
-  --fs-sm: calc(12.5px + var(--turn-font-delta, 0px));
-  --fs-base: calc(13.5px + var(--turn-font-delta, 0px));
+  /* Add the terminal-zoom delta and the selected face's optical offset to the
+     type scale so every right-pane element sized off these vars — composer,
+     queue, etc. — grows consistently. Hard-coded UI sizes add both directly. */
+  --fs-xs: calc(
+    11.5px + var(--turn-font-delta, 0px) + var(--font-ui-size-offset)
+  );
+  --fs-sm: calc(
+    12.5px + var(--turn-font-delta, 0px) + var(--font-ui-size-offset)
+  );
+  --fs-base: calc(
+    13.5px + var(--turn-font-delta, 0px) + var(--font-ui-size-offset)
+  );
 }
 
 .turn-pane-split-divider {
@@ -241,7 +247,7 @@
   white-space: nowrap;
   color: var(--text-muted);
   font-family: var(--font-ui);
-  font-size: calc(12.5px + var(--turn-font-delta, 0px));
+  font-size: calc(12.5px + var(--turn-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 /* The session label opens a menu; it drops the button chrome so it still reads as
@@ -622,7 +628,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: calc(10px + var(--font-ui-size-offset));
   font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -912,7 +918,7 @@
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  font-size: 11px;
+  font-size: calc(11px + var(--font-ui-size-offset));
   font-weight: 500;
   letter-spacing: 0.01em;
   white-space: nowrap;

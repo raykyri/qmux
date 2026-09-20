@@ -159,7 +159,7 @@
   padding: 1px 4px;
   border-radius: var(--radius-sm);
   background: var(--surface-fill-medium);
-  font-size: var(--fs-sm);
+  font-size: calc(var(--fs-sm) - var(--font-ui-size-offset));
 }
 
 .browser-overlay-native-slot {
