@@ -20235,8 +20235,12 @@ function MainApp() {
           columns={activePane.cols}
           rows={activePane.rows}
           theme={
-            themeCatalog?.find((theme) => theme.name === terminalThemeName) ??
-            effectiveTheme
+            // The four built-in qmux variants are deliberately outside the
+            // user-facing catalog, so a lookup for one misses. Passing null
+            // then lets .terminal-pip fall back to the appearance tokens,
+            // which carry those same colors; substituting another catalog
+            // entry would paint a dark preview under the light appearance.
+            themeCatalog?.find((theme) => theme.name === terminalThemeName) ?? null
           }
           fontFamily={terminalFontFamily}
           fontSize={terminalFontSize}

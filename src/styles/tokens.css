@@ -358,6 +358,10 @@
      contrast hierarchy inside inputs, menus, and buttons. */
   --left-pane-bg: rgba(14, 16, 17, 0.72);
   --terminal-pane-bg: #111315;
+  /* The built-in terminal theme's foreground for this appearance. Must stay
+     equal to QmuxTerminalTheme's matching definition; the chrome around a pane
+     (and the collapsed pane preview) paints with it before the first frame. */
+  --terminal-pane-fg: #e7e7e2;
   --right-pane-bg: #171b1d;
   --right-pane-bg-transparent: rgba(23, 27, 29, 0);
   --right-pane-active-bg: #181d1f;
@@ -654,6 +658,7 @@
 :root[data-appearance="light"][data-color-theme="green-blob"] {
   --left-pane-bg: rgba(240, 242, 241, 0.72);
   --terminal-pane-bg: #f7f8f7;
+  --terminal-pane-fg: #23282a;
   --right-pane-bg: #fbfcfb;
   --right-pane-bg-transparent: rgba(251, 252, 251, 0);
   --right-pane-active-bg: #fafbfa;

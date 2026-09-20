@@ -858,11 +858,12 @@
   margin: 0;
   padding: 0;
   overflow: hidden;
-  /* The preview mirrors the native terminal surface, which keeps qmux's own dark
-     chrome in every appearance, so these two fallbacks stay dark on purpose;
-     TerminalPip overrides both from the active Ghostty theme when it has one. */
-  --terminal-pip-surface: var(--terminal-pip-bg, #111315); /* appearance-invariant */
-  --terminal-pip-ink: var(--terminal-pip-fg, #e7e7e2); /* appearance-invariant */
+  /* The preview mirrors the native terminal surface. TerminalPip overrides both
+     from the active Ghostty theme when the catalog has one; the built-in qmux
+     variants are deliberately absent from that catalog, so the fallbacks carry
+     the same colors through the appearance tokens instead. */
+  --terminal-pip-surface: var(--terminal-pip-bg, var(--terminal-pane-bg));
+  --terminal-pip-ink: var(--terminal-pip-fg, var(--terminal-pane-fg));
   border: 1px solid color-mix(in srgb, var(--terminal-pip-ink) 18%, transparent);
   border-radius: 10px;
   background: var(--terminal-pip-surface);
@@ -906,7 +907,9 @@
   min-height: 26px;
   padding: 0 8px 0 10px;
   border-bottom: 1px solid color-mix(in srgb, var(--terminal-pip-ink) 12%, transparent);
-  background: color-mix(in srgb, var(--terminal-pip-surface) 82%, black);
+  /* Mixed toward the ink rather than black so the strip separates from the
+     body in a light terminal theme as well as a dark one. */
+  background: color-mix(in srgb, var(--terminal-pip-surface) 88%, var(--terminal-pip-ink));
   color: color-mix(in srgb, var(--terminal-pip-ink) 78%, transparent);
 }
 
