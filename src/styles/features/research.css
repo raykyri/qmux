@@ -466,7 +466,7 @@
   position: relative;
   /* Research mode removes the parent gap so the list can own its surrounding
      space. Re-create the Terminal Home-to-first-group 6px rhythm here. */
-  margin: 6px 4px 0;
+  margin: 6px 7px 0;
 }
 
 .research-folder-trigger {
@@ -521,14 +521,6 @@
 
 .research-folder-trigger svg:last-child.is-open {
   transform: rotate(180deg);
-}
-
-/* Held-⌘ badge for the folder menu chord, over the trigger's chevron edge.
-   The switcher root is already position: relative for the dropdown. */
-.research-folder-shortcut-hint {
-  /* The switcher has a 4px outer margin while the journal and list rows are
-     inset 7px. */
-  right: 11px;
 }
 
 /* Plain count like the terminal sidebar's group counts, not a pill. */
@@ -1277,8 +1269,8 @@
   cursor: pointer;
 }
 
-/* Exported-conversation turns: user prompts reuse the standard research
-   message card so exchanges read as the same question/answer language. */
+/* Exported-conversation turns use the standard unboxed research prompt
+   treatment so exchanges read as the same question/answer language. */
 .research-response-item.is-conversation .research-conversation-prompt {
   min-width: 0;
   margin: 18px 0 9px -14px;

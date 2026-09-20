@@ -75,7 +75,12 @@ export default function ResearchFolderSwitcher({
   );
 
   const scopedFolder = folders.find((folder) => folder.id === scope);
-  const folderName = (folder: GroupInfo) => folder.nameOverride || folder.name;
+  // The default workspace predates the "workspace" wording; relabel it in the
+  // menu rather than rewriting every existing name override on disk.
+  const folderName = (folder: GroupInfo) => {
+    const name = folder.nameOverride || folder.name;
+    return name === "Default research" ? "Default workspace" : name;
+  };
 
   function select(next: ResearchFolderScope) {
     setOpen(false);
@@ -114,7 +119,7 @@ export default function ResearchFolderSwitcher({
       {open ? (
         <div className="research-folder-menu" role="menu" aria-label="Research folders">
           {folders.length > 0 ? (
-            folders.map((folder) => (
+            folders.map((folder, index) => (
                 <button
                   key={folder.id}
                   type="button"
@@ -130,7 +135,11 @@ export default function ResearchFolderSwitcher({
                     <span className="research-folder-path">{folder.dir}</span>
                   </span>
                   {scope === folder.id ? <Check size={13} aria-hidden="true" /> : null}
-                  <span className="research-folder-count">{treeCounts.get(folder.id) ?? 0}</span>
+                  {index > 0 ? (
+                    <span className="research-folder-count">
+                      {treeCounts.get(folder.id) ?? 0}
+                    </span>
+                  ) : null}
                 </button>
               ))
           ) : null}
@@ -161,18 +170,6 @@ export default function ResearchFolderSwitcher({
                 className="control-button research-folder-item"
                 onClick={() => {
                   setOpen(false);
-                  void onOpenFolder(scopedFolder);
-                }}
-              >
-                <FolderOpen size={13} aria-hidden="true" />
-                <span className="research-folder-item-name">Open selected folder</span>
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="control-button research-folder-item"
-                onClick={() => {
-                  setOpen(false);
                   onRenameFolder(scopedFolder);
                 }}
               >
@@ -180,6 +177,18 @@ export default function ResearchFolderSwitcher({
                 <span className="research-folder-item-name">
                   Rename “{folderName(scopedFolder)}”
                 </span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="control-button research-folder-item"
+                onClick={() => {
+                  setOpen(false);
+                  void onOpenFolder(scopedFolder);
+                }}
+              >
+                <FolderOpen size={13} aria-hidden="true" />
+                <span className="research-folder-item-name">Open in Finder</span>
               </button>
               <button
                 type="button"

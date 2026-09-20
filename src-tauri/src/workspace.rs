@@ -531,7 +531,7 @@ pub fn ensure_default_research_workspace(state: &AppState) -> Result<GroupInfo, 
     }
     create_research_workspace_locked(
         state,
-        Some("Default research".to_string()),
+        Some("Default workspace".to_string()),
         canonical.display().to_string(),
     )
 }
@@ -4323,6 +4323,7 @@ mod tests {
 
         assert_eq!(first.id, second.id);
         assert_eq!(first.scope, WorkspaceScope::Research);
+        assert_eq!(first.name_override.as_deref(), Some("Default workspace"));
         assert_eq!(
             std::fs::canonicalize(&first.dir).unwrap(),
             std::fs::canonicalize(state.default_research_dir()).unwrap()

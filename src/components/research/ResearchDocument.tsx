@@ -5088,7 +5088,7 @@ function ResearchDocument({
           ? "Ask about this conversation…"
           : threadLength > 1
             ? "Continue this thread…"
-            : "Type your query…";
+            : "Ask a follow-up…";
 
   // The composer, parameterized on the ask it is docked to (null for the
   // thread-tail placement) so an anchored render cannot exist without its

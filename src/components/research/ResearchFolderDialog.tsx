@@ -49,9 +49,7 @@ export default function ResearchFolderDialog({
         <DialogTitle id="create-research-folder-dialog-title">New folder</DialogTitle>
         <p>
           {itemCount > 0
-            ? `Name the folder before moving ${itemCount} selected ${
-                itemCount === 1 ? "item" : "items"
-              } into it.`
+            ? `Create a folder with ${itemCount} ${itemCount === 1 ? "item" : "items"}:`
             : "Create an empty folder for research you want to organize later."}
         </p>
         <Input
@@ -64,7 +62,7 @@ export default function ResearchFolderDialog({
         <DialogActions>
           <Button onClick={onClose}>Cancel</Button>
           <Button type="submit" disabled={!trimmedName}>
-            {itemCount > 0 ? "Create and move" : "Create folder"}
+            {itemCount > 0 ? "Create" : "Create folder"}
           </Button>
         </DialogActions>
       </DialogForm>

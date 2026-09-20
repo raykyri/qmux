@@ -57,6 +57,13 @@
   padding: 32px 6px 12px;
   /* System font (not monospace) so the pane list reads as a native sidebar. */
   font-family: var(--font-ui);
+}
+
+/* WebKit can still start a text selection on nested row content when only
+   the unprefixed user-select property is set on the sidebar root. */
+.sidebar,
+.sidebar * {
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -1041,7 +1048,7 @@
 }
 
 .research-followup-menu {
-  width: min(230px, calc(100vw - 16px));
+  width: min(200px, calc(100vw - 16px));
 }
 
 .settings-context-menu {
