@@ -72,6 +72,7 @@ import {
 } from "../../lib/researchNavigation";
 import {
   createResearchSelectionSnapper,
+  researchAnchorConnectorEndpoints,
   researchSelectionActionPlacement,
   shouldDismissEmptyResearchAskOnClick,
   type ResearchSelectionSnapper,
@@ -303,6 +304,9 @@ const CONNECTOR_STAGGER_FRACTION = 0.25;
 // Pixel separation between adjacent lanes of overlapping vertical runs. Capped
 // per-connector by CONNECTOR_STAGGER_FRACTION.
 const CONNECTOR_STAGGER_STEP = 14;
+// Treat nearly touching vertical spans as competing connector routes so the
+// later one can fall back to an elbow instead of crossing the earlier leader.
+const CONNECTOR_COLLISION_CLEARANCE = 8;
 // Wait for window/split-pane resizing to settle before remeasuring passage,
 // card, and connector geometry. A trailing debounce avoids forced layout on
 // every drag frame while still repairing the final arrangement promptly.
@@ -385,6 +389,32 @@ function applyDirectionalSelectionRange(
   const selection = window.getSelection();
   if (!selection) {
     return;
+  }
+  if (selection.rangeCount > 0 && !selection.isCollapsed) {
+    const current = selection.getRangeAt(0);
+    const sameRange =
+      current.startContainer === range.startContainer &&
+      current.startOffset === range.startOffset &&
+      current.endContainer === range.endContainer &&
+      current.endOffset === range.endOffset;
+    const expectedAnchor =
+      direction === "forward" ? range.startContainer : range.endContainer;
+    const expectedAnchorOffset =
+      direction === "forward" ? range.startOffset : range.endOffset;
+    const expectedFocus =
+      direction === "forward" ? range.endContainer : range.startContainer;
+    const expectedFocusOffset =
+      direction === "forward" ? range.endOffset : range.startOffset;
+    if (
+      sameRange &&
+      (typeof selection.setBaseAndExtent !== "function" ||
+        (selection.anchorNode === expectedAnchor &&
+          selection.anchorOffset === expectedAnchorOffset &&
+          selection.focusNode === expectedFocus &&
+          selection.focusOffset === expectedFocusOffset))
+    ) {
+      return;
+    }
   }
   if (typeof selection.setBaseAndExtent === "function") {
     if (direction === "forward") {
@@ -654,8 +684,8 @@ function withoutKeys<T>(record: Record<string, T>, keys: Iterable<string>): Reco
   return next;
 }
 
-/** Dotted elbow connectors, grouped by the thread segment whose grid hosts
- * them. Paths are in that segment's response-grid pixel coordinates. */
+/** Dotted connectors, grouped by the thread segment whose grid hosts them.
+ * Paths are in that segment's response-grid pixel coordinates. */
 interface SegmentAnchorConnector {
   segmentId: string;
   id: string;
@@ -1855,7 +1885,7 @@ function ResearchDocument({
   // side. This raises the associated card and connector without repainting
   // the passage's stable highlight treatment.
   const [linkedAnchorNodeId, setLinkedAnchorNodeId] = useState<string | null>(null);
-  // Dotted elbows between anchored passages and their follow-up cards, in
+  // Dotted leaders between anchored passages and their follow-up cards, in
   // each segment's response-grid pixel coordinates.
   const [anchorConnectors, setAnchorConnectors] = useState<SegmentAnchorConnector[]>([]);
   // Ask mode: the segment and selection anchor a targeted follow-up is being
@@ -3592,10 +3622,12 @@ function ResearchDocument({
     segmentRoot,
   ]);
 
-  // Measure every resolved anchor's connector: from its segment's answer
-  // column at the passage's first line to the left edge of its follow-up
-  // card. Depends on resolvedCardTops so each elbow lands on the card's
-  // settled (collision-resolved) placement.
+  // Measure every resolved anchor's connector from the selection bounds to
+  // the left edge of its follow-up card. A card that spans the passage's
+  // midpoint gets a straight horizontal leader; otherwise the leader stays a
+  // direct diagonal. Only routes that compete with an earlier connector fall
+  // back to an elbow. Depends on resolvedCardTops so each route lands on the
+  // card's settled (collision-resolved) placement.
   useLayoutEffect(() => {
     const next: SegmentAnchorConnector[] = [];
     for (const nodeId of chainNodeIds) {
@@ -3606,7 +3638,6 @@ function ResearchDocument({
         continue;
       }
       const gridRect = grid.getBoundingClientRect();
-      const sx = Math.round(root.getBoundingClientRect().right - gridRect.left) + 8;
       // First pass: resolve each connector's raw endpoints.
       const geometry = anchoredRangeOffsetsRef.current
         .filter((entry) => entry.segmentId === nodeId)
@@ -3615,30 +3646,40 @@ function ResearchDocument({
           const card = aside.querySelector<HTMLElement>(
             `.research-followup-card.is-anchored[data-node-id="${CSS.escape(entry.id)}"]`,
           );
-          const firstLine = Array.from(range?.getClientRects() ?? []).find(
-            (rect) => rect.width > 0,
-          );
-          if (!card || !firstLine) {
+          const selectionRect = range?.getBoundingClientRect();
+          if (
+            !card ||
+            !selectionRect ||
+            selectionRect.width <= 0 ||
+            selectionRect.height <= 0
+          ) {
             return [];
           }
           const cardRect = card.getBoundingClientRect();
-          const sy = Math.round(firstLine.top + firstLine.height / 2 - gridRect.top);
-          const ex = Math.round(cardRect.left - gridRect.left) - 6;
-          const ey = Math.round(cardRect.top - gridRect.top) + 17;
+          const endpoints = researchAnchorConnectorEndpoints({
+            selectionRect,
+            cardRect,
+          });
+          const sx = Math.round(endpoints.sx - gridRect.left);
+          const sy = Math.round(endpoints.sy - gridRect.top);
+          const ex = Math.round(endpoints.ex - gridRect.left);
+          const ey = Math.round(endpoints.ey - gridRect.top);
           return [{ id: entry.id, sx, sy, ex, ey }];
         });
-      // Second pass: connectors share the same gutter, so their vertical runs
-      // would stack on one x line. Assign each run the lowest lane not taken by
-      // an overlapping neighbour (greedy interval colouring, top-to-bottom), then
-      // fan lanes leftward into the gutter — capped per-run at a fraction of its
-      // span so a run never crowds the passage edge.
+      // Second pass: direct leaders normally stay in lane zero. When their
+      // vertical spans compete, assign the later route the lowest open lane
+      // (greedy interval colouring, top-to-bottom) and turn only that route
+      // into an elbow. Fan fallback lanes leftward into the gutter, capped at
+      // a fraction of the route's span so they never crowd the passage edge.
       const lanes: number[] = [];
       const laneByIndex = new Map<number, number>();
       geometry
         .map((g, index) => ({ index, top: Math.min(g.sy, g.ey), bottom: Math.max(g.sy, g.ey) }))
         .sort((a, b) => a.top - b.top || a.index - b.index)
         .forEach(({ index, top, bottom }) => {
-          let lane = lanes.findIndex((occupiedUntil) => occupiedUntil <= top);
+          let lane = lanes.findIndex(
+            (occupiedUntil) => occupiedUntil + CONNECTOR_COLLISION_CLEARANCE <= top,
+          );
           if (lane === -1) {
             lane = lanes.length;
           }
@@ -3653,7 +3694,10 @@ function ResearchDocument({
         next.push({
           segmentId: nodeId,
           id: g.id,
-          d: connectorElbowPath(g.sx, g.sy, g.ex, g.ey, midX),
+          d:
+            lane === 0
+              ? `M ${g.sx} ${g.sy} L ${g.ex} ${g.ey}`
+              : connectorElbowPath(g.sx, g.sy, g.ex, g.ey, midX),
           x: g.sx,
           y: g.sy,
         });
@@ -4040,9 +4084,9 @@ function ResearchDocument({
       if (!drag.active || !drag.snapEligible || drag.frame !== null) {
         return;
       }
-      // Run after WebKit's native selection update for this mousemove. We do
-      // not prevent the default, so dragging beyond the viewport keeps native
-      // selection autoscroll.
+      // Keep a frame fallback for engines that coalesce selectionchange while
+      // dragging. The selectionchange listener below normally corrects the
+      // native character-level range before this callback is needed.
       drag.frame = window.requestAnimationFrame(() => {
         drag.frame = null;
         if (selectionDragRef.current === drag) {
@@ -4050,12 +4094,30 @@ function ResearchDocument({
         }
       });
     };
+    const resnapNativeSelection = () => {
+      const drag = selectionDragRef.current;
+      if (!drag?.active || !drag.snapEligible) {
+        return;
+      }
+      // WebKit updates its native character-level range after mousemove. Fix
+      // that range in the ensuing selectionchange task, before the next paint,
+      // so a slow drag never exposes partial endpoint words. Programmatic
+      // selection changes can fire this event again; the range equality check
+      // in applyDirectionalSelectionRange makes that second pass a no-op.
+      if (drag.frame !== null) {
+        window.cancelAnimationFrame(drag.frame);
+        drag.frame = null;
+      }
+      applySnappedResearchSelection(drag, drag.lastX, drag.lastY);
+    };
     document.addEventListener("mousemove", updateDrag);
     document.addEventListener("mouseup", finishHighlightSelectionDrag);
+    document.addEventListener("selectionchange", resnapNativeSelection);
     window.addEventListener("blur", cancelDrag);
     return () => {
       document.removeEventListener("mousemove", updateDrag);
       document.removeEventListener("mouseup", finishHighlightSelectionDrag);
+      document.removeEventListener("selectionchange", resnapNativeSelection);
       window.removeEventListener("blur", cancelDrag);
       cancelDrag();
     };

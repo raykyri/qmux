@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  researchAnchorConnectorEndpoints,
   researchSelectionActionPlacement,
   shouldDismissEmptyResearchAskOnClick,
   snapResearchDragSelection,
@@ -16,6 +17,26 @@ function rect(left: number, top: number, width: number, height: number) {
     height,
   };
 }
+
+test("uses a horizontal connector when the passage midpoint is inside the card", () => {
+  assert.deepEqual(
+    researchAnchorConnectorEndpoints({
+      selectionRect: rect(100, 140, 900, 160),
+      cardRect: rect(1100, 120, 320, 240),
+    }),
+    { sx: 1008, sy: 220, ex: 1094, ey: 220 },
+  );
+});
+
+test("uses a direct diagonal to the card's safe inset when the midpoint is outside", () => {
+  assert.deepEqual(
+    researchAnchorConnectorEndpoints({
+      selectionRect: rect(100, 40, 600, 40),
+      cardRect: rect(800, 120, 320, 160),
+    }),
+    { sx: 708, sy: 60, ex: 794, ey: 144 },
+  );
+});
 
 test("places selection actions beside the final line of a multi-line selection", () => {
   assert.deepEqual(
@@ -103,18 +124,40 @@ test("keeps the anchor word selected while a drag reverses inside it", () => {
   });
 });
 
-test("excludes outer whitespace and punctuation but retains them internally", () => {
+test("excludes outer whitespace and includes attached punctuation", () => {
   const text = "The quick, brown fox.";
   assert.deepEqual(snapResearchDragSelection(text, 5, 10), {
     start: 4,
-    end: 9,
+    end: 10,
     direction: "forward",
   });
   assert.deepEqual(snapResearchDragSelection(text, 5, 20), {
     start: 4,
-    end: 20,
+    end: 21,
     direction: "forward",
   });
+});
+
+test("includes quotation marks and punctuation surrounding a dragged passage", () => {
+  const quoted = "She called it “surprisingly robust.” Then left.";
+  const quoteStart = quoted.indexOf("“");
+  const quoteEnd = quoted.indexOf("”") + 1;
+  assert.deepEqual(
+    snapResearchDragSelection(quoted, quoteStart + 2, quoteEnd - 2),
+    { start: quoteStart, end: quoteEnd, direction: "forward" },
+  );
+  assert.deepEqual(
+    snapResearchDragSelection(quoted, quoteEnd - 2, quoteStart + 2),
+    { start: quoteStart, end: quoteEnd, direction: "backward" },
+  );
+
+  const parenthesized = "Choose (alpha + beta), then stop.";
+  const passageStart = parenthesized.indexOf("(");
+  const passageEnd = parenthesized.indexOf(",") + 1;
+  assert.deepEqual(
+    snapResearchDragSelection(parenthesized, passageStart + 2, passageEnd - 3),
+    { start: passageStart, end: passageEnd, direction: "forward" },
+  );
 });
 
 test("follows locale-aware boundaries for contractions, hyphens, and CJK", () => {

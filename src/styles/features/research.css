@@ -1926,7 +1926,7 @@
   right: 11px;
 }
 
-/* Dotted elbows from anchored passages into their follow-up cards. Geometry is
+/* Dotted leaders from anchored passages into their follow-up cards. Geometry is
    computed in the document component; this only paints it. No viewBox: the svg
    fills the grid, so path coordinates are grid-relative pixels. */
 .research-anchor-connector {
