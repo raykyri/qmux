@@ -9903,6 +9903,7 @@ function MainApp() {
   // this render-time flag could not track keystrokes in the composer anyway.
   const markdownDropBlocked =
     settingsOpen ||
+    agentsOpen ||
     newAgentOpen ||
     terminalMapOpen ||
     Boolean(publicationTarget) ||
