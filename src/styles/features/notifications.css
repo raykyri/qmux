@@ -19,7 +19,7 @@
   border-radius: 12px;
   background: color-mix(in srgb, var(--popover-bg) 96%, transparent);
   color: var(--text-primary);
-  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.42);
+  box-shadow: var(--shadow-md);
   opacity: 1;
   transform: translateX(0);
   transition:
@@ -36,15 +36,15 @@
 }
 
 .user-notification.is-success {
-  border-color: color-mix(in srgb, #56c596 48%, var(--surface-divider));
+  border-color: color-mix(in srgb, var(--toast-success-border) 48%, var(--surface-divider));
 }
 
 .user-notification.is-warning {
-  border-color: color-mix(in srgb, #e9b65d 55%, var(--surface-divider));
+  border-color: color-mix(in srgb, var(--toast-warning-border) 55%, var(--surface-divider));
 }
 
 .user-notification.is-error {
-  border-color: color-mix(in srgb, #e07979 55%, var(--surface-divider));
+  border-color: color-mix(in srgb, var(--toast-error-border) 55%, var(--surface-divider));
 }
 
 .user-notification-open {
@@ -81,15 +81,15 @@ button.user-notification-open:hover {
 }
 
 .user-notification.is-success .user-notification-icon {
-  color: #71d4a9;
+  color: var(--toast-success-fg);
 }
 
 .user-notification.is-warning .user-notification-icon {
-  color: #f1c16e;
+  color: var(--toast-warning-fg);
 }
 
 .user-notification.is-error .user-notification-icon {
-  color: #ed8a8a;
+  color: var(--toast-error-fg);
 }
 
 .user-notification-copy {

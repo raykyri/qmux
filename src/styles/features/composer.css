@@ -147,8 +147,8 @@
 
 /* A queued turn delivered elsewhere (fork / new session). */
 .queued-turn-delivery-label {
-  border-color: rgba(129, 199, 132, 0.25);
-  background: rgba(129, 199, 132, 0.08);
+  border-color: var(--status-success-border);
+  background: var(--status-success-bg);
   color: var(--status-success-fg);
 }
 
@@ -173,8 +173,8 @@
 }
 
 .queued-turn.is-current.tone-attention {
-  border-color: rgba(224, 121, 109, 0.5);
-  background: #1e1817;
+  border-color: color-mix(in srgb, var(--status-attention-fg) 50%, transparent);
+  background: var(--home-cascade-attention-bg);
 }
 
 /* A settled turn (the agent is done or inert) recedes to the calm rail
@@ -189,7 +189,7 @@
 
 .queued-turn.is-current.tone-error {
   border-color: var(--danger-outline);
-  background: #211814;
+  background: var(--home-cascade-error-bg);
 }
 
 .queued-turn.is-current.is-empty {
@@ -488,7 +488,7 @@
   background: var(--popover-bg);
   color: var(--text-primary);
   font-size: var(--fs-sm);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-md);
   pointer-events: none;
 }
 
@@ -500,9 +500,9 @@
 }
 
 .app-toast.is-warning {
-  border-color: #5b4630;
-  background: #241f18;
-  color: #ffdca8;
+  border-color: var(--warning-callout-border);
+  background: var(--warning-callout-bg);
+  color: var(--warning-callout-fg);
 }
 
 .folder-picker-status {
@@ -521,7 +521,7 @@
   color: var(--text-primary);
   font-size: var(--fs-sm);
   line-height: 1;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-md);
   pointer-events: none;
 }
 

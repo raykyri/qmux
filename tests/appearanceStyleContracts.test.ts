@@ -8,12 +8,6 @@ const stylesDirectory = join(import.meta.dirname, "..", "src", "styles");
 // Sheets still carrying raw literals while the appearance sweep lands one
 // surface group at a time. This set must be empty once the sweep is complete.
 const PENDING_SWEEP = new Set([
-  join("features", "shell.css"),
-  join("features", "terminal.css"),
-  join("features", "browser.css"),
-  join("features", "composer.css"),
-  join("features", "history.css"),
-  join("features", "notifications.css"),
   join("features", "agent-debug-panel.css"),
   join("features", "artifact-tray.css"),
 ]);

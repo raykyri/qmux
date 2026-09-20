@@ -268,6 +268,11 @@
   --danger-fg-muted: #e08a8a;
   --danger-fg-message: #ffb4a8;
   --danger-fg-hover: #ffe8e0;
+  /* Background tints for the home cascade's current card: same hue family as
+     the danger colors, but lower saturation so they work as a full-card fill
+     instead of a small badge accent. */
+  --home-cascade-attention-bg: #1e1817;
+  --home-cascade-error-bg: #211814;
 
   /* White-alpha fills and hairlines composite the same over any dark theme. */
   --surface-fill-subtle: rgba(255, 255, 255, 0.05);

@@ -5,7 +5,7 @@
   display: grid;
   place-items: center;
   padding: 28px;
-  background: rgba(5, 7, 8, 0.58);
+  background: var(--dialog-backdrop-bg);
   backdrop-filter: blur(7px);
 }
 
@@ -19,7 +19,7 @@
   border: 1px solid var(--surface-border-default);
   border-radius: 14px;
   background: var(--workspace-bg);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.48);
+  box-shadow: var(--shadow-xl);
   color: var(--text-primary);
 }
 
@@ -166,12 +166,12 @@
   height: 27px;
   place-items: center;
   border-radius: 7px;
-  color: #cbd2cd;
-  background: rgba(255, 255, 255, 0.065);
+  color: var(--text-secondary);
+  background: var(--surface-highlight);
 }
 
-.history-agent--claude { color: #d9a07d; }
-.history-agent--codex { color: #8fc7a6; }
+.history-agent--claude { color: var(--agent-claude-fg); }
+.history-agent--codex { color: var(--agent-codex-fg); }
 
 .history-agent-icon {
   width: 14px;
@@ -226,7 +226,7 @@
 }
 
 .history-row-meta em {
-  color: #8fc7a6;
+  color: var(--agent-codex-fg);
   font-style: normal;
 }
 
@@ -293,7 +293,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  color: var(--warning-fg, #e6bd75);
+  color: var(--status-warning-fg);
   font-size: 11px;
 }
 
@@ -357,7 +357,7 @@
 .history-error {
   padding: 9px 14px;
   border-top: 1px solid color-mix(in srgb, currentColor 28%, transparent);
-  color: var(--danger-fg, #ff7b72);
+  color: var(--danger-fg);
   background: color-mix(in srgb, currentColor 6%, var(--workspace-bg));
 }
 
