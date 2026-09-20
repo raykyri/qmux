@@ -2081,6 +2081,7 @@ mod tests {
                 status: PaneStatus::Running,
                 last_active_at: 0,
                 recovered: false,
+                remote_client: None,
                 depth: 0,
             },
             backend: crate::state::PaneBackend::HostPty(crate::state::HostPtyBackend {

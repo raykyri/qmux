@@ -1608,6 +1608,12 @@ pub struct PaneInfo {
     /// Live attachment health for a remote pane. Local panes leave it absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_connection: Option<RemoteConnectionInfo>,
+    /// Client program and destination for a direct SSH/SFTP tab. Restart
+    /// re-runs the client instead of a login shell. Absent for ordinary shells
+    /// and qmux-managed remote panes. `sshTarget` accepts snapshots written by
+    /// the original SSH-only implementation.
+    #[serde(default, alias = "sshTarget", skip_serializing_if = "Option::is_none")]
+    pub remote_client: Option<RemoteClient>,
     pub cols: u16,
     pub rows: u16,
     pub status: PaneStatus,
@@ -1625,6 +1631,45 @@ pub struct PaneInfo {
     /// still deserialize pane records. New versions always return and persist zero.
     #[serde(default)]
     pub depth: u16,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteClientProtocol {
+    Ssh,
+    Sftp,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteClient {
+    pub protocol: RemoteClientProtocol,
+    pub target: String,
+}
+
+impl<'de> Deserialize<'de> for RemoteClient {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", untagged)]
+        enum PersistedRemoteClient {
+            Current {
+                protocol: RemoteClientProtocol,
+                target: String,
+            },
+            LegacySsh(String),
+        }
+
+        Ok(match PersistedRemoteClient::deserialize(deserializer)? {
+            PersistedRemoteClient::Current { protocol, target } => Self { protocol, target },
+            PersistedRemoteClient::LegacySsh(target) => Self {
+                protocol: RemoteClientProtocol::Ssh,
+                target,
+            },
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -13264,8 +13309,37 @@ mod tests {
             status: PaneStatus::Running,
             last_active_at: 0,
             recovered: false,
+            remote_client: None,
             depth: 0,
         }
+    }
+
+    #[test]
+    fn direct_remote_client_persistence_accepts_legacy_ssh_tabs() {
+        let mut legacy = serde_json::to_value(sample_pane("pane-1", None)).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .insert("sshTarget".to_string(), serde_json::json!("workbox"));
+
+        let pane: PaneInfo = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            pane.remote_client,
+            Some(RemoteClient {
+                protocol: RemoteClientProtocol::Ssh,
+                target: "workbox".to_string(),
+            })
+        );
+
+        let mut sftp = sample_pane("pane-2", None);
+        sftp.remote_client = Some(RemoteClient {
+            protocol: RemoteClientProtocol::Sftp,
+            target: "files.example".to_string(),
+        });
+        assert_eq!(
+            serde_json::to_value(sftp).unwrap()["remoteClient"],
+            serde_json::json!({"protocol": "sftp", "target": "files.example"})
+        );
     }
 
     #[test]

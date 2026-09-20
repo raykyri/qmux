@@ -65,8 +65,8 @@ use native_terminal::{
 };
 use pty::{
     InitialPaneSize, PaneActivity, PaneWriteOptions, attach_pane, close_worktree_pane, kill_pane,
-    pane_activity as inspect_pane_activity, resize_pane, spawn_shell_pane, spawn_shell_pane_at,
-    write_pane,
+    pane_activity as inspect_pane_activity, resize_pane, spawn_remote_client_pane,
+    spawn_shell_pane, spawn_shell_pane_at, write_pane,
 };
 use research::{
     CreateResearchDocumentRequest, CreateResearchTreeRequest, RecentResearchQueryCursor,
@@ -80,7 +80,7 @@ use show_hide_shortcut::{
 use sleep::SleepGuard;
 use state::{
     AgentDeliveryDebugInfo, AppState, ArtifactInfo, PaneInfo, PaneLayoutEntry, PaneSplitInfo,
-    QueuedTurn, RecentSessionInfo, ShellAgentJobInfo,
+    QueuedTurn, RecentSessionInfo, RemoteClientProtocol, ShellAgentJobInfo,
 };
 use tauri::{Manager, Url};
 use transcript::{
@@ -2706,15 +2706,31 @@ async fn spawn_shell(
     initial_size: Option<InitialPaneSize>,
     source_pane_id: Option<String>,
     group_id: Option<String>,
+    remote_id: Option<String>,
+    remote_protocol: Option<RemoteClientProtocol>,
 ) -> Result<PaneInfo, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         validate_launch_workspace(&state, group_id.as_deref(), LaunchOrigin::Terminal)?;
-        spawn_shell_pane(
+        let Some(remote_id) = remote_id.as_deref() else {
+            return spawn_shell_pane(
+                &state,
+                initial_size,
+                source_pane_id.as_deref(),
+                group_id.as_deref(),
+            );
+        };
+        let preferences = persistence::load_preferences(&state.config().workspace_root)?;
+        let remote = state
+            .config()
+            .saved_remote_with(remote_id, &preferences.remotes)?;
+        spawn_remote_client_pane(
             &state,
             initial_size,
             source_pane_id.as_deref(),
             group_id.as_deref(),
+            &remote,
+            remote_protocol.unwrap_or(RemoteClientProtocol::Ssh),
         )
     })
     .await

@@ -805,12 +805,16 @@ export async function spawnShell(
   initialSize?: InitialPaneSize | null,
   sourcePaneId?: string | null,
   groupId?: string | null,
+  remoteId?: string | null,
+  remoteProtocol?: "ssh" | "sftp" | null,
 ) {
   const started = performance.now();
   const pane = await invoke<PaneInfo>("spawn_shell", {
     initialSize: initialSize ?? null,
     sourcePaneId: sourcePaneId ?? null,
     groupId: groupId ?? null,
+    remoteId: remoteId ?? null,
+    remoteProtocol: remoteProtocol ?? null,
   });
   if (pane.remoteSession) {
     trackRemoteStartup(pane.id, started);

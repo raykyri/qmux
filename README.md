@@ -536,8 +536,11 @@ changing live agent status or advancing queued prompts.
 
 In Terminal mode, the sidebar menu lists each saved remote above **New group…**.
 **New remote group** atomically creates a group plus its first shell in that
-account's home directory. A failed SSH/tmux launch rolls the group back instead
-of leaving an empty entry.
+account's home directory. **New remote tab (ssh)** opens an `ssh` session to
+that host as a tab in the current group; if the group is already bound to the
+machine, it is an ordinary remote shell. **New remote tab (sftp)** opens an
+interactive `sftp` client to the host. A failed SSH/tmux launch rolls the group
+back instead of leaving an empty entry.
 
 The group **snapshots** the saved remote it was created against rather than referencing
 it, keeping the id only as provenance. Editing or deleting a remote

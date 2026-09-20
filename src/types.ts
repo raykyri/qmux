@@ -82,6 +82,8 @@ export interface PaneInfo {
   remoteSession?: RemoteSessionIdentity | null;
   /** Health of the disposable SSH attachment to a durable remote session. */
   remoteConnection?: RemoteConnectionInfo | null;
+  /** Direct SSH/SFTP client tab. Restart re-runs the same client. */
+  remoteClient?: RemoteClient | null;
   cols: number;
   rows: number;
   status: "starting" | "running" | "exited" | "killed" | "failed";
@@ -92,6 +94,11 @@ export interface PaneInfo {
   recovered?: boolean;
   // Deprecated compatibility field. Flat tab layouts always use zero.
   depth?: number;
+}
+
+export interface RemoteClient {
+  protocol: "ssh" | "sftp";
+  target: string;
 }
 
 export interface RemoteSessionIdentity {

@@ -10,12 +10,13 @@ use crate::scrollback::{
 };
 use crate::state::{
     AppState, HostPtyBackend, PaneBackend, PaneInfo, PaneKind, PaneRuntime, PaneStatus,
-    RemoteConnectionInfo, RemoteConnectionState, RemoteHookHealth, RemoteSessionIdentity,
-    RemoteTmuxBackend, SharedBacklog, SharedChild, SharedWriter, ShellAgentResume,
+    RemoteClient, RemoteClientProtocol, RemoteConnectionInfo, RemoteConnectionState,
+    RemoteHookHealth, RemoteSessionIdentity, RemoteTmuxBackend, SharedBacklog, SharedChild,
+    SharedWriter, ShellAgentResume,
 };
 use crate::turn_queue::{abort_fork_barrier_for_child, release_waiters_for_agent};
 use crate::workspace::{
-    ActiveWorkspace, CreateGroupRequest, WorkspaceScope, capture_agent_worktree_removal,
+    ActiveWorkspace, CreateGroupRequest, RemoteRef, WorkspaceScope, capture_agent_worktree_removal,
     create_group, group_recoverable_dir, remove_captured_worktree,
 };
 use portable_pty::PtySize;
@@ -372,6 +373,7 @@ fn plan_to_spec_with_identity(
         support_file_fallback: plan.support_file_fallback,
         initial_size: meta.initial_size,
         recovered: meta.recovered,
+        remote_client: None,
         remote,
         fallback_workspace: None,
     })
@@ -480,6 +482,9 @@ pub struct PtySpawnSpec {
     pub support_file_fallback: Option<SupportFileFallback>,
     pub initial_size: Option<InitialPaneSize>,
     pub recovered: bool,
+    /// Direct remote client command copied onto `PaneInfo` so restart reopens
+    /// the same SSH/SFTP client rather than a login shell.
+    pub remote_client: Option<RemoteClient>,
     pub remote: Option<RemoteSpawnSpec>,
     /// Persisted observation reused when a recovered shell reopens at the same
     /// cwd and the live git probe is unavailable.
@@ -609,6 +614,144 @@ pub fn spawn_shell_pane_at(
     )
 }
 
+/// Opens an interactive SSH or SFTP client to `remote` as a tab in the current
+/// group. An SSH tab targeting the machine already bound to the group is an
+/// ordinary remote shell.
+pub fn spawn_remote_client_pane(
+    state: &AppState,
+    initial_size: Option<InitialPaneSize>,
+    source_pane_id: Option<&str>,
+    group_id: Option<&str>,
+    remote: &RemoteRef,
+    protocol: RemoteClientProtocol,
+) -> Result<PaneInfo, String> {
+    let source_group_id = source_pane_id.and_then(|id| state.pane_group_id(id).ok().flatten());
+    let group = match group_id.or(source_group_id.as_deref()) {
+        Some(group_id) => state
+            .group(group_id)?
+            .ok_or_else(|| format!("group {group_id} was not found"))?,
+        None => create_group(
+            state,
+            CreateGroupRequest {
+                remote_id: None,
+                name: None,
+                dir: None,
+                after_group_id: None,
+                base_repo: None,
+                base_ref: None,
+                remote: None,
+            },
+        )?,
+    };
+    if group.scope != WorkspaceScope::Terminal {
+        return Err("ordinary shells cannot be opened in a research workspace".to_string());
+    }
+    if protocol == RemoteClientProtocol::Ssh
+        && group
+            .remote
+            .as_ref()
+            .is_some_and(|bound| bound.id == remote.id)
+    {
+        return spawn_shell_pane(state, initial_size, source_pane_id, Some(&group.id));
+    }
+    let cwd = state.resolve_shell_spawn_cwd(&group, source_pane_id, None)?;
+    let pane_id = state.next_id("pane");
+    spawn_pty(
+        state,
+        remote_client_spawn_spec(
+            state,
+            pane_id,
+            group.id,
+            cwd,
+            initial_size,
+            false,
+            remote,
+            protocol,
+        )?,
+    )
+}
+
+fn remote_client_command(protocol: RemoteClientProtocol, host: &str) -> (String, Vec<String>) {
+    match protocol {
+        RemoteClientProtocol::Ssh => (
+            "ssh".to_string(),
+            vec!["-t".to_string(), "--".to_string(), host.to_string()],
+        ),
+        RemoteClientProtocol::Sftp => {
+            ("sftp".to_string(), vec!["--".to_string(), host.to_string()])
+        }
+    }
+}
+
+fn remote_client_spawn_spec(
+    state: &AppState,
+    pane_id: String,
+    group_id: String,
+    cwd: PathBuf,
+    initial_size: Option<InitialPaneSize>,
+    recovered: bool,
+    remote: &RemoteRef,
+    protocol: RemoteClientProtocol,
+) -> Result<PtySpawnSpec, String> {
+    let title = match protocol {
+        RemoteClientProtocol::Ssh => remote.label.clone(),
+        RemoteClientProtocol::Sftp => format!("{} (sftp)", remote.label),
+    };
+    remote_client_spawn_spec_for_host(
+        state,
+        pane_id,
+        group_id,
+        cwd,
+        initial_size,
+        recovered,
+        &remote.host,
+        &title,
+        protocol,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn remote_client_spawn_spec_for_host(
+    state: &AppState,
+    pane_id: String,
+    group_id: String,
+    cwd: PathBuf,
+    initial_size: Option<InitialPaneSize>,
+    recovered: bool,
+    host: &str,
+    title: &str,
+    protocol: RemoteClientProtocol,
+) -> Result<PtySpawnSpec, String> {
+    let (program, args) = remote_client_command(protocol, host);
+    let envs = shell_pane_envs(state, &pane_id)?;
+    let mut spec = plan_to_spec(
+        state,
+        PaneMeta {
+            pane_id: Some(pane_id),
+            agent_id: None,
+            group_id,
+            kind: PaneKind::Shell,
+            title: title.to_string(),
+            last_osc_title: None,
+            initial_size,
+            recovered,
+        },
+        CommandPlan {
+            program,
+            args,
+            cwd,
+            envs,
+            support_files: Vec::new(),
+            support_file_fallback: None,
+        },
+    )?;
+    spec.remote_client = Some(RemoteClient {
+        protocol,
+        target: host.to_string(),
+    });
+    Ok(spec)
+}
+
 pub fn ensure_shell_agent_startup_supported() -> Result<(), String> {
     let shell = pane_shell();
     ensure_shell_agent_startup_supported_for(&shell)
@@ -716,15 +859,33 @@ pub fn respawn_shell_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInfo,
         cols: pane.cols,
         rows: pane.rows,
     });
-    let mut spec = shell_spawn_spec(
-        state,
-        pane.id.clone(),
-        pane.group_id.clone(),
-        cwd,
-        initial_size,
-        true,
-        resume_command,
-    )?;
+    let mut spec = if let Some(remote_client) = pane.remote_client.as_ref() {
+        remote_client_spawn_spec_for_host(
+            state,
+            pane.id.clone(),
+            pane.group_id.clone(),
+            cwd,
+            initial_size,
+            true,
+            &remote_client.target,
+            if pane.title.trim().is_empty() {
+                &remote_client.target
+            } else {
+                pane.title.as_str()
+            },
+            remote_client.protocol,
+        )?
+    } else {
+        shell_spawn_spec(
+            state,
+            pane.id.clone(),
+            pane.group_id.clone(),
+            cwd,
+            initial_size,
+            true,
+            resume_command,
+        )?
+    };
     // A shell pane may carry a manual/generated base title as well as a cached
     // OSC title. Recovery previously rebuilt every shell as literal "Shell",
     // discarding even explicitly renamed tabs.
@@ -1809,6 +1970,7 @@ fn spawn_portable_pty(
         // stamp round-trips. Every real pane (shell and agent) flows through here.
         last_active_at: crate::state::now_millis(),
         recovered: spec.recovered,
+        remote_client: spec.remote_client.clone(),
         // Deprecated compatibility field; flat tab layouts always use zero.
         depth: 0,
     };
@@ -2017,6 +2179,7 @@ fn spawn_remote_tmux_inner(
         status: PaneStatus::Running,
         last_active_at: crate::state::now_millis(),
         recovered: spec.recovered,
+        remote_client: spec.remote_client.clone(),
         depth: 0,
     };
     let backend = RemoteTmuxBackend::new(
@@ -5017,7 +5180,7 @@ mod tests {
         MuseAdapterConfig, OpencodeAdapterConfig, QmuxConfig,
     };
     use crate::scrollback::read_pane_scrollback;
-    use crate::workspace::{AgentInfo, AgentStatus, GroupInfo, RemoteRef, WorkspaceScope};
+    use crate::workspace::{AgentInfo, AgentStatus, GroupInfo, WorkspaceScope};
     use std::cell::{Cell, RefCell};
     use std::io;
     use std::path::PathBuf;
@@ -5467,6 +5630,62 @@ mod tests {
     }
 
     #[test]
+    fn remote_client_specs_stay_local_and_target_the_host() {
+        let state = test_state_with_workspace(temp_workspace());
+        let group = create_group(
+            &state,
+            CreateGroupRequest {
+                remote_id: None,
+                name: None,
+                dir: None,
+                after_group_id: None,
+                base_repo: None,
+                base_ref: None,
+                remote: None,
+            },
+        )
+        .unwrap();
+        let remote = test_remote();
+        for (protocol, program, args, title) in [
+            (
+                RemoteClientProtocol::Ssh,
+                "ssh",
+                vec!["-t", "--", "workbox"],
+                "workbox",
+            ),
+            (
+                RemoteClientProtocol::Sftp,
+                "sftp",
+                vec!["--", "workbox"],
+                "workbox (sftp)",
+            ),
+        ] {
+            let spec = remote_client_spawn_spec(
+                &state,
+                format!("pane-{program}"),
+                group.id.clone(),
+                std::env::temp_dir(),
+                None,
+                false,
+                &remote,
+                protocol,
+            )
+            .unwrap();
+            assert_eq!(spec.program, program);
+            assert_eq!(spec.args, args);
+            assert!(spec.remote.is_none());
+            assert_eq!(
+                spec.remote_client,
+                Some(RemoteClient {
+                    protocol,
+                    target: "workbox".to_string(),
+                })
+            );
+            assert_eq!(spec.title, title);
+        }
+    }
+
+    #[test]
     fn fresh_shell_agent_startup_keeps_support_files_required() {
         let state = test_state_with_workspace(temp_workspace());
         let group = create_group(
@@ -5830,6 +6049,7 @@ mod tests {
                         status: PaneStatus::Running,
                         last_active_at: 0,
                         recovered: true,
+                        remote_client: None,
                         depth: 0,
                     },
                     backend: PaneBackend::RemoteTmux(RemoteTmuxBackend::new(
@@ -6497,6 +6717,7 @@ mod tests {
                 support_file_fallback: None,
                 initial_size: Some(InitialPaneSize { cols: 90, rows: 10 }),
                 recovered: false,
+                remote_client: None,
                 remote: Some(RemoteSpawnSpec {
                     host: crate::host::for_group(Some(&remote_ref)),
                     identity,
@@ -6747,6 +6968,7 @@ mod tests {
             }),
             initial_size: None,
             recovered: true,
+            remote_client: None,
             remote: None,
             fallback_workspace: None,
         };
@@ -7339,6 +7561,7 @@ mod tests {
                 support_file_fallback: None,
                 initial_size: None,
                 recovered: false,
+                remote_client: None,
                 remote: None,
                 fallback_workspace: None,
             },
@@ -7363,6 +7586,7 @@ mod tests {
             support_file_fallback: None,
             initial_size: None,
             recovered: true,
+            remote_client: None,
             remote: None,
             fallback_workspace: None,
         };
@@ -7382,6 +7606,7 @@ mod tests {
             status: PaneStatus::Running,
             last_active_at: 0,
             recovered: true,
+            remote_client: None,
             depth: 0,
         };
 
@@ -7552,6 +7777,7 @@ mod tests {
                     status: PaneStatus::Running,
                     last_active_at: 0,
                     recovered: false,
+                    remote_client: None,
                     depth: 0,
                 },
                 backend: PaneBackend::RemoteTmux(RemoteTmuxBackend::new(

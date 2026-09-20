@@ -1452,6 +1452,7 @@ mod tests {
             status: PaneStatus::Running,
             last_active_at: 0,
             recovered: false,
+            remote_client: None,
             depth: 0,
         }
     }

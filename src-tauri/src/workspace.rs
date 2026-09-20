@@ -4158,6 +4158,7 @@ mod tests {
             status: crate::state::PaneStatus::Running,
             last_active_at: 1,
             recovered: false,
+            remote_client: None,
             depth: 0,
         }
     }
