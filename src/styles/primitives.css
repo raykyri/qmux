@@ -182,6 +182,59 @@
   white-space: nowrap;
 }
 
+/* Custom checkbox: the unchecked box reads as quiet chrome (control fill,
+   hairline border) instead of a bright native control, and the checked state
+   takes the accent plus the themed check glyph. Shared by the settings rows,
+   the launcher's worktree/skill toggles, and the GFM task-list inputs in
+   rendered Markdown, which react-markdown emits without a class of their own.
+   --checkbox-size / --checkbox-glyph-size are the per-context tuning knobs. */
+.checkbox-control,
+.settings-checkbox,
+.command-launcher-worktree input,
+.turn-markdown input[type="checkbox"] {
+  --checkbox-size: 14px;
+  --checkbox-glyph-size: 11px;
+  appearance: none;
+  -webkit-appearance: none;
+  width: var(--checkbox-size);
+  height: var(--checkbox-size);
+  margin: 0;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.checkbox-control:checked,
+.settings-checkbox:checked,
+.command-launcher-worktree input:checked,
+.turn-markdown input[type="checkbox"]:checked {
+  border-color: var(--accent-strong);
+  background-color: var(--accent-strong);
+  background-image: var(--checkbox-check);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: var(--checkbox-glyph-size);
+}
+
+.checkbox-control:focus-visible,
+.settings-checkbox:focus-visible,
+.command-launcher-worktree input:focus-visible,
+.turn-markdown input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-shadow);
+}
+
+/* Interactive contexts only. Markdown task lists are always disabled, so
+   dimming them there would gray out ordinary document content. */
+.checkbox-control:disabled,
+.settings-checkbox:disabled,
+.command-launcher-worktree input:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 @keyframes spinner-spin {
   to {
     transform: rotate(360deg);

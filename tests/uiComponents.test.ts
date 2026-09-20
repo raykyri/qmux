@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -204,4 +206,37 @@ test("the launcher submenu row announces its nested list in both states", () => 
   assert.match(open, /aria-expanded="true"/);
   assert.match(open, /launcher-select-submenu-trigger is-open is-highlighted/);
   assert.match(open, /aria-controls="launcher-select-submenu-/);
+});
+
+test("the checkbox box recipe lives in primitives, not in the feature sheets", () => {
+  const stylesDirectory = join(import.meta.dirname, "..", "src", "styles");
+  const primitives = readFileSync(join(stylesDirectory, "primitives.css"), "utf8");
+  const transcript = readFileSync(join(stylesDirectory, "features", "transcript.css"), "utf8");
+  const shell = readFileSync(join(stylesDirectory, "features", "shell.css"), "utf8");
+
+  // One rule carries appearance, border, fill and the checked glyph for every
+  // checkbox in the app, including the GFM task-list inputs react-markdown
+  // renders without a class.
+  const recipe = primitives.match(/\.checkbox-control,[\s\S]*?\n\}/);
+  assert.ok(recipe, "primitives.css must declare the shared checkbox recipe");
+  assert.match(recipe[0], /\.settings-checkbox/);
+  assert.match(recipe[0], /\.turn-markdown input\[type="checkbox"\]/);
+  assert.match(recipe[0], /appearance: none/);
+  assert.match(primitives, /background-image: var\(--checkbox-check\)/);
+  assert.match(primitives, /\.checkbox-control:focus-visible/);
+  assert.match(primitives, /\.checkbox-control:disabled/);
+
+  // Feature sheets keep only their own modifiers.
+  for (const [name, css] of [
+    ["transcript.css", transcript],
+    ["shell.css", shell],
+  ] as const) {
+    assert.doesNotMatch(css, /-webkit-appearance: none;\n\s+width: 1[34]px/, name);
+    assert.doesNotMatch(css, /background-image: var\(--checkbox-check\)/, name);
+  }
+  const taskList = transcript.match(/\.turn-markdown input\[type="checkbox"\] \{([^}]*)\}/);
+  assert.ok(taskList, "transcript.css must retune the task-list checkbox");
+  assert.match(taskList[1], /--checkbox-size: 13px/);
+  assert.match(taskList[1], /vertical-align: -2px/);
+  assert.match(taskList[1], /cursor: default/);
 });

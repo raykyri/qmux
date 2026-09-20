@@ -2859,39 +2859,6 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   color: var(--text-primary);
 }
 
-/* Custom checkbox so the unchecked box reads as quiet launcher chrome (dark fill,
-   hairline border) instead of a bright native control, and the checked state
-   matches the launcher's accent. Shared by the worktree toggle. */
-.command-launcher-worktree input,
-.settings-checkbox {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-sm);
-  background: var(--control-bg);
-  cursor: pointer;
-  transition: background-color var(--transition-fast), border-color var(--transition-fast);
-}
-
-.command-launcher-worktree input:checked,
-.settings-checkbox:checked {
-  border-color: var(--accent-strong);
-  background-color: var(--accent-strong);
-  background-image: var(--checkbox-check);
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 11px;
-}
-
-.command-launcher-worktree input:focus-visible,
-.settings-checkbox:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--accent-shadow);
-}
-
 .command-launcher-options,
 .command-launcher-skills {
   display: inline-flex;

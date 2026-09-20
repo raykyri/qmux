@@ -1674,8 +1674,15 @@ html.wrap-code-blocks .turn-markdown-code-block pre code {
   background: var(--surface-border-strong);
 }
 
+/* GFM task lists. react-markdown renders these inputs disabled, so there is no
+   pointer affordance; the box recipe itself is the shared checkbox primitive
+   and only the transcript's size and baseline alignment live here. */
 .turn-markdown input[type="checkbox"] {
+  --checkbox-size: 13px;
+  --checkbox-glyph-size: 10px;
   margin-right: 6px;
+  vertical-align: -2px;
+  cursor: default;
 }
 
 /* Only .turn-card (user/assistant messages) is a bordered "module". Everything
