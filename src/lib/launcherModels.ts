@@ -1,8 +1,9 @@
 const CUSTOM_MODEL = "custom";
 
 const MODEL_PRESETS_BY_ADAPTER: Record<string, string[]> = {
-  claude: ["opus", "fable", "sonnet", CUSTOM_MODEL],
+  claude: ["fable", "opus", "sonnet", CUSTOM_MODEL],
   codex: [
+    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -35,7 +36,7 @@ export function formatLauncherModelLabel(adapter: string, preset: string): strin
     return "Custom";
   }
   // Codex model ids are product identifiers, not prose. Preserve their exact
-  // casing instead of turning `gpt-5.6-sol` into `Gpt-5.6-Sol`.
+  // casing instead of turning `gpt-6-astra` into `Gpt-6-Astra`.
   if (adapter === "codex") {
     return preset;
   }
