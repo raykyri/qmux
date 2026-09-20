@@ -5,13 +5,6 @@ import test from "node:test";
 
 const stylesDirectory = join(import.meta.dirname, "..", "src", "styles");
 
-// Sheets still carrying raw literals while the appearance sweep lands one
-// surface group at a time. This set must be empty once the sweep is complete.
-const PENDING_SWEEP = new Set([
-  join("features", "agent-debug-panel.css"),
-  join("features", "artifact-tray.css"),
-]);
-
 function styleFilesOutsideTokens(): string[] {
   const files: string[] = [];
   for (const entry of readdirSync(stylesDirectory, { withFileTypes: true })) {
@@ -23,7 +16,7 @@ function styleFilesOutsideTokens(): string[] {
       files.push(entry.name);
     }
   }
-  return files.filter((file) => !PENDING_SWEEP.has(file));
+  return files;
 }
 
 const COLOR_LITERAL = /#[0-9a-fA-F]{3,8}\b|\brgba?\(/;

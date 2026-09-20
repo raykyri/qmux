@@ -14,7 +14,7 @@
   border: 1px solid var(--control-border);
   border-radius: 10px;
   background: var(--right-pane-bg);
-  box-shadow: 0 14px 38px rgb(0 0 0 / 38%);
+  box-shadow: var(--shadow-md);
 }
 
 .artifact-tray.is-stage-hosted {
@@ -262,7 +262,7 @@
     box-shadow: 0 0 0 0 var(--accent-shadow);
   }
   100% {
-    box-shadow: 0 0 0 7px rgb(0 0 0 / 0%);
+    box-shadow: 0 0 0 7px transparent;
   }
 }
 
