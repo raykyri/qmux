@@ -1635,7 +1635,6 @@ const MessageTimelineItemView = memo(function MessageTimelineItemView({
 
 function MessageItemView({
   item,
-  agentId,
   savePromptAgentId,
   copyOnly = false,
   assistantLabel,

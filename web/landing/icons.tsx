@@ -4,7 +4,6 @@
 // no runtime dependency on the app's component tree.
 //
 // Path data: Lucide v1.21.0, ISC licensed. https://lucide.dev
-import React from "react";
 import type { ReactNode, SVGProps } from "react";
 
 interface IconProps extends SVGProps<SVGSVGElement> {

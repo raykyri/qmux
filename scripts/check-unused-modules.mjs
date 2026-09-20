@@ -51,7 +51,9 @@ function main() {
   const sources = ["src", "web"].flatMap((directory) => sourceFilesIn(resolve(root, directory)));
   const tests = ["tests", "web"].flatMap((directory) => sourceFilesIn(resolve(root, directory)))
     .filter((file) => /\.test\.tsx?$/.test(file));
-  // The application and separately bundled website are runtime roots.
+  // The application and separately bundled website are runtime roots. qmux has
+  // no second webview entry: the global task launcher renders inside the main
+  // window's tree, so src/main.tsx already reaches it.
   // Tests are deliberate roots too: helpers supporting independent contracts
   // should not be deleted merely because the current UI does not import them.
   const roots = ["src/main.tsx", "web/server.tsx"]
