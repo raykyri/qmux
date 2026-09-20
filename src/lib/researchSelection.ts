@@ -18,6 +18,33 @@ export interface ResearchSelectionRect {
   height: number;
 }
 
+/** Connects an anchored passage to its card with the simplest connector
+ * geometry available. The passage midpoint is also the card endpoint whenever
+ * it falls inside the card's safe vertical range, producing a horizontal
+ * leader. When it falls outside, clamping to the nearest safe point produces
+ * one direct diagonal instead. */
+export function researchAnchorConnectorEndpoints(input: {
+  selectionRect: ResearchSelectionRect;
+  cardRect: ResearchSelectionRect;
+  selectionGap?: number;
+  cardGap?: number;
+  cardInset?: number;
+}) {
+  const selectionGap = input.selectionGap ?? 8;
+  const cardGap = input.cardGap ?? 6;
+  const cardInset = Math.min(input.cardInset ?? 24, input.cardRect.height / 2);
+  const sy = input.selectionRect.top + input.selectionRect.height / 2;
+  const minimumCardY = input.cardRect.top + cardInset;
+  const maximumCardY = input.cardRect.bottom - cardInset;
+
+  return {
+    sx: input.selectionRect.right + selectionGap,
+    sy,
+    ex: input.cardRect.left - cardGap,
+    ey: Math.max(minimumCardY, Math.min(sy, maximumCardY)),
+  };
+}
+
 /** Positions the selection actions beside the end of the selected passage.
  * A Range bounding box starts at the first line of a multi-line selection,
  * which made the bar appear below and far to the left of the selected text.
@@ -213,6 +240,51 @@ function trailingUnit(units: SelectionUnit[], offset: number) {
   return next?.start === offset ? next : previous ?? null;
 }
 
+/** Includes punctuation attached to the outside of a snapped passage without
+ * swallowing punctuation that joins it to another word. Whitespace and hard
+ * projection boundaries define attachment: selecting `“quoted.”` keeps both
+ * quotation marks, while selecting `state-of-the` does not pull in the hyphen
+ * before `art`. */
+function expandAttachedPunctuation(
+  text: string,
+  start: number,
+  end: number,
+  boundaries: number[],
+) {
+  let lowerBound = 0;
+  let upperBound = text.length;
+  for (const boundary of boundaries) {
+    if (boundary <= start) {
+      lowerBound = Math.max(lowerBound, boundary);
+    }
+    if (boundary >= end) {
+      upperBound = Math.min(upperBound, boundary);
+    }
+  }
+
+  const leading = text.slice(lowerBound, start).match(/\p{P}+$/u)?.[0] ?? "";
+  const leadingStart = start - leading.length;
+  if (
+    leading &&
+    (leadingStart === lowerBound ||
+      /\s$/u.test(text.slice(lowerBound, leadingStart)))
+  ) {
+    start = leadingStart;
+  }
+
+  const trailing = text.slice(end, upperBound).match(/^\p{P}+/u)?.[0] ?? "";
+  const trailingEnd = end + trailing.length;
+  if (
+    trailing &&
+    (trailingEnd === upperBound ||
+      /^\s/u.test(text.slice(trailingEnd, upperBound)))
+  ) {
+    end = trailingEnd;
+  }
+
+  return { start, end };
+}
+
 /** Expands a drag's flat rendered-text offsets to linguistic word boundaries.
  * The returned offsets are normalized, while `direction` preserves which end
  * owns the live focus. Equal offsets deliberately select one whole unit once
@@ -250,11 +322,18 @@ export function createResearchSelectionSnapper(
     if (!first || !last || first.start > last.start) {
       const anchor =
         leadingUnit(units, anchorOffset) ?? trailingUnit(units, anchorOffset);
-      return anchor
-        ? { start: anchor.start, end: anchor.end, direction }
-        : null;
+      if (!anchor) {
+        return null;
+      }
+      return {
+        ...expandAttachedPunctuation(text, anchor.start, anchor.end, boundaries),
+        direction,
+      };
     }
-    return { start: first.start, end: last.end, direction };
+    return {
+      ...expandAttachedPunctuation(text, first.start, last.end, boundaries),
+      direction,
+    };
   };
 }
 
