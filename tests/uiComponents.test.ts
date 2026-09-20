@@ -22,6 +22,12 @@ import {
   nextTypeaheadQuery,
   typeaheadIndex,
 } from "../src/components/ui/hooks/useListbox";
+import {
+  LAUNCHER_SUBMENU_VALUE,
+  LauncherSelectSubmenuRow,
+  launcherSelectNavOptions,
+  launcherSubmenuKeyAction,
+} from "../src/components/LauncherSelect";
 
 test("classNames keeps only applicable component classes", () => {
   assert.equal(classNames("base", false, null, undefined, "active"), "base active");
@@ -130,4 +136,72 @@ test("Select exposes valid fallback and empty combobox states", () => {
     createElement(Select, { value: "", options: [], onChange: () => undefined }),
   );
   assert.match(empty, /disabled=""/);
+});
+
+test("the launcher submenu row keeps its own listbox navigation model", () => {
+  const options = [
+    { value: "fable", label: "Fable" },
+    { value: "opus", label: "Opus" },
+  ];
+  const submenu = {
+    label: "Effort",
+    value: "medium",
+    options: [{ value: "medium", label: "Medium" }],
+    onChange: () => undefined,
+  };
+  assert.equal(launcherSelectNavOptions(options, undefined), options);
+  const nav = launcherSelectNavOptions(options, submenu);
+  assert.equal(nav.length, 3);
+  assert.deepEqual(nav[2], {
+    value: LAUNCHER_SUBMENU_VALUE,
+    label: "Effort",
+    dividerBefore: true,
+  });
+  assert.equal(launcherSubmenuKeyAction("ArrowRight"), "open");
+  assert.equal(launcherSubmenuKeyAction("Enter"), "open");
+  assert.equal(launcherSubmenuKeyAction(" "), "open");
+  assert.equal(launcherSubmenuKeyAction("ArrowLeft"), "close");
+  assert.equal(launcherSubmenuKeyAction("ArrowDown"), null);
+});
+
+test("the launcher submenu row announces its nested list in both states", () => {
+  const props = {
+    id: "launcher-select-x-option-2",
+    rowRef: { current: null },
+    submenu: {
+      label: "Effort",
+      ariaLabel: "Reasoning effort",
+      value: "medium",
+      options: [
+        { value: "low", label: "Low" },
+        { value: "medium", label: "Medium" },
+      ],
+      onChange: () => undefined,
+    },
+    highlighted: true,
+    onOpen: () => undefined,
+    onClose: () => undefined,
+    onHighlight: () => undefined,
+    onReturnToParent: () => undefined,
+  };
+  const closed = renderToStaticMarkup(createElement(LauncherSelectSubmenuRow, {
+    ...props,
+    open: false,
+  }));
+  assert.match(closed, /class="launcher-select-separator" role="separator"/);
+  assert.match(closed, /role="option"/);
+  assert.match(closed, /aria-haspopup="listbox"/);
+  assert.match(closed, /aria-expanded="false"/);
+  assert.match(closed, /launcher-select-submenu-trigger/);
+  assert.match(closed, /launcher-select-submenu-chevron/);
+  assert.doesNotMatch(closed, /is-open/);
+  assert.match(closed, />Medium</);
+
+  const open = renderToStaticMarkup(createElement(LauncherSelectSubmenuRow, {
+    ...props,
+    open: true,
+  }));
+  assert.match(open, /aria-expanded="true"/);
+  assert.match(open, /launcher-select-submenu-trigger is-open is-highlighted/);
+  assert.match(open, /aria-controls="launcher-select-submenu-/);
 });

@@ -12,6 +12,7 @@ import {
   Select,
   Textarea,
 } from "./index";
+import { LauncherSelect } from "../LauncherSelect";
 
 const sectionStyle = {
   display: "grid",
@@ -25,6 +26,8 @@ const sectionStyle = {
 export default function ComponentCatalog() {
   const [selectValue, setSelectValue] = useState("current");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [launcherModel, setLauncherModel] = useState("fable");
+  const [launcherEffort, setLauncherEffort] = useState("medium");
   return (
     <main
       style={{
@@ -78,6 +81,44 @@ export default function ComponentCatalog() {
             <MenuItem tone="danger">Delete</MenuItem>
             <MenuItem disabled>Disabled</MenuItem>
           </Menu>
+        </section>
+        <section style={sectionStyle}>
+          <h2 style={{ margin: 0 }}>Launcher select</h2>
+          <p style={{ margin: 0, color: "var(--text-secondary)" }}>
+            The closed trigger, and the same select with a submenu row: open it and press
+            ArrowRight or Enter on “Effort” for the nested list, ArrowLeft or Escape to come back.
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <LauncherSelect
+              ariaLabel="Model"
+              value={launcherModel}
+              options={[
+                { value: "fable", label: "Fable" },
+                { value: "opus", label: "Opus" },
+                { value: "sonnet", label: "Sonnet" },
+                { value: "custom", label: "Custom", dividerBefore: true },
+              ]}
+              onChange={setLauncherModel}
+              submenu={{
+                label: "Effort",
+                ariaLabel: "Reasoning effort",
+                value: launcherEffort,
+                options: [
+                  { value: "low", label: "Low" },
+                  { value: "medium", label: "Medium" },
+                  { value: "high", label: "High" },
+                ],
+                onChange: setLauncherEffort,
+              }}
+            />
+            <LauncherSelect
+              ariaLabel="Disabled model"
+              value={launcherModel}
+              options={[{ value: "fable", label: "Fable" }]}
+              onChange={setLauncherModel}
+              disabled
+            />
+          </div>
         </section>
         <section style={sectionStyle}>
           <h2 style={{ margin: 0 }}>Dialog</h2>

@@ -14,6 +14,10 @@ interface UseAnchoredPopoverOptions {
   margin?: number;
   gap?: number;
   closeOnTab?: boolean;
+  /** A nested popover anchored inside this one is open and owns dismissal:
+   * keep this popover positioned but let the nested surface handle Escape, Tab
+   * and outside clicks, so one key press unwinds one level. */
+  suspended?: boolean;
 }
 
 export function useAnchoredPopover({
@@ -28,6 +32,7 @@ export function useAnchoredPopover({
   margin,
   gap,
   closeOnTab = true,
+  suspended = false,
 }: UseAnchoredPopoverOptions): CSSProperties | null {
   const [style, setStyle] = useState<CSSProperties | null>(null);
 
@@ -71,6 +76,16 @@ export function useAnchoredPopover({
 
   useEffect(() => {
     if (!open) return;
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [open, reposition]);
+
+  useEffect(() => {
+    if (!open || suspended) return;
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
       if (!triggerRef.current?.contains(target) && !popoverRef.current?.contains(target)) onClose();
@@ -87,15 +102,11 @@ export function useAnchoredPopover({
     };
     document.addEventListener("mousedown", handlePointerDown);
     window.addEventListener("keydown", handleKeyDown, true);
-    window.addEventListener("resize", reposition);
-    window.addEventListener("scroll", reposition, true);
     return () => {
       document.removeEventListener("mousedown", handlePointerDown);
       window.removeEventListener("keydown", handleKeyDown, true);
-      window.removeEventListener("resize", reposition);
-      window.removeEventListener("scroll", reposition, true);
     };
-  }, [closeOnTab, onClose, open, popoverRef, reposition, triggerRef]);
+  }, [closeOnTab, onClose, open, popoverRef, suspended, triggerRef]);
 
   return style;
 }

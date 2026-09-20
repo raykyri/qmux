@@ -218,6 +218,15 @@
   color: var(--accent-color);
 }
 
+.launcher-select-submenu-trigger.is-open {
+  background: var(--popover-item-hover-bg);
+}
+
+.launcher-select-submenu-chevron {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+}
+
 .launcher-select-item.is-danger {
   color: var(--status-attention-fg);
 }
