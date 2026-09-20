@@ -29,11 +29,8 @@ impl Drop for Job {
 /// Whether the node's content arrived as a finished report rather than being
 /// produced by a research run. Imported reports skip the length cutoff so
 /// their complete text reaches the summarizer.
-///
-/// TODO(P14): report import lands `ResearchNodeOrigin::Imported`; no origin
-/// qmux currently records marks an imported report, so this is inert.
-fn node_is_imported(_node: &research::ResearchNode) -> bool {
-    false
+fn node_is_imported(node: &research::ResearchNode) -> bool {
+    node.origin == Some(research::ResearchNodeOrigin::Imported)
 }
 
 pub fn schedule(state: &AppState, node_id: &str) {

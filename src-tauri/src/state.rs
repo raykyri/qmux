@@ -10,12 +10,13 @@ use crate::journal::{
 use crate::persistence::{self, PersistedState};
 use crate::remote_terminal::{RemoteAttachmentController, RemoteHistoryCheckpoint};
 use crate::research::{
-    self, CreateResearchDocumentRequest, CreateResearchTreeRequest, RecentResearchQuery,
-    RecentResearchQueryCursor, RecentResearchQueryPage, ResearchBranchRemoval, ResearchHighlight,
-    ResearchHighlightAnchor, ResearchHighlightFeedItem, ResearchNode, ResearchNodeCard,
-    ResearchNodeContent, ResearchNodeKind, ResearchNodeOrigin, ResearchNodeStatus,
-    ResearchPublicationProposal, ResearchRuntime, ResearchTree, ResearchTreeDetail,
-    ResearchTreeSummary, UpdateResearchDocumentRequest, UpdateResearchDocumentResult,
+    self, CreateResearchDocumentRequest, CreateResearchTreeRequest, ImportResearchReportRequest,
+    RecentResearchQuery, RecentResearchQueryCursor, RecentResearchQueryPage, ResearchBranchRemoval,
+    ResearchHighlight, ResearchHighlightAnchor, ResearchHighlightFeedItem, ResearchNode,
+    ResearchNodeCard, ResearchNodeContent, ResearchNodeKind, ResearchNodeOrigin,
+    ResearchNodeStatus, ResearchPublicationProposal, ResearchRuntime, ResearchTree,
+    ResearchTreeDetail, ResearchTreeSummary, UpdateResearchDocumentRequest,
+    UpdateResearchDocumentResult,
 };
 use crate::scrollback::{bounded_undo_scrollback, read_pane_scrollback, remove_pane_scrollback};
 use crate::thread_graph;
@@ -4870,6 +4871,108 @@ impl AppState {
             highlights: Vec::new(),
         };
         self.admit_research_root(&tree, &mut node)?;
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "research.tree.created",
+            None,
+            None,
+            json!({ "tree": tree, "node": node }),
+        ));
+        self.research_tree(&tree_id)
+    }
+
+    /// Imports an already finished report as a single-node research tree,
+    /// through the same durable snapshot pipeline as a settled run. The node is
+    /// a `Run` born `Complete`: the imported Markdown is its answer and the
+    /// supplied prompt is the question, so the recap pipeline, highlights,
+    /// follow-ups, and archives treat it exactly like a research run that has
+    /// already finished. It names no model — nothing here ran one — and carries
+    /// `Imported` provenance so viewers say so instead of naming the adapter's
+    /// model. The caller must hold the research workspace-mutation guard,
+    /// matching `create_research_tree`.
+    pub fn import_research_report(
+        &self,
+        request: ImportResearchReportRequest,
+    ) -> Result<ResearchTreeDetail, String> {
+        let markdown = request.markdown;
+        if markdown.trim().is_empty() {
+            return Err("report cannot be empty".to_string());
+        }
+        let prompt = request.prompt.trim().to_string();
+        if prompt.is_empty() {
+            return Err("the prompt that generated the report is required".to_string());
+        }
+        if request.workspace_id.trim().is_empty() {
+            return Err("research workspace cannot be empty".to_string());
+        }
+        let title =
+            Self::resolved_research_title(None, || research::document_default_title(&markdown));
+        let tree_id = self.next_id("research");
+        let node_id = self.next_id("research-node");
+        let now = now_millis();
+        let turns = vec![research::document_turn(&node_id, &markdown)];
+        // Durable content lands before the records that point at it: a crash
+        // here strands only an orphan snapshot, which prune_response_snapshots
+        // reclaims. The reverse order would commit a report whose body never
+        // existed. The verified write keeps the records from ever pointing at
+        // a snapshot that did not round-trip.
+        research::write_response_snapshot_verified(
+            &self.inner.config.workspace_root,
+            &node_id,
+            &turns,
+        )?;
+        let tree = ResearchTree {
+            id: tree_id.clone(),
+            title,
+            root_node_id: node_id.clone(),
+            workspace_id: request.workspace_id.clone(),
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+            followed: false,
+            bookmarked: false,
+            last_viewed_at: Some(now),
+        };
+        let mut node = ResearchNode {
+            id: node_id.clone(),
+            tree_id: tree_id.clone(),
+            parent_node_id: None,
+            publication_proposal: None,
+            query_anchor: None,
+            inline: false,
+            prompt,
+            attachments: Vec::new(),
+            title: None,
+            response_preview: research::response_preview(&turns, None, "", &[]),
+            adapter: request.adapter,
+            model: None,
+            effort: None,
+            group_id: request.workspace_id,
+            worktree_dir: String::new(),
+            native_session_id: None,
+            transcript_path: None,
+            prompt_native_id: None,
+            agent_id: None,
+            pane_id: None,
+            runtime: ResearchRuntime::Pane,
+            thread_id: None,
+            kind: ResearchNodeKind::Run,
+            origin: Some(ResearchNodeOrigin::Imported),
+            status: ResearchNodeStatus::Complete,
+            error: None,
+            response_snapshot_at: Some(now),
+            recap: None,
+            created_at: now,
+            started_at: None,
+            completed_at: Some(now),
+            highlights: Vec::new(),
+        };
+        if let Err(err) = self.admit_research_root(&tree, &mut node) {
+            // Nothing references the snapshot yet; reclaim it now rather than
+            // waiting for the next structural prune.
+            let _ = research::remove_response_snapshot(&self.inner.config.workspace_root, &node_id);
+            return Err(err);
+        }
         self.persist();
         self.emit(QmuxEvent::new(
             "research.tree.created",
@@ -17019,6 +17122,117 @@ mod tests {
         .unwrap();
         assert_eq!(snapshot.len(), 1);
         assert!(node.response_snapshot_at.is_some());
+    }
+
+    #[test]
+    fn imported_report_preserves_long_content_prompt_and_provenance() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.restore_session();
+        let mut group = sample_group();
+        group.dir = workspace.display().to_string();
+        group.managed_dir = workspace.join("managed").display().to_string();
+        group.agents.clear();
+        state.insert_group_after(group, None).unwrap();
+        let markdown = format!(
+            "\n\n# Imported findings\n\n{}\n\nFinal conclusion.\n",
+            "Long report é. ".repeat(25_000)
+        );
+        let prompt = "Explain the findings and their limitations.";
+        let detail = state
+            .import_research_report(ImportResearchReportRequest {
+                markdown: markdown.clone(),
+                prompt: format!("  {prompt}  "),
+                adapter: "codex".to_string(),
+                workspace_id: "group-1".to_string(),
+            })
+            .unwrap();
+        let node = &detail.nodes[0];
+        assert_eq!(node.origin, Some(ResearchNodeOrigin::Imported));
+        assert_eq!(node.kind, ResearchNodeKind::Run);
+        assert_eq!(node.status, ResearchNodeStatus::Complete);
+        assert_eq!(node.prompt, prompt);
+        assert!(node.model.is_none());
+        assert!(node.agent_id.is_none());
+        assert!(node.pane_id.is_none());
+        assert_eq!(detail.tree.title, "Imported findings");
+        // No model key at all on the wire: the viewer must not name a model the
+        // report never used.
+        let serialized = serde_json::to_value(node).unwrap();
+        assert!(serialized.get("model").is_none());
+        let snapshot = research::read_response_snapshot_with_revision(&workspace, &node.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            snapshot.turns,
+            vec![research::document_turn(&node.id, &markdown)]
+        );
+        // The whole report reaches the summarizer: an imported node bypasses the
+        // generated-run source cutoff.
+        let source = crate::research_recap::recap_source_for_node(node, &snapshot.turns).unwrap();
+        assert!(source.len() > 80_000);
+        assert!(source.ends_with("Final conclusion."));
+        let feed = state.list_recent_research_queries(10, None).unwrap();
+        assert_eq!(feed.items[0].origin, Some(ResearchNodeOrigin::Imported));
+        assert!(feed.items[0].model.is_none());
+        state
+            .save_research_recap(
+                node,
+                &snapshot.revision,
+                "The imported findings.".to_string(),
+            )
+            .unwrap();
+        assert!(state.research_node(&node.id).unwrap().model.is_none());
+        state.archive_research_tree(&detail.tree.id).unwrap();
+        state.restore_research_tree(&detail.tree.id).unwrap();
+        let restored = state.research_node(&node.id).unwrap();
+        assert_eq!(restored.origin, Some(ResearchNodeOrigin::Imported));
+        assert_eq!(restored.prompt, prompt);
+        assert!(restored.model.is_none());
+        assert_eq!(restored.recap.unwrap().text, "The imported findings.");
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn imported_report_rejects_missing_content_prompt_or_workspace() {
+        let workspace = temp_workspace();
+        let state = AppState::new(test_config(workspace.clone()));
+        let snapshots = workspace
+            .join(crate::persistence::STATE_DIR)
+            .join("research-responses");
+        for (markdown, prompt, workspace_id) in [
+            ("", "Prompt", "group-1"),
+            ("Body", " ", "group-1"),
+            ("Body", "Prompt", "   "),
+            // Admission fails after the snapshot write; the orphan is reclaimed
+            // before the error returns.
+            ("Body", "Prompt", "missing"),
+        ] {
+            assert!(
+                state
+                    .import_research_report(ImportResearchReportRequest {
+                        markdown: markdown.to_string(),
+                        prompt: prompt.to_string(),
+                        adapter: String::new(),
+                        workspace_id: workspace_id.to_string(),
+                    })
+                    .is_err()
+            );
+        }
+        assert!(
+            state
+                .list_recent_research_queries(10, None)
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read_dir(&snapshots)
+                .map(|entries| entries.count())
+                .unwrap_or(0),
+            0
+        );
+        let _ = std::fs::remove_dir_all(workspace);
     }
 
     #[test]

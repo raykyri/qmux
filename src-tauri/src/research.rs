@@ -302,11 +302,14 @@ fn is_false(value: &bool) -> bool {
 /// launch or the document composer. Exported terminal conversations are
 /// marked so viewers, archives, and publication can surface their provenance:
 /// that content was produced under a terminal agent's full permissions, not a
-/// research run.
+/// research run. An imported report was written elsewhere entirely: its node
+/// names no model, and its adapter only serves derived summaries and future
+/// follow-ups.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ResearchNodeOrigin {
     TerminalExport,
+    Imported,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -482,6 +485,11 @@ pub struct RecentResearchQuery {
     pub title: Option<String>,
     pub adapter: String,
     pub model: Option<String>,
+    /// Provenance for a row whose content did not come from a research launch,
+    /// so the feed can say "Imported" instead of naming a model the report
+    /// never used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ResearchNodeOrigin>,
     pub status: ResearchNodeStatus,
     pub created_at: u128,
     /// Current answer recap, when one has been generated for this run.
@@ -506,6 +514,7 @@ impl From<&ResearchNode> for RecentResearchQuery {
             title: node.title.clone(),
             adapter: node.adapter.clone(),
             model: node.model.clone(),
+            origin: node.origin,
             status: node.status,
             created_at: node.created_at,
             recap: node.recap.as_ref().and_then(|recap| {
@@ -590,6 +599,18 @@ pub struct CreateResearchTreeRequest {
     /// research agent somewhere else.
     #[serde(rename = "workspaceId", alias = "groupId")]
     pub group_id: String,
+}
+
+/// A finished Markdown report written elsewhere, imported together with the
+/// prompt that produced it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportResearchReportRequest {
+    pub markdown: String,
+    pub prompt: String,
+    /// Agent used for derived summaries and future follow-ups, not provenance.
+    pub adapter: String,
+    pub workspace_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]

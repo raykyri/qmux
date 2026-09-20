@@ -1976,6 +1976,32 @@ async fn create_research_document(
 }
 
 #[tauri::command]
+async fn import_research_report(
+    state: tauri::State<'_, AppState>,
+    request: research::ImportResearchReportRequest,
+) -> Result<ResearchTreeDetail, String> {
+    let state = state.inner().clone();
+    // Blocking: the report body is written to its response snapshot (fsync'd
+    // file IO) before the records commit.
+    tauri::async_runtime::spawn_blocking(move || {
+        let detail = {
+            // Same admission as create_research_document: the insert must be
+            // atomic with the workspace checks or a concurrent folder removal
+            // could detach the workspace out from under the new records.
+            let _guard = workspace::lock_research_workspace_mutations()?;
+            validate_launch_workspace(&state, Some(&request.workspace_id), LaunchOrigin::Research)?;
+            state.import_research_report(request)?
+        };
+        // The report arrives finished, so nothing else will ever announce its
+        // completion: summarize it here, outside the workspace guard.
+        research_recap::schedule(&state, &detail.tree.root_node_id);
+        Ok(detail)
+    })
+    .await
+    .map_err(|err| format!("import_research_report task failed: {err}"))?
+}
+
+#[tauri::command]
 async fn export_pane_to_research(
     state: tauri::State<'_, AppState>,
     request: research::ExportPaneToResearchRequest,
@@ -4200,6 +4226,7 @@ fn main() {
             get_research_tree,
             create_research_tree,
             create_research_document,
+            import_research_report,
             export_pane_to_research,
             update_research_document,
             read_markdown_document_file,
