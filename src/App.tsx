@@ -10945,12 +10945,15 @@ function MainApp() {
     async (treeId: string) => {
       try {
         await restoreResearchTree(treeId);
-        await selectResearchTree(treeId);
+        // Records the visit rather than selecting directly: this is also the
+        // Home feed's Restore action, and a bare selection would leave the
+        // restored document with Back disabled and no way back to the feed.
+        navigateToResearchDocument(treeId);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [selectResearchTree],
+    [navigateToResearchDocument],
   );
   // Both delete entry points must reconcile the active document identically.
   // Keeping this in one path prevents the document menu from falling to an
