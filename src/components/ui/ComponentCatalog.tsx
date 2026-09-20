@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import {
   Button,
   Dialog,
@@ -13,6 +13,8 @@ import {
   Textarea,
 } from "./index";
 import { LauncherSelect } from "../LauncherSelect";
+import { APPEARANCE_OPTIONS, COLOR_THEME_OPTIONS } from "../../lib/settings";
+import type { Appearance, ColorTheme } from "../../lib/settings";
 
 const sectionStyle = {
   display: "grid",
@@ -28,6 +30,16 @@ export default function ComponentCatalog() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [launcherModel, setLauncherModel] = useState("fable");
   const [launcherEffort, setLauncherEffort] = useState("medium");
+  // The catalog renders instead of <App/>, so nothing else sets the root
+  // attributes the tokens key off. Drive them here so every component can be
+  // reviewed in both appearances and both color themes.
+  const [appearance, setAppearance] = useState<Appearance>("dark");
+  const [colorTheme, setColorTheme] = useState<ColorTheme>("green-blob");
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.dataset.appearance = appearance;
+    root.dataset.colorTheme = colorTheme;
+  }, [appearance, colorTheme]);
   return (
     <main
       style={{
@@ -40,6 +52,33 @@ export default function ComponentCatalog() {
     >
       <div style={{ display: "grid", gap: 18, width: "min(760px, 100%)", margin: "0 auto" }}>
         <h1 style={{ margin: 0 }}>qmux UI components</h1>
+        <section style={sectionStyle}>
+          <h2 style={{ margin: 0 }}>Appearance</h2>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <NativeSelect
+              aria-label="Appearance"
+              value={appearance}
+              onChange={(event) => setAppearance(event.currentTarget.value as Appearance)}
+            >
+              {APPEARANCE_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </NativeSelect>
+            <NativeSelect
+              aria-label="Color theme"
+              value={colorTheme}
+              onChange={(event) => setColorTheme(event.currentTarget.value as ColorTheme)}
+            >
+              {COLOR_THEME_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </NativeSelect>
+          </div>
+        </section>
         <section style={sectionStyle}>
           <h2 style={{ margin: 0 }}>Buttons</h2>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
