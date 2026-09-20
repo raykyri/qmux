@@ -82,9 +82,6 @@ export interface PaneInfo {
   remoteSession?: RemoteSessionIdentity | null;
   /** Health of the disposable SSH attachment to a durable remote session. */
   remoteConnection?: RemoteConnectionInfo | null;
-  /** SSH destination for a client session opened inside a local (or other)
-   * group. Restart re-runs `ssh` to this host. */
-  sshTarget?: string | null;
   cols: number;
   rows: number;
   status: "starting" | "running" | "exited" | "killed" | "failed";

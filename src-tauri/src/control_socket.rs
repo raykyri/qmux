@@ -1860,7 +1860,6 @@ mod tests {
                         crate::state::RemoteSessionIdentity::new("remote-1", pane_id).unwrap(),
                     ),
                     remote_connection: Some(crate::state::RemoteConnectionInfo::default()),
-                    ssh_target: None,
                     cols: 80,
                     rows: 24,
                     status: PaneStatus::Running,
@@ -2044,7 +2043,6 @@ mod tests {
             status: crate::state::PaneStatus::Running,
             last_active_at: 0,
             recovered: false,
-            ssh_target: None,
             depth: 0,
         };
 

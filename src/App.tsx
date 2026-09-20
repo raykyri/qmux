@@ -6876,31 +6876,6 @@ function MainApp() {
     }
   }
 
-  /** Opens `ssh` to the saved remote as a tab in the current group. If that
-   * group is already bound to the machine, this is an ordinary remote shell. */
-  async function addRemoteShell(remoteId: string) {
-    setSettingsMenu(null);
-    setError(null);
-    try {
-      const groupId = launchGroupId();
-      const sourcePaneId = groupId ? (activePaneRef.current?.id ?? null) : null;
-      const pane = await spawnShell(
-        estimateInitialPaneSize(false),
-        sourcePaneId,
-        groupId,
-        remoteId,
-      );
-      const orderedPanes = panesWithNewTabInLaunchPosition(pane, pane.groupId);
-      setPanesPreservingRecoveredDismissals(orderedPanes);
-      setActivePaneId(pane.id);
-      setLastActiveGroupId(pane.groupId);
-      if (pane.remoteSession) requestAnimationFrame(() => requestAnimationFrame(() => recordRemoteStartup(pane.id, "visible")));
-      await refreshGroups();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
   async function createGroupFromSettingsMenu() {
     setSettingsMenu(null);
     const anchorGroupId = launchGroupId();
@@ -16553,20 +16528,6 @@ function MainApp() {
                           <Globe size={13} aria-hidden="true" />
                           <span>New remote group</span>
                         </button>
-                        {settings.codeMode ? (
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="control-button"
-                            disabled={!remote.usable}
-                            onClick={() => {
-                              void addRemoteShell(remote.id);
-                            }}
-                          >
-                            <SquareTerminal size={13} aria-hidden="true" />
-                            <span>New remote shell</span>
-                          </button>
-                        ) : null}
                       </Fragment>
                     ))
                   : (

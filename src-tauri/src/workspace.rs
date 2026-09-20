@@ -4158,7 +4158,6 @@ mod tests {
             status: crate::state::PaneStatus::Running,
             last_active_at: 1,
             recovered: false,
-            ssh_target: None,
             depth: 0,
         }
     }
