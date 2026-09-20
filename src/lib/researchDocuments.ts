@@ -130,3 +130,11 @@ export function deriveResearchDocumentTitle(markdown: string): string {
   }
   return "Untitled document";
 }
+
+/** ChatGPT exports can contain opaque citation handles without their source
+ * URLs. Hide those handles at display time; ordinary Markdown citations and the
+ * stored Markdown itself are left untouched. Only complete citation tokens are
+ * removed. */
+export function stripImportedReportCitations(markdown: string): string {
+  return markdown.replace(/[ \t]*\uE200cite\uE202[^\uE200\uE201\r\n]*\uE201/g, "");
+}

@@ -28,9 +28,9 @@ export interface ActivityEvent<TSource = unknown> {
   };
   context?: { kind: "research" | "source" | "workspace"; label: string };
   relationship?: { kind: "top-level" | "follow-up"; label: string };
-  /** `origin` is typed here ahead of its producer: the imported-conversation
-   * arm in ActivityMetadataLine must compile before research nodes carry an
-   * origin. Nothing populates it yet. */
+  /** `origin` names provenance for content that did not come from a research
+   * launch, so the metadata line can say "Imported" rather than naming a model
+   * the content never used. */
   execution?: { adapter: string; model?: string | null; origin?: string | null };
   state?: { kind: ResearchNodeStatus | "ready"; label: string };
   occurredAt: number;
@@ -59,6 +59,7 @@ export function recentResearchQueryFromNode(
     title: node.title,
     adapter: node.adapter,
     model: node.model,
+    ...(node.origin ? { origin: node.origin } : {}),
     status: node.status,
     createdAt: node.createdAt,
     recap: node.recap?.text.trim() || undefined,
@@ -180,7 +181,11 @@ export function activityEventFromResearchQuery(
       kind: followUp ? "follow-up" : "top-level",
       label: followUp ? "Follow-up" : "Top-level",
     },
-    execution: { adapter: query.adapter, model: query.model },
+    execution: {
+      adapter: query.adapter,
+      model: query.model,
+      ...(query.origin ? { origin: query.origin } : {}),
+    },
     state: visibleResearchState(query.status),
     occurredAt: query.createdAt,
     source: { kind: "research-query", query },

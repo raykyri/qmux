@@ -46,6 +46,7 @@ import { isActiveResearchStatus } from "../../lib/researchThreads";
 import { useResearchSwipeNavigation } from "../../hooks/useResearchSwipeNavigation";
 import { TweetEmbed } from "./TweetEmbed";
 import { ResearchDocumentFrame } from "./ResearchDocumentChrome";
+import ResearchReportImport from "./ResearchReportImport";
 import ActivityMetadataLine from "../ActivityMetadataLine";
 import ResearchThreadActions from "./ResearchThreadActions";
 import { ResearchRecapLine, ResearchRecapPendingLine } from "./ResearchRecap";
@@ -111,9 +112,8 @@ export interface ResearchActivityFeedProps {
   view?: ResearchActivityFeedView;
   /** Replaces the empty-state sentence when the Home feed has no rows. */
   setupGuide?: ReactNode;
-  /** Imports a Markdown report as a research thread. Declared here so the
-   * feed's header slot has a home for it; the control lands with report
-   * import. */
+  /** Imports a Markdown report as a research thread. Present on Home only:
+   * the header control and the feed's own drop target. */
   onImportReport?: (markdown: string, prompt: string) => Promise<void>;
   items: RecentActivityItem[];
   /** Runs whose background summary job is in flight; each card holds a
@@ -765,6 +765,7 @@ function ResearchActivityFeed({
   onScrollAnchorChange,
   view = "home",
   setupGuide,
+  onImportReport,
   items,
   recapPendingNodeIds = EMPTY_RECAP_PENDING_NODE_IDS,
   researchTrees,
@@ -815,6 +816,14 @@ function ResearchActivityFeed({
   const [recapDialogContent, setRecapDialogContent] = useState<ResearchNodeContent | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Stable: the import control re-registers its window and DOM drop listeners
+  // whenever this identity changes.
+  const reportImportError = useCallback(
+    (message: string) => {
+      onError?.(message);
+    },
+    [onError],
+  );
   const initialScrollAnchorRef = useRef(initialScrollAnchor);
   const onScrollAnchorChangeRef = useRef(onScrollAnchorChange);
   onScrollAnchorChangeRef.current = onScrollAnchorChange;
@@ -1344,7 +1353,18 @@ function ResearchActivityFeed({
     <ResearchDocumentFrame
       title={viewTitle}
       headerActions={
-        view === "home" ? <JournalFeedMenu onAddEntry={onAddEntry} /> : undefined
+        view === "home" ? (
+          <>
+            {onImportReport ? (
+              <ResearchReportImport
+                dropTarget={scrollRef}
+                onImport={onImportReport}
+                onError={reportImportError}
+              />
+            ) : null}
+            <JournalFeedMenu onAddEntry={onAddEntry} />
+          </>
+        ) : undefined
       }
       navActions={
         onRefresh ? (

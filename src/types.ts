@@ -445,8 +445,9 @@ export type ResearchNodeStatus =
  * backend omits the field for runs, so absence means "run". */
 export type ResearchNodeKind = "run" | "document" | "conversation";
 
-/** Provenance for content that did not come from a research launch. */
-export type ResearchNodeOrigin = "terminalExport";
+/** Provenance for content that did not come from a research launch. An
+ * imported report was written elsewhere entirely, so its node names no model. */
+export type ResearchNodeOrigin = "terminalExport" | "imported";
 
 /** An immutable snapshot captured alongside a research message's prompt.
  * Mirrors the Rust `ResearchMessageAttachment` serde shape exactly. */
@@ -569,6 +570,8 @@ export interface RecentResearchQuery {
   title?: string | null;
   adapter: string;
   model?: string | null;
+  /** Provenance when the row's content did not come from a research launch. */
+  origin?: ResearchNodeOrigin | null;
   status: ResearchNodeStatus;
   createdAt: number;
   /** Current answer recap, when one has been generated for this run. */

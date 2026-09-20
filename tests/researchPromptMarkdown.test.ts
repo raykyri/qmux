@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   formatResearchReplySnippet,
   ResearchSegmentPrompt,
+  ResearchTimelineItem,
 } from "../src/components/research/ResearchDocument";
 import {
   ResearchMessageBody,
@@ -224,4 +225,63 @@ test("imported report metadata hides its summary agent and model", () => {
   );
   assert.match(html, />Imported<span/);
   assert.doesNotMatch(html, /Claude|Fable/);
+});
+
+test("long imported reports retain Markdown and their final conclusion", () => {
+  const html = renderToStaticMarkup(
+    createElement(ResearchTimelineItem, {
+      imported: true,
+      item: {
+        type: "message",
+        key: "imported-report",
+        role: "assistant",
+        blocks: [
+          {
+            type: "text",
+            text: `# Long report\n\n${"Evidence. ".repeat(35_000)}\n\n**Final conclusion.**`,
+          },
+        ],
+        activities: [],
+        sourceTurnIds: ["imported"],
+        blockSourceTurnIds: ["imported"],
+      },
+    }),
+  );
+
+  assert.match(html, /<h1>Long report<\/h1>/);
+  assert.match(html, /<strong>Final conclusion\.<\/strong>/);
+  // The oversized-content fold would have replaced the Markdown with a
+  // plain-text preview; an imported report is rendered whole.
+  assert.doesNotMatch(html, /research-plaintext/);
+});
+
+test("imported reports hide citation handles and preserve Markdown sources", () => {
+  const html = renderToStaticMarkup(
+    createElement(ResearchTimelineItem, {
+      imported: true,
+      item: {
+        type: "message",
+        key: "imported-citations",
+        role: "assistant",
+        blocks: [
+          {
+            type: "text",
+            text:
+              "Finding. \uE200cite\uE202turn25view0\uE202turn22view1\uE201\n\n" +
+              "[Source](https://example.com/paper) [1]\n\n" +
+              "Another finding.\uE200cite\uE202turn19search24\uE201",
+          },
+        ],
+        activities: [],
+        sourceTurnIds: ["imported"],
+        blockSourceTurnIds: ["imported"],
+      },
+    }),
+  );
+
+  assert.match(html, /<p>Finding\.<\/p>/);
+  assert.match(html, /href="https:\/\/example.com\/paper"/);
+  assert.match(html, /\[1\]/);
+  assert.match(html, /<p>Another finding\.<\/p>/);
+  assert.doesNotMatch(html, /turn25view0|turn22view1|turn19search24|[\uE200-\uE202]/);
 });

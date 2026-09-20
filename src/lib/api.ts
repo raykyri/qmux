@@ -664,6 +664,18 @@ export function updateResearchDocument(request: {
   return invoke<UpdateResearchDocumentResult>("update_research_document", { request });
 }
 
+/** Imports a finished Markdown report as a completed research thread, together
+ * with the prompt that produced it. The adapter serves derived summaries and
+ * future follow-ups only; the imported node names no model. */
+export function importResearchReport(request: {
+  markdown: string;
+  prompt: string;
+  adapter: string;
+  workspaceId: string;
+}) {
+  return invoke<ResearchTreeDetail>("import_research_report", { request });
+}
+
 /** Reads a Markdown file selected through the native window drop API. The
  * backend enforces the extension, UTF-8 encoding, regular-file requirement,
  * and document byte cap before returning any content to the webview. */

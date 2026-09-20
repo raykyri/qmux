@@ -453,8 +453,7 @@ test("the feed scroll anchor round-trips correctly", () => {
   assert.equal(recentActivityAnchorScrollTop(0, 40, 400), 0);
 });
 
-// Enabled in P14, which adds the Markdown report import control to the header.
-test.skip("Home offers report import and imported cards identify provenance", () => {
+test("Home offers report import and imported cards identify provenance", () => {
   const html = renderFeed({
     onImportReport: async () => {},
     items: [
@@ -469,6 +468,7 @@ test.skip("Home offers report import and imported cards identify provenance", ()
           prompt: "Original prompt",
           adapter: "codex",
           model: null,
+          origin: "imported",
           status: "complete",
           createdAt: 100,
         },
@@ -476,7 +476,8 @@ test.skip("Home offers report import and imported cards identify provenance", ()
     ],
   });
   assert.match(html, /Import report/);
-  assert.match(html, /accept=".md,text\/markdown"/);
+  // The picker matches the backend reader, which accepts both extensions.
+  assert.match(html, /accept=".md,.markdown,text\/markdown"/);
   assert.match(html, /Imported <time/);
   assert.doesNotMatch(
     renderFeed({ view: "bookmarks", onImportReport: async () => {} }),

@@ -433,6 +433,42 @@ test("home-feed cards hold the recap slot while a summary generates", () => {
   assert.doesNotMatch(card({ query, recapPending: true }), /Generating summary/);
 });
 
+test("live summary events retain imported report provenance", () => {
+  const node = {
+    id: "imported",
+    treeId: "imported-tree",
+    parentNodeId: null,
+    prompt: "Original prompt",
+    adapter: "codex",
+    groupId: "workspace",
+    worktreeDir: "/tmp/workspace",
+    status: "complete",
+    createdAt: 100,
+    kind: "run",
+    origin: "imported",
+    model: null,
+    highlights: [],
+  } satisfies ResearchNode;
+  const query = recentResearchQueryFromNode(node);
+  assert.equal(query?.origin, "imported");
+
+  const items = upsertRecentActivityResearchNode([], node);
+  const updated = upsertRecentActivityResearchNode(items, {
+    ...node,
+    recap: { text: "Summary", responseRevision: "revision" },
+  });
+  assert.equal(updated[0].kind, "research-query");
+  if (updated[0].kind === "research-query") {
+    // The summary agent's identity never displaces the report's provenance.
+    assert.equal(
+      formatActivityMetadataSummary(activityEventFromResearchQuery(updated[0].query)),
+      "Imported",
+    );
+    assert.equal(updated[0].query.model, null);
+    assert.equal(updated[0].query.recap, "Summary");
+  }
+});
+
 test("virtual feed rows omit day dividers and retain feed positions", () => {
   const events = buildRecentActivity(
     [{ kind: "note", id: "note", createdAt: "1970-01-01T00:00:00.300Z", text: "n" }],

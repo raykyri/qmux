@@ -555,6 +555,7 @@ import {
   cancelResearchNode,
   createResearchDocument,
   createResearchTree,
+  importResearchReport,
   updateResearchDocument,
   exportPaneToResearch,
   forkResearchNode,
@@ -10737,6 +10738,42 @@ function MainApp() {
       resolveResearchComposerWorkspace,
     ],
   );
+  // A finished report imports as a completed thread. The chosen adapter did
+  // not produce the report; it is the agent that will summarize it and
+  // answer follow-ups, so it must be an installed research agent that
+  // supports recap generation.
+  const importResearchReportFromHome = useCallback(
+    async (markdown: string, prompt: string) => {
+      const group = await resolveResearchComposerWorkspace(researchScope);
+      const eligible = (config?.adapters ?? []).filter(
+        (candidate) => candidate.supportsRecapGeneration && adapterCanLaunchResearch(candidate),
+      );
+      const adapter = eligible.find((candidate) => candidate.default) ?? eligible[0];
+      let detail: ResearchTreeDetail;
+      try {
+        detail = await importResearchReport({
+          markdown,
+          prompt,
+          adapter: adapter?.id ?? "",
+          workspaceId: group.id,
+        });
+      } catch (err) {
+        // Resolving the workspace may have just created the default folder, so
+        // the sidebar needs a refresh even though the failed import committed
+        // nothing. The dialog shows the rethrown error itself.
+        void refreshResearchNavigation().catch(() => undefined);
+        throw err;
+      }
+      adoptCreatedResearchTree(detail);
+    },
+    [
+      adoptCreatedResearchTree,
+      config,
+      refreshResearchNavigation,
+      researchScope,
+      resolveResearchComposerWorkspace,
+    ],
+  );
   const submitNewDocument = useCallback(
     async (input: {
       markdown: string;
@@ -19679,6 +19716,7 @@ function MainApp() {
             <ResearchActivityFeed
               {...activityFeedState}
               view={journalView === "bookmarks" ? "bookmarks" : "home"}
+              onImportReport={importResearchReportFromHome}
               composer={
                 <ResearchQueryComposer
                   adapters={config.adapters}

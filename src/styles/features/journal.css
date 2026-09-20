@@ -54,6 +54,69 @@
   width: 200px;
 }
 
+/* Report import. The header's breadcrumb takes the free space, so this control
+   and the actions menu already sit at the trailing edge; only the icon/label
+   pairing belongs here. */
+.research-import-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.confirm-dialog.research-import-dialog {
+  width: min(560px, 100%);
+}
+
+.research-import-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+}
+
+/* Three rows to start; the layout effect grows the field from there, capped so
+   a long prompt scrolls instead of pushing the actions off screen. */
+.research-import-field textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: calc(3 * 1.45em + 20px);
+  max-height: 240px;
+  padding: 9px 10px;
+  overflow-y: auto;
+  color: var(--text-strong);
+  font-size: var(--fs-input);
+  line-height: 1.45;
+  resize: none;
+}
+
+.confirm-dialog .research-import-file {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--control-h-lg);
+  padding: 8px 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  color: var(--text-strong);
+  font-size: var(--fs-input);
+  text-align: center;
+}
+
+.research-import-filename {
+  overflow-wrap: anywhere;
+}
+
+.research-import-tokens {
+  color: var(--text-faint);
+  font-size: var(--fs-base);
+  white-space: nowrap;
+}
+
 .journal-feed {
   display: flex;
   flex-direction: column;

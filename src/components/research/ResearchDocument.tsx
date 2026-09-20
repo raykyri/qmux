@@ -47,7 +47,10 @@ import {
   inlineChainFor,
   isActiveResearchStatus,
 } from "../../lib/researchThreads";
-import { countResearchDocumentWords } from "../../lib/researchDocuments";
+import {
+  countResearchDocumentWords,
+  stripImportedReportCitations,
+} from "../../lib/researchDocuments";
 import {
   expandedResearchHighlightOffsets,
   intersectingResearchHighlightIds,
@@ -728,10 +731,15 @@ function ResearchMessageBlock({
   block,
   role,
   conversation = false,
+  imported = false,
 }: {
   block: MessageBlock;
   role: string;
   conversation?: boolean;
+  /** An imported report is the node's whole point: render it at full length
+   * rather than folding it behind the oversized-content preview, and hide the
+   * opaque citation handles some exports carry. */
+  imported?: boolean;
 }) {
   if (block.type === "text") {
     // In a conversation node every turn is first-class content: user
@@ -741,9 +749,9 @@ function ResearchMessageBlock({
     if (role === "assistant" || conversation) {
       return (
         <TranscriptMarkdown
-          text={block.text}
+          text={imported ? stripImportedReportCitations(block.text) : block.text}
           imageBehavior="open"
-          oversizedContent={OVERSIZED_MARKDOWN_POLICY}
+          oversizedContent={imported ? undefined : OVERSIZED_MARKDOWN_POLICY}
         />
       );
     }
@@ -763,12 +771,15 @@ function ResearchMessageBlock({
 // replacement re-rendered — and re-parsed the markdown of — every visible
 // item. Item identities are stable across detail replacements because they
 // derive from `content`, which only changes when this node's own fetch lands.
-const ResearchTimelineItem = memo(function ResearchTimelineItem({
+export const ResearchTimelineItem = memo(function ResearchTimelineItem({
   item,
   conversation = false,
+  imported = false,
 }: {
   item: MessageItem;
   conversation?: boolean;
+  /** The node's content was imported as a finished report. */
+  imported?: boolean;
 }) {
   if (conversation) {
     return (
@@ -847,7 +858,12 @@ const ResearchTimelineItem = memo(function ResearchTimelineItem({
         >
           {hasUnexpectedContent ? <span>{unexpectedRoleLabel(item.role)}</span> : null}
           {item.blocks.map((block, index) => (
-            <ResearchMessageBlock key={`${item.key}-${index}`} block={block} role={item.role} />
+            <ResearchMessageBlock
+              key={`${item.key}-${index}`}
+              block={block}
+              role={item.role}
+              imported={imported}
+            />
           ))}
         </div>
       ) : null}
@@ -1226,6 +1242,7 @@ const ResearchAnswerPane = memo(function ResearchAnswerPane({
                     key={item.key}
                     item={item}
                     conversation={view.isConversation}
+                    imported={node.origin === "imported"}
                   />
                 ))}
               </div>
