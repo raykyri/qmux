@@ -82,6 +82,21 @@
   cursor: text;
 }
 
+/* Image attachments get their own rows so surrounding prompt text never wraps
+   beside a thumbnail. Consecutive attachments share a wrapping flex row. */
+.queued-turn-content,
+.queued-turn-text-row {
+  display: block;
+}
+
+.queued-turn-image-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 100%;
+}
+
 .queued-turn-actions {
   display: flex;
   gap: 4px;

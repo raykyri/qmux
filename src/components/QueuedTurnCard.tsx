@@ -1,5 +1,4 @@
 import {
-  Fragment,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -47,18 +46,60 @@ export function renderQueuedTurnText(
   if (segments.length === 1 && segments[0].kind !== "image") {
     return text;
   }
-  return segments.map((segment, index) =>
-    segment.kind === "image" ? (
-      options?.imageThumbnails ? (
-        <TranscriptImage key={index} marker={segment.text} variant="thumbnail" />
-      ) : (
-        <span key={index} className="queued-turn-image-chip">
-          {COLLAPSED_IMAGE_LABEL}
-        </span>
-      )
-    ) : (
-      <Fragment key={index}>{segment.text}</Fragment>
-    ),
+
+  const rows: Array<
+    | { kind: "text"; text: string }
+    | { kind: "images"; markers: string[] }
+  > = [];
+  segments.forEach((segment, index) => {
+    if (segment.kind === "image") {
+      const previous = rows[rows.length - 1];
+      if (previous?.kind === "images") {
+        previous.markers.push(segment.text);
+      } else {
+        rows.push({ kind: "images", markers: [segment.text] });
+      }
+      return;
+    }
+
+    // Whitespace between two markers is only their source-text separator. Keep
+    // the images in one visual row instead of introducing an empty text row.
+    if (
+      segment.text.trim() === "" &&
+      rows[rows.length - 1]?.kind === "images" &&
+      segments[index + 1]?.kind === "image"
+    ) {
+      return;
+    }
+    rows.push({ kind: "text", text: segment.text });
+  });
+
+  return (
+    <span className="queued-turn-content">
+      {rows.map((row, rowIndex) =>
+        row.kind === "text" ? (
+          <span key={rowIndex} className="queued-turn-text-row">
+            {row.text}
+          </span>
+        ) : (
+          <span key={rowIndex} className="queued-turn-image-row">
+            {row.markers.map((marker, markerIndex) =>
+              options?.imageThumbnails ? (
+                <TranscriptImage
+                  key={markerIndex}
+                  marker={marker}
+                  variant="thumbnail"
+                />
+              ) : (
+                <span key={markerIndex} className="queued-turn-image-chip">
+                  {COLLAPSED_IMAGE_LABEL}
+                </span>
+              ),
+            )}
+          </span>
+        ),
+      )}
+    </span>
   );
 }
 
