@@ -1619,7 +1619,7 @@ pub extern "C" fn qmux_native_terminal_did_request_browser_escape() -> i32 {
 
 /// How long after a Ctrl-D keystroke a remote pane's EOF still counts as a
 /// user-initiated exit rather than a dropped connection.
-const REMOTE_CTRL_D_CLOSE_WINDOW_MS: u128 = 500;
+const REMOTE_CTRL_D_CLOSE_WINDOW_MS: u128 = 1_000;
 
 /// Per-pane wall-clock stamps of Ctrl-D keystrokes typed in remote panes. The
 /// map only ever holds stamps from the last window, so it is bounded by panes
