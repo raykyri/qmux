@@ -540,6 +540,15 @@ export default function TurnOverlay({
     if (cards.length === 0) return;
     noteTimelineUserScrollIntent();
     cancelJumpToLatest();
+    const cursor = userMessageCursorRef.current;
+    const current = cursor?.agentId === agentId
+      ? cards.findIndex(card => card.dataset.messageKey === cursor?.key) : -1;
+    // The next stop after the final user message is the transcript's physical
+    // end. Both the chevron button and the plain Right Arrow key use this path.
+    if (direction === 1 && current === cards.length - 1) {
+      jumpToLatest();
+      return;
+    }
     // Measure normal-flow positions, including the currently sticky user card.
     const sticky = timeline.classList.contains("has-sticky-user");
     timeline.classList.remove("has-sticky-user");
@@ -547,9 +556,6 @@ export default function TurnOverlay({
     const padding = Number.parseFloat(getComputedStyle(timeline).paddingTop) || 0;
     const positions = cards.map(card => card.getBoundingClientRect().top - top + timeline.scrollTop - padding);
     if (sticky) timeline.classList.add("has-sticky-user");
-    const cursor = userMessageCursorRef.current;
-    const current = cursor?.agentId === agentId
-      ? cards.findIndex(card => card.dataset.messageKey === cursor?.key) : -1;
     const index = transcriptUserMessageIndex(positions, timeline.scrollTop, current, direction);
     userMessageCursorRef.current = { agentId, key: cards[index].dataset.messageKey! };
     timeline.scrollTo({ top: Math.max(0, positions[index]), behavior: "instant" });
