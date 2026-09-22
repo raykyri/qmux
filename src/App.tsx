@@ -18935,7 +18935,7 @@ function MainApp() {
               </>
             ) : (
               <>
-                <p>Close this tab?</p>
+                <p>Close this split pane?</p>
                 <DialogActions>
                   <Button onClick={() => setCloseDialog(null)}>Cancel</Button>
                   <Button
