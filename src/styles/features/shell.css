@@ -2001,7 +2001,6 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
 
 .settings-remote-detail {
   padding: 2px 10px 10px 34px;
-  background: var(--surface-fill-subtle);
 }
 
 .settings-remote-fields {
@@ -2042,7 +2041,6 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   min-width: 0;
   height: var(--control-h-md);
   padding: 0 8px;
-  font-family: var(--font-mono);
   font-size: var(--fs-sm);
 }
 
@@ -2223,6 +2221,10 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
 .settings-agent-summary:hover,
 .settings-agent-summary[aria-expanded="true"] {
   background: var(--surface-fill-subtle);
+}
+
+.settings-remote-card .settings-remote-summary[aria-expanded="true"] {
+  background: transparent;
 }
 
 .settings-agent-summary:focus-visible {
