@@ -13,6 +13,15 @@
   font-size: var(--fs-base);
 }
 
+/* base.css dims disabled buttons by color, but .control-button sets its own
+   color and wins, so disabled controls looked live. Opacity also covers the
+   primary and danger chrome. Features with their own disabled treatment
+   reset opacity to 1 rather than dimming twice. */
+.control-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
 .control-button--sm {
   min-height: var(--control-h-sm);
   padding-inline: 8px;

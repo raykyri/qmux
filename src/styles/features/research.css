@@ -514,6 +514,7 @@
 
 .research-folder-item:disabled {
   color: #555c59;
+  opacity: 1;
 }
 
 .research-folder-item svg {
@@ -725,6 +726,7 @@
 .research-history-button:disabled {
   color: #4b524e;
   cursor: default;
+  opacity: 1;
 }
 
 .research-breadcrumb {
@@ -835,6 +837,7 @@
 .research-trace-toggle:disabled {
   background: var(--chrome-control-bg-disabled);
   color: var(--text-faint);
+  opacity: 1;
 }
 
 /* Icon-only toggles: square them up and center the glyphs. */
@@ -1048,6 +1051,7 @@
 .research-highlight-action:disabled {
   color: #929994;
   cursor: default;
+  opacity: 1;
 }
 
 .research-highlight-action:disabled .context-menu-shortcut.is-keycap {
@@ -1992,6 +1996,7 @@
 .new-research-send:disabled {
   color: #77807b;
   cursor: default;
+  opacity: 1;
 }
 
 .new-research-send:disabled:hover {

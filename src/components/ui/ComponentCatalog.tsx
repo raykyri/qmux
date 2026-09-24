@@ -46,6 +46,12 @@ export default function ComponentCatalog() {
             <Button tone="primary">Primary</Button>
             <Button tone="danger">Danger</Button>
             <Button disabled>Disabled</Button>
+            <Button tone="primary" disabled>
+              Primary disabled
+            </Button>
+            <Button tone="danger" disabled>
+              Danger disabled
+            </Button>
             <Button variant="icon" aria-label="Icon button">•••</Button>
             <Button variant="link">Link button</Button>
           </div>

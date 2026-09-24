@@ -356,6 +356,7 @@
 .turn-pane-header-button:disabled {
   background: var(--chrome-control-bg-disabled);
   color: var(--text-faint);
+  opacity: 1;
 }
 
 /* Browser toggle when the overlay is open: reads as locked on / pushed in rather
@@ -461,6 +462,7 @@
 .prompt-library-item-main:disabled {
   color: var(--text-faint);
   cursor: default;
+  opacity: 1;
 }
 
 .prompt-library-item-name {
@@ -771,6 +773,7 @@
 .prompt-library-button:disabled {
   color: var(--text-faint);
   cursor: default;
+  opacity: 1;
 }
 
 .prompt-library-button.is-primary {
