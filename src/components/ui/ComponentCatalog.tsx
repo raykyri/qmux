@@ -9,6 +9,7 @@ import {
   Menu,
   MenuItem,
   NativeSelect,
+  SegmentedControl,
   Select,
   Textarea,
 } from "./index";
@@ -25,6 +26,7 @@ const sectionStyle = {
 export default function ComponentCatalog() {
   const [selectValue, setSelectValue] = useState("current");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [segment, setSegment] = useState<"ssh" | "sftp" | "rsync">("ssh");
   return (
     <main
       style={{
@@ -69,6 +71,31 @@ export default function ComponentCatalog() {
             ]}
           />
           <Select ariaLabel="Disabled select" value="" options={[]} onChange={() => undefined} />
+        </section>
+        <section style={sectionStyle}>
+          <h2 style={{ margin: 0 }}>Segmented control</h2>
+          <SegmentedControl
+            name="catalog-segment"
+            aria-label="Segmented control"
+            value={segment}
+            onChange={setSegment}
+            options={[
+              { value: "ssh", label: "SSH" },
+              { value: "sftp", label: "SFTP" },
+              { value: "rsync", label: "Disabled option", disabled: true },
+            ]}
+          />
+          <SegmentedControl
+            name="catalog-segment-disabled"
+            aria-label="Disabled segmented control"
+            value="ssh"
+            disabled
+            onChange={() => undefined}
+            options={[
+              { value: "ssh", label: "SSH" },
+              { value: "sftp", label: "SFTP" },
+            ]}
+          />
         </section>
         <section style={sectionStyle}>
           <h2 style={{ margin: 0 }}>Menu</h2>

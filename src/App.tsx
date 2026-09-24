@@ -1,5 +1,9 @@
 import { recordRemoteStartup, reconcileRemoteReservation } from "./lib/remoteStartup";
 import RemoteConnectionDetailsText from "./components/RemoteConnectionDetailsText";
+import RemoteProbeChecks from "./components/RemoteProbeChecks";
+import NewRemoteGroupDialog, {
+  type RemoteGroupProtocol,
+} from "./components/NewRemoteGroupDialog";
 import {
   remoteConnectionLabel,
   remotePaneCloseButtonVisible,
@@ -7,7 +11,6 @@ import {
 } from "./lib/remoteConnection";
 import { reconnectPane } from "./lib/api";
 import {
-  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -276,6 +279,7 @@ import {
   availableRemoteId,
   remoteDraftFromSshAlias,
   remoteIdFromLabel,
+  savedRemoteFromSettingsDraft,
   unconfiguredSshAliases,
   type RemoteSettingsDraft,
 } from "./lib/remoteSettings";
@@ -696,7 +700,6 @@ import type {
   RemoteProbeResult,
   RepositoryBranch,
   RepositoryInventory,
-  SavedRemote,
   SavedPrompt,
   ShellAgentJobInfo,
   ThreadGraph,
@@ -744,16 +747,6 @@ function remoteSettingsDraft(remote: RemoteChoice): RemoteSettingsDraft {
     workspaceRoot: remote.workspaceRoot ?? "",
     qmuxCli: remote.qmuxCli ?? "",
     multiplexer: remote.multiplexer,
-  };
-}
-
-function savedRemoteFromSettingsDraft(draft: RemoteSettingsDraft): SavedRemote {
-  return {
-    host: draft.host.trim(),
-    label: draft.label.trim() || null,
-    multiplexer: draft.multiplexer,
-    qmuxCli: draft.qmuxCli.trim() || null,
-    workspaceRoot: draft.workspaceRoot.trim() || null,
   };
 }
 
@@ -1988,6 +1981,7 @@ function MainApp() {
     null,
   );
   const [settingsMenu, setSettingsMenu] = useState<{ x: number; y: number } | null>(null);
+  const [newRemoteGroupDialogOpen, setNewRemoteGroupDialogOpen] = useState(false);
   const paneContextMenuRef = useRef<HTMLDivElement | null>(null);
   const groupMenuRef = useRef<HTMLDivElement | null>(null);
   const settingsMenuRef = useRef<HTMLDivElement | null>(null);
@@ -4580,23 +4574,7 @@ function MainApp() {
     const remoteAdapters = probeResult.adapters.filter((adapter) => adapter.supportsRemote);
     return (
       <div className="settings-remote-probe-result" aria-live="polite">
-        <div className="settings-remote-checks">
-          {probeResult.checks.map((check) => (
-            <div className={`settings-remote-check is-${check.status}`} key={check.id}>
-              {check.status === "passed" ? (
-                <Check size={13} aria-hidden="true" />
-              ) : check.status === "failed" ? (
-                <X size={13} aria-hidden="true" />
-              ) : (
-                <Minus size={13} aria-hidden="true" />
-              )}
-              <span>
-                <strong>{check.label}</strong>
-                <small>{check.message}</small>
-              </span>
-            </div>
-          ))}
-        </div>
+        <RemoteProbeChecks checks={probeResult.checks} />
         {remoteAdapters.length > 0 ? (
           <div className="settings-remote-provider-results">
             <span>Remote agent providers</span>
@@ -6852,52 +6830,33 @@ function MainApp() {
     }
   }
 
-  /** Creates a remote workspace and its first durable shell atomically,
-   * opening in the remote account's home directory. A failed SSH/tmux launch
-   * rolls the group back just like local creation. */
-  async function createRemoteGroup(remoteId: string) {
+  function openNewRemoteGroupDialog() {
     setSettingsMenu(null);
-    setError(null);
-    try {
-      const anchorGroupId = launchGroupId();
-      const created = await createGroupWithShell(
-        "~",
-        anchorGroupId ?? null,
-        estimateInitialPaneSize(false),
-        remoteId,
-      );
-      const orderedPanes = panesWithNewTabInLaunchPosition(created.pane, created.group.id);
-      setPanesPreservingRecoveredDismissals(orderedPanes);
-      setActivePaneId(created.pane.id);
-      await refreshGroups();
-      setLastActiveGroupId(created.group.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+    setNewRemoteGroupDialogOpen(true);
   }
 
-  /** Opens a direct SSH/SFTP client to the saved remote as a tab in the
-   * current group. */
-  async function addRemoteTab(remoteId: string, protocol: "ssh" | "sftp") {
-    setSettingsMenu(null);
+  /** Creates a remote workspace and its first tab atomically, opening in the
+   * remote account's home directory: the remote's durable tmux shell for ssh,
+   * or a direct sftp client. A failed launch rolls the group back just like
+   * local creation; errors are thrown so the dialog can show them. */
+  async function createRemoteGroup(remoteId: string, protocol: RemoteGroupProtocol) {
     setError(null);
+    const created = await createGroupWithShell(
+      "~",
+      launchGroupId() ?? null,
+      estimateInitialPaneSize(false),
+      remoteId,
+      protocol,
+    );
+    setNewRemoteGroupDialogOpen(false);
+    const orderedPanes = panesWithNewTabInLaunchPosition(created.pane, created.group.id);
+    setPanesPreservingRecoveredDismissals(orderedPanes);
+    setActivePaneId(created.pane.id);
+    setLastActiveGroupId(created.group.id);
     try {
-      const groupId = launchGroupId();
-      const sourcePaneId = groupId ? (activePaneRef.current?.id ?? null) : null;
-      const pane = await spawnShell(
-        estimateInitialPaneSize(false),
-        sourcePaneId,
-        groupId,
-        remoteId,
-        protocol,
-      );
-      const orderedPanes = panesWithNewTabInLaunchPosition(pane, pane.groupId);
-      setPanesPreservingRecoveredDismissals(orderedPanes);
-      setActivePaneId(pane.id);
-      setLastActiveGroupId(pane.groupId);
-      if (pane.remoteSession) requestAnimationFrame(() => requestAnimationFrame(() => recordRemoteStartup(pane.id, "visible")));
       await refreshGroups();
     } catch (err) {
+      // The group exists and the dialog is gone, so report it app-wide.
       setError(err instanceof Error ? err.message : String(err));
     }
   }
@@ -16530,72 +16489,15 @@ function MainApp() {
           <div className="group-context-actions">
             {sidebarMode === "terminal" ? (
               <>
-                {(config?.remotes?.length ?? 0) > 0
-                  ? (config?.remotes ?? []).map((remote, index) => (
-                      <Fragment key={remote.id}>
-                        {index > 0 ? (
-                          <div className="context-menu-divider" role="separator" />
-                        ) : null}
-                        <div className="settings-context-menu-label" role="presentation">
-                          {remote.label}
-                        </div>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="control-button"
-                          // A multiplexer qmux cannot drive is shown rather than
-                          // hidden, so the remote is discoverable and the reason it
-                          // is unavailable is visible.
-                          disabled={!remote.usable}
-                          onClick={() => {
-                            void createRemoteGroup(remote.id);
-                          }}
-                        >
-                          <Plus size={13} aria-hidden="true" />
-                          <span>New remote group</span>
-                        </button>
-                        {settings.codeMode ? (
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="control-button"
-                            disabled={!remote.usable}
-                            onClick={() => {
-                              void addRemoteTab(remote.id, "ssh");
-                            }}
-                          >
-                            <SquareTerminal size={13} aria-hidden="true" />
-                            <span>New remote tab (ssh)</span>
-                          </button>
-                        ) : null}
-                        {settings.codeMode ? (
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="control-button"
-                            disabled={!remote.usable}
-                            onClick={() => {
-                              void addRemoteTab(remote.id, "sftp");
-                            }}
-                          >
-                            <SquareTerminal size={13} aria-hidden="true" />
-                            <span>New remote tab (sftp)</span>
-                          </button>
-                        ) : null}
-                      </Fragment>
-                    ))
-                  : (
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="control-button"
-                        onClick={openRemoteSettings}
-                      >
-                        <Globe size={13} aria-hidden="true" />
-                        <span>Add a remote...</span>
-                      </button>
-                    )}
-                <div className="context-menu-divider" role="separator" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="control-button"
+                  onClick={openNewRemoteGroupDialog}
+                >
+                  <Globe size={13} aria-hidden="true" />
+                  <span>New remote group...</span>
+                </button>
                 <button
                   type="button"
                   role="menuitem"
@@ -18596,6 +18498,22 @@ function MainApp() {
             ) : null}
           </Dialog>
         </DialogRoot>
+      ) : null}
+
+      {newRemoteGroupDialogOpen ? (
+        <NewRemoteGroupDialog
+          remotes={config?.remotes ?? []}
+          onCreate={createRemoteGroup}
+          onRemotesChange={(remotes) => {
+            setConfig((current) => (current ? { ...current, remotes } : current));
+            showAppToast("Remote added");
+          }}
+          onManageRemotes={() => {
+            setNewRemoteGroupDialogOpen(false);
+            openRemoteSettings();
+          }}
+          onDismiss={() => setNewRemoteGroupDialogOpen(false)}
+        />
       ) : null}
 
       {worktreeCreateDialog ? (

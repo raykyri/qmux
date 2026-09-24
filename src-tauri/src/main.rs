@@ -2643,6 +2643,7 @@ async fn group_create_with_shell(
     after_group_id: Option<String>,
     initial_size: Option<InitialPaneSize>,
     remote_id: Option<String>,
+    remote_protocol: Option<RemoteClientProtocol>,
 ) -> Result<GroupWithInitialPane, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -2661,7 +2662,20 @@ async fn group_create_with_shell(
                 },
             )?,
         )?;
-        match spawn_shell_pane(&state, initial_size, None, Some(&group.id)) {
+        // A remote group can start on a direct client instead (e.g. sftp);
+        // ssh to the group's own remote falls back to its durable shell.
+        let first_pane = match (remote_protocol, group.remote.as_ref()) {
+            (Some(protocol), Some(remote)) => spawn_remote_client_pane(
+                &state,
+                initial_size,
+                None,
+                Some(&group.id),
+                remote,
+                protocol,
+            ),
+            _ => spawn_shell_pane(&state, initial_size, None, Some(&group.id)),
+        };
+        match first_pane {
             Ok(pane) => Ok(GroupWithInitialPane { group, pane }),
             Err(err) => {
                 // Best-effort rollback; the spawn error is the one worth

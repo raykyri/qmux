@@ -1,4 +1,4 @@
-import type { RemoteChoice } from "../types";
+import type { RemoteChoice, SavedRemote } from "../types";
 
 export interface RemoteSettingsDraft {
   id: string;
@@ -61,4 +61,14 @@ export function unconfiguredSshAliases(
     }
   }
   return aliases.filter((alias) => !configuredHosts.has(alias.trim().toLowerCase()));
+}
+
+export function savedRemoteFromSettingsDraft(draft: RemoteSettingsDraft): SavedRemote {
+  return {
+    host: draft.host.trim(),
+    label: draft.label.trim() || null,
+    multiplexer: draft.multiplexer,
+    qmuxCli: draft.qmuxCli.trim() || null,
+    workspaceRoot: draft.workspaceRoot.trim() || null,
+  };
 }

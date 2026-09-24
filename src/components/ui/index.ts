@@ -19,6 +19,8 @@ export { Menu, MenuItem } from "./Menu";
 export type { MenuItemProps, MenuProps } from "./Menu";
 export { Popover, PopoverPortal } from "./Popover";
 export type { PopoverProps } from "./Popover";
+export { default as SegmentedControl } from "./SegmentedControl";
+export type { SegmentedControlOption, SegmentedControlProps } from "./SegmentedControl";
 export { default as Select } from "./Select";
 export type { SelectOption, SelectProps } from "./Select";
 export { classNames } from "./classNames";

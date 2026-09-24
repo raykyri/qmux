@@ -81,7 +81,11 @@
   animation: spinner-spin 0.9s linear infinite;
 }
 
-.confirm-dialog-actions button:not(.danger):hover {
+.confirm-dialog-actions button:disabled {
+  opacity: 0.5;
+}
+
+.confirm-dialog-actions button:not(.danger):not(:disabled):hover {
   background: var(--control-bg-hover);
   border-color: var(--control-border-hover);
 }

@@ -409,12 +409,14 @@ export function createGroupWithShell(
   afterGroupId?: string | null,
   initialSize?: InitialPaneSize | null,
   remoteId?: string | null,
+  remoteProtocol?: "ssh" | "sftp" | null,
 ) {
   return invoke<GroupWithInitialPane>("group_create_with_shell", {
     dir,
     afterGroupId: afterGroupId ?? null,
     initialSize: initialSize ?? null,
     remoteId: remoteId ?? null,
+    remoteProtocol: remoteProtocol ?? null,
   });
 }
 

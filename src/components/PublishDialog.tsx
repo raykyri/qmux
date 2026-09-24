@@ -19,7 +19,7 @@ import {
   syncPublication,
 } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
-import { DialogRoot } from "./ui";
+import { DialogRoot, SegmentedControl } from "./ui";
 import type {
   PublicationBinding,
   PublicationDraft,
@@ -318,28 +318,25 @@ export default function PublishDialog({
 
               <fieldset className="publication-visibility" disabled={updating}>
                 <legend>Visibility</legend>
-                <div className="publication-segmented-control">
-                  <label className={!isPublic ? "is-selected" : undefined}>
-                    <input
-                      type="radio"
-                      name="publication-visibility"
-                      checked={!isPublic}
-                      onChange={() => setIsPublic(false)}
-                    />
-                    <LockKeyhole size={14} aria-hidden="true" />
-                    Secret
-                  </label>
-                  <label className={isPublic ? "is-selected" : undefined}>
-                    <input
-                      type="radio"
-                      name="publication-visibility"
-                      checked={isPublic}
-                      onChange={() => setIsPublic(true)}
-                    />
-                    <Globe2 size={14} aria-hidden="true" />
-                    Public
-                  </label>
-                </div>
+                <SegmentedControl
+                  name="publication-visibility"
+                  className="publication-segmented-control"
+                  value={isPublic ? "public" : "secret"}
+                  disabled={updating}
+                  onChange={(visibility) => setIsPublic(visibility === "public")}
+                  options={[
+                    {
+                      value: "secret",
+                      label: "Secret",
+                      icon: <LockKeyhole size={14} aria-hidden="true" />,
+                    },
+                    {
+                      value: "public",
+                      label: "Public",
+                      icon: <Globe2 size={14} aria-hidden="true" />,
+                    },
+                  ]}
+                />
                 <p>
                   {updating
                     ? "Visibility stays unchanged when an existing Gist is updated."

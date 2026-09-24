@@ -4,6 +4,7 @@ import {
   availableRemoteId,
   remoteDraftFromSshAlias,
   remoteIdFromLabel,
+  savedRemoteFromSettingsDraft,
   unconfiguredSshAliases,
 } from "../src/lib/remoteSettings";
 import type { RemoteChoice } from "../src/types";
@@ -55,5 +56,25 @@ test("configured SSH aliases are omitted case-insensitively, including user over
   assert.deepEqual(
     unconfiguredSshAliases(["devbox", "prod-west", "STAGING"], remotes),
     ["devbox"],
+  );
+});
+
+test("saved remotes trim fields and drop blank optional values", () => {
+  assert.deepEqual(
+    savedRemoteFromSettingsDraft({
+      id: "devbox",
+      label: "  ",
+      host: " raymond@devbox ",
+      workspaceRoot: " ~/work ",
+      qmuxCli: "",
+      multiplexer: "tmux",
+    }),
+    {
+      host: "raymond@devbox",
+      label: null,
+      multiplexer: "tmux",
+      qmuxCli: null,
+      workspaceRoot: "~/work",
+    },
   );
 });
