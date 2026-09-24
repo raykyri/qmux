@@ -183,7 +183,9 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
                 "activeWorkspace": inspect_workspace(&cwd),
             });
             if initial && env::var("QMUX_REMOTE").ok().as_deref() == Some("1") {
-                retry_initial_remote_report(|| request_silent("pane.set_workspace", payload.clone()))?;
+                retry_initial_remote_report(|| {
+                    request_silent("pane.set_workspace", payload.clone())
+                })?;
             } else {
                 request_silent("pane.set_workspace", payload)?;
             }

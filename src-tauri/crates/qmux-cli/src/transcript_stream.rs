@@ -133,9 +133,7 @@ pub fn valid_session(session: &str) -> bool {
 }
 
 pub fn discover(adapter: &str, session: &str, hint: Option<&Path>) -> Result<PathBuf, String> {
-    if !matches!(adapter, "claude" | "codex" | "devin" | "antigravity")
-        || !valid_session(session)
-    {
+    if !matches!(adapter, "claude" | "codex" | "devin" | "antigravity") || !valid_session(session) {
         return Err("invalid transcript adapter or session".into());
     }
     if let Some(path) = hint
@@ -366,10 +364,8 @@ mod tests {
     }
     #[test]
     fn devin_documents_require_the_matching_session_and_stream_without_a_newline() {
-        let path = std::env::temp_dir().join(format!(
-            "qmux-stream-devin-{}.json",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("qmux-stream-devin-{}.json", std::process::id()));
         let contents = r#"{"session_id":"devin-session","steps":[]}"#;
         fs::write(&path, contents).unwrap();
         assert!(belongs(&path, "devin", "devin-session"));
@@ -393,9 +389,7 @@ mod tests {
     #[test]
     fn antigravity_paths_are_confined_to_the_conversation_log_directory() {
         let home = Path::new("/home/test/.gemini/config");
-        let expected = home.join(
-            "brain/conversation-1/.system_generated/logs/transcript.jsonl",
-        );
+        let expected = home.join("brain/conversation-1/.system_generated/logs/transcript.jsonl");
         assert!(antigravity_path_matches(&expected, home, "conversation-1"));
         assert!(antigravity_path_matches(
             &expected.with_file_name("transcript_full.jsonl"),
