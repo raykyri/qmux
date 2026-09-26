@@ -460,7 +460,9 @@ fn finish_shortcut_capture(
 }
 
 pub fn toggle_qmux_visibility<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let Some(window) = app.get_webview_window("main") else {
+    // The browser adds child webviews, so Tauri no longer considers main a
+    // WebviewWindow. Resolve the native window regardless of its webview count.
+    let Some(window) = app.get_window("main") else {
         return Ok(());
     };
 
@@ -495,7 +497,7 @@ fn should_hide_qmux_window(is_visible: bool, is_minimized: bool, app_is_active: 
 }
 
 pub fn show_qmux_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = app.get_window("main") else {
         return Ok(());
     };
 
@@ -518,7 +520,7 @@ pub fn hide_qmux_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
 #[cfg(not(target_os = "macos"))]
 pub fn hide_qmux_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = app.get_window("main") else {
         return Ok(());
     };
     window.hide()

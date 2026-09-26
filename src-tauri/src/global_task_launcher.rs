@@ -250,7 +250,7 @@ pub fn show_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // Record whoever is frontmost before we activate qmux, so dismissing the
     // launcher can hand focus back to the app the user summoned it from.
     capture_previous_app();
-    let main_window = app.get_webview_window("main");
+    let main_window = app.get_window("main");
     let main_was_visible = main_window
         .as_ref()
         .and_then(|main| main.is_visible().ok())
