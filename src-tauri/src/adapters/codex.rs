@@ -1317,6 +1317,8 @@ fn build_codex_fork_args(
 /// leave the remote Codex home untouched.
 fn push_codex_hook_integration(args: &mut Vec<String>, remote_hook_cli: Option<&str>) {
     let Some(qmux_cli) = remote_hook_cli else {
+        // The qmux profile requires embedded mode; select it without daemon fallback.
+        args.push("--no-daemon".to_string());
         args.push("--profile".to_string());
         args.push(CODEX_QMUX_PROFILE.to_string());
         return;
@@ -3233,6 +3235,7 @@ mod tests {
                 "/tmp/qmux/.qmux/workspaces",
                 "--model",
                 "gpt-5",
+                "--no-daemon",
                 "--profile",
                 "qmux-codex",
                 "--config",
@@ -3272,6 +3275,7 @@ mod tests {
             vec![
                 "--cd",
                 "/tmp/qmux",
+                "--no-daemon",
                 "--profile",
                 "qmux-codex",
                 "--sandbox",
@@ -3334,6 +3338,7 @@ mod tests {
                 "/tmp/qmux",
                 "--model",
                 "gpt-5.6-luna",
+                "--no-daemon",
                 "--profile",
                 "qmux-codex",
                 "--sandbox",
@@ -3592,6 +3597,7 @@ mod tests {
                 "/tmp/qmux/.qmux/workspaces",
                 "--model",
                 "gpt-5",
+                "--no-daemon",
                 "--profile",
                 "qmux-codex",
                 "--sandbox",
@@ -3633,6 +3639,7 @@ mod tests {
                 "/tmp/qmux/.qmux/workspaces",
                 "--model",
                 "gpt-5",
+                "--no-daemon",
                 "--profile",
                 "qmux-codex",
                 "--sandbox",
@@ -3668,6 +3675,7 @@ mod tests {
             vec![
                 "--cd",
                 "/tmp/qmux",
+                "--no-daemon",
                 "--profile",
                 "qmux-codex",
                 "--sandbox",
@@ -3699,6 +3707,7 @@ mod tests {
             vec![
                 "--cd",
                 "/tmp/qmux",
+                "--no-daemon",
                 "--profile",
                 "qmux-codex",
                 "--sandbox",
