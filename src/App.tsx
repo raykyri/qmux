@@ -17471,11 +17471,12 @@ function MainApp() {
                   }
                 }}
               >
-                <button
+                <Button
                   id="settings-theme"
                   ref={themePickerTriggerRef}
+                  variant="unstyled"
                   type="button"
-                  className="settings-select settings-theme-trigger"
+                  className="form-field settings-select settings-theme-trigger"
                   role="combobox"
                   aria-haspopup="listbox"
                   aria-expanded={themePickerOpen}
@@ -17502,7 +17503,7 @@ function MainApp() {
                       ? "qmux (default)"
                       : settings.themeId}
                   </span>
-                </button>
+                </Button>
                 {themePickerOpen ? (
                   <div
                     id="settings-theme-options"
