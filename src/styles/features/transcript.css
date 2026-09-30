@@ -1201,7 +1201,7 @@ header + .turn-blocks {
   background: transparent;
   cursor: pointer;
   line-height: 0;
-  vertical-align: -3px;
+  vertical-align: 2px;
   user-select: none;
   -webkit-user-select: none;
 }
