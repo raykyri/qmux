@@ -229,8 +229,8 @@ function readMathPlugins() {
 // keeps link closures stable above memoized message items while giving ordinary
 // links and links injected into diagram SVGs exactly the same behavior.
 export interface LinkActions {
-  openLink: (url: string) => void;
-  openLinkMenu: (url: string, x: number, y: number) => void;
+  openLink: (url: string, trigger?: HTMLElement) => void;
+  openLinkMenu: (url: string, x: number, y: number, trigger?: HTMLElement) => void;
   openCodexInlineVisualization?: (file: string) => void;
   openCodexVisualizationReference?: (
     reference: CodexVisualizationReference,
@@ -302,7 +302,7 @@ function MarkdownLink({
       href={safe}
       onClick={(event) => {
         event.preventDefault();
-        openLink(safe);
+        openLink(safe, event.currentTarget);
       }}
       onAuxClick={(event) => {
         // A middle (or other auxiliary) click would otherwise keep WebKit's
@@ -312,12 +312,12 @@ function MarkdownLink({
         // route a middle click through the same classifier as a primary click.
         event.preventDefault();
         if (event.button === 1) {
-          openLink(safe);
+          openLink(safe, event.currentTarget);
         }
       }}
       onContextMenu={(event) => {
         event.preventDefault();
-        openLinkMenu(safe, event.clientX, event.clientY);
+        openLinkMenu(safe, event.clientX, event.clientY, event.currentTarget);
       }}
     />
   );

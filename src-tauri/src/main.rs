@@ -1070,7 +1070,35 @@ fn browser_open_local_path(
     {
         grant_staged_artifact_to_pane(&state, &pane_id, artifact_id, &path)?;
     }
-    let resolved = resolve_local_link_target(&state, &pane_id, &path)?;
+    let resolved = match resolve_local_link_target(&state, &pane_id, &path) {
+        Ok(resolved) => resolved,
+        Err(err)
+            if artifact_id.is_none()
+                && std::path::Path::new(&path).components().count() == 1
+                && err == format!("'{path}' was not found") =>
+        {
+            let matches = file_server::find_filename_under_roots(
+                &path,
+                &state.pane_file_search_roots(&pane_id),
+            );
+            if matches.paths.is_empty() {
+                return Err(if matches.incomplete {
+                    format!("'{path}' was not found within the filename search limit")
+                } else {
+                    err
+                });
+            }
+            if matches.paths.len() != 1 || matches.incomplete {
+                return Ok(serde_json::json!({
+                    "disposition": "choices",
+                    "paths": matches.paths,
+                    "incomplete": matches.incomplete,
+                }));
+            }
+            resolve_local_link_target(&state, &pane_id, &matches.paths[0].to_string_lossy())?
+        }
+        Err(err) => return Err(err),
+    };
     open_local_link(&state, &pane_id, resolved, artifact_id)
 }
 

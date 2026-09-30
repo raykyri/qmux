@@ -280,3 +280,16 @@
   width: 14px;
   height: 14px;
 }
+
+.file-match-menu {
+  z-index: var(--z-context-menu);
+  gap: 2px;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.file-match-menu .menu-item {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

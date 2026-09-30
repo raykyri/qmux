@@ -2458,6 +2458,20 @@ impl AppState {
     /// temporary directories are explicit shared roots because agents commonly
     /// write disposable HTML artifacts there rather than beneath their cwd.
     pub fn pane_file_roots(&self, pane_id: &str) -> Vec<std::path::PathBuf> {
+        self.pane_file_roots_inner(pane_id, true)
+    }
+
+    /// Project roots for a filename search. Shared temporary directories are
+    /// valid for explicit previews, but far too broad for a basename lookup.
+    pub fn pane_file_search_roots(&self, pane_id: &str) -> Vec<std::path::PathBuf> {
+        self.pane_file_roots_inner(pane_id, false)
+    }
+
+    fn pane_file_roots_inner(
+        &self,
+        pane_id: &str,
+        include_temporary: bool,
+    ) -> Vec<std::path::PathBuf> {
         let model = self
             .inner
             .model
@@ -2501,13 +2515,15 @@ impl AppState {
             // Include both conventional macOS spellings even though `/tmp`
             // normally canonicalizes to `/private/tmp`; `temp_dir` also covers
             // a host whose configured temporary directory lives elsewhere.
-            for temp_root in [
-                std::env::temp_dir(),
-                std::path::PathBuf::from("/tmp"),
-                std::path::PathBuf::from("/private/tmp"),
-            ] {
-                if !roots.contains(&temp_root) {
-                    roots.push(temp_root);
+            if include_temporary {
+                for temp_root in [
+                    std::env::temp_dir(),
+                    std::path::PathBuf::from("/tmp"),
+                    std::path::PathBuf::from("/private/tmp"),
+                ] {
+                    if !roots.contains(&temp_root) {
+                        roots.push(temp_root);
+                    }
                 }
             }
             return roots;
@@ -20415,6 +20431,11 @@ mod tests {
         assert!(roots.contains(&std::env::temp_dir()));
         assert!(roots.contains(&std::path::PathBuf::from("/tmp")));
         assert!(roots.contains(&std::path::PathBuf::from("/private/tmp")));
+
+        let search_roots = state.pane_file_search_roots("pane-1");
+        assert!(search_roots.contains(&std::path::PathBuf::from("/tmp/work/agent-1")));
+        assert!(!search_roots.contains(&std::path::PathBuf::from("/tmp")));
+        assert!(!search_roots.contains(&std::path::PathBuf::from("/private/tmp")));
     }
 
     #[test]

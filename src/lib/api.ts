@@ -1050,11 +1050,9 @@ export function browserOpenPreviewExternal(url: string) {
   return invoke<void>("browser_open_preview_external", { url });
 }
 
-export type BrowserOpenLocalPathResult = {
-  disposition: "preview" | "revealed";
-  url: string | null;
-  sandbox: boolean;
-};
+export type BrowserOpenLocalPathResult =
+  | { disposition: "preview" | "revealed"; url: string | null; sandbox: boolean }
+  | { disposition: "choices"; paths: string[]; incomplete: boolean };
 
 /** Safely open a local path: preview known renderable files in the sandboxed
  * overlay and reveal unknown/binary formats in the OS file manager. Relative

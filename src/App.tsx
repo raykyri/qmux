@@ -144,6 +144,7 @@ import type {
   HomeRailWorkstream,
 } from "./components/HomeRails";
 import LinkContextMenu from "./components/LinkContextMenu";
+import FileMatchMenu from "./components/FileMatchMenu";
 import PublishDialog, { type PublishDialogTarget } from "./components/PublishDialog";
 import SidebarModeToggle from "./components/SidebarModeToggle";
 import TerminalPane from "./components/TerminalPane";
@@ -3274,6 +3275,14 @@ function MainApp() {
     x: number;
     y: number;
     paneId: string | null;
+    trigger?: HTMLElement;
+  } | null>(null);
+  const [fileMatchMenu, setFileMatchMenu] = useState<{
+    paneId: string;
+    name: string;
+    paths: string[];
+    incomplete: boolean;
+    trigger: HTMLElement;
   } | null>(null);
   // Pane and research-document selection are independent. Switching modes restores
   // the previous selection instead of erasing the other mode's navigation context.
@@ -5454,7 +5463,7 @@ function MainApp() {
   }
 
   const openLinkForPane = useCallback(
-    (paneId: string | null | undefined, url: string) => {
+    (paneId: string | null | undefined, url: string, trigger?: HTMLElement) => {
       const localPath = pathFromQmuxFileHref(url);
       const fileServerPort = configRef.current?.fileServerPort ?? null;
       if (localPath) {
@@ -5474,13 +5483,31 @@ function MainApp() {
           closeBrowserOverlayForPane(paneId);
           return;
         }
-        // Absolute filesystem paths from transcript markdown (e.g. an agent
-        // linking `/Users/…/report.html`). Mint a token-scoped file-server URL
-        // and load it sandboxed — never as a fake https:// host or human-browser
-        // navigation, which both mishandle path-shaped hrefs.
-        void browserOpenLocalPath(paneId, localPath).catch((err) => {
-          setError(err instanceof Error ? err.message : String(err));
-        });
+        // Pane-scoped local links mint token-scoped file-server URLs. A bare
+        // filename may instead return several project matches to choose from.
+        void browserOpenLocalPath(paneId, localPath)
+          .then((result) => {
+            if (result.disposition === "choices") {
+              const activeElement = document.activeElement;
+              const menuTrigger = trigger?.isConnected
+                ? trigger
+                : activeElement instanceof HTMLElement && activeElement.isConnected
+                  ? activeElement
+                  : appRef.current;
+              if (menuTrigger) {
+                setFileMatchMenu({
+                  paneId,
+                  name: localPath,
+                  paths: result.paths,
+                  incomplete: result.incomplete,
+                  trigger: menuTrigger,
+                });
+              }
+            }
+          })
+          .catch((err) => {
+            setError(err instanceof Error ? err.message : String(err));
+          });
         return;
       }
       if (paneId && canRenderInInternalBrowser(url)) {
@@ -5926,10 +5953,10 @@ function MainApp() {
     let actions = cache.get(paneId);
     if (!actions) {
       actions = {
-        openLink: (url) => {
-          openLinkForPaneRef.current(paneId, url);
+        openLink: (url, trigger) => {
+          openLinkForPaneRef.current(paneId, url, trigger);
         },
-        openLinkMenu: (url, x, y) => setLinkMenu({ url, x, y, paneId }),
+        openLinkMenu: (url, x, y, trigger) => setLinkMenu({ url, x, y, paneId, trigger }),
         openCodexInlineVisualization: (file) => {
           void browserOpenCodexInlineVisualization(paneId, file).catch((err) => {
             setError(err instanceof Error ? err.message : String(err));
@@ -19434,7 +19461,7 @@ function MainApp() {
                 canPreviewLocalFilePath(linkMenuLocalPath)))
           }
           onOpenInternal={() => {
-            openLinkForPane(linkMenu.paneId, linkMenu.url);
+            openLinkForPane(linkMenu.paneId, linkMenu.url, linkMenu.trigger);
             setLinkMenu(null);
           }}
           onOpenExternal={() => {
@@ -19470,6 +19497,23 @@ function MainApp() {
               : null
           }
           onClose={() => setLinkMenu(null)}
+        />
+      ) : null}
+      {fileMatchMenu ? (
+        <FileMatchMenu
+          name={fileMatchMenu.name}
+          paths={fileMatchMenu.paths}
+          incomplete={fileMatchMenu.incomplete}
+          cwd={panes.find((pane) => pane.id === fileMatchMenu.paneId)?.cwd}
+          trigger={fileMatchMenu.trigger}
+          onSelect={(path) => {
+            setFileMatchMenu(null);
+            fileMatchMenu.trigger.focus();
+            void browserOpenLocalPath(fileMatchMenu.paneId, path).catch((err) => {
+              setError(err instanceof Error ? err.message : String(err));
+            });
+          }}
+          onClose={() => setFileMatchMenu(null)}
         />
       ) : null}
 

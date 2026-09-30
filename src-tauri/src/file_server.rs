@@ -19,6 +19,7 @@ use crate::connection_limit::ConnectionLimiter;
 use crate::state::AppState;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use sha2::{Digest, Sha256};
+use std::collections::{HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
@@ -178,6 +179,86 @@ pub fn resolve_under_roots(requested: &Path, roots: &[PathBuf]) -> Option<PathBu
         }
     }
     None
+}
+
+pub struct FilenameMatches {
+    pub paths: Vec<PathBuf>,
+    pub incomplete: bool,
+}
+
+/// Find a bare filename beneath a pane's project roots. Do not traverse
+/// symlinked directories; canonicalize and recheck each match against the
+/// preview roots before it can be offered to the user.
+pub fn find_filename_under_roots(name: &str, roots: &[PathBuf]) -> FilenameMatches {
+    const MAX_DIRECTORIES: usize = 2_000;
+    const MAX_ENTRIES: usize = 50_000;
+    const MAX_MATCHES: usize = 24;
+    let mut pending = VecDeque::new();
+    let mut seen_directories = HashSet::new();
+    let mut seen_files = HashSet::new();
+    let mut paths = Vec::new();
+    let mut entries_seen = 0;
+    let mut directories_seen = 0;
+    let mut incomplete = false;
+    if name.is_empty() || Path::new(name).components().count() != 1 || name == "." || name == ".." {
+        return FilenameMatches { paths, incomplete };
+    }
+    for root in roots {
+        if let Ok(canonical) = fs::canonicalize(root)
+            && canonical.is_dir()
+            && seen_directories.insert(canonical.clone())
+        {
+            pending.push_back(canonical);
+        }
+    }
+    while let Some(dir) = pending.pop_front() {
+        if directories_seen >= MAX_DIRECTORIES || entries_seen >= MAX_ENTRIES {
+            incomplete = true;
+            break;
+        }
+        directories_seen += 1;
+        let Ok(read_dir) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in read_dir.flatten() {
+            if entries_seen >= MAX_ENTRIES || paths.len() >= MAX_MATCHES {
+                incomplete = true;
+                break;
+            }
+            entries_seen += 1;
+            let file_name = entry.file_name();
+            let entry_path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_name == name
+                && (file_type.is_file() || file_type.is_symlink())
+                && let Some(canonical) = resolve_under_roots(&entry_path, roots)
+                && canonical.is_file()
+                && seen_files.insert(canonical.clone())
+            {
+                paths.push(canonical);
+            }
+            if paths.len() >= MAX_MATCHES {
+                incomplete = true;
+                break;
+            }
+            if file_type.is_dir()
+                && file_name != ".git"
+                && file_name != "node_modules"
+                && file_name != "target"
+                && let Ok(canonical) = fs::canonicalize(&entry_path)
+                && seen_directories.insert(canonical.clone())
+            {
+                pending.push_back(canonical);
+            }
+        }
+        if incomplete {
+            break;
+        }
+    }
+    paths.sort();
+    FilenameMatches { paths, incomplete }
 }
 
 /// Resolve one of the exact canonical files granted to a pane. This is kept
@@ -1597,6 +1678,59 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target/qmux-file-server-tests")
             .join(format!("{label}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn filename_search_finds_nested_files_and_reports_ambiguity() {
+        let base = non_temp_test_dir("filename-search");
+        let _ = std::fs::remove_dir_all(&base);
+        let project = base.join("project");
+        let first = project.join("dev/vault-recovery-step.html");
+        let second = project.join("design/vault-recovery-step.html");
+        std::fs::create_dir_all(first.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+        std::fs::write(&first, "first").unwrap();
+        let roots = [project.clone()];
+
+        let unique = find_filename_under_roots("vault-recovery-step.html", &roots);
+        assert_eq!(unique.paths, vec![first.canonicalize().unwrap()]);
+        assert!(!unique.incomplete);
+
+        std::fs::write(&second, "second").unwrap();
+        let multiple = find_filename_under_roots("vault-recovery-step.html", &roots);
+        assert_eq!(
+            multiple.paths,
+            vec![
+                second.canonicalize().unwrap(),
+                first.canonicalize().unwrap()
+            ]
+        );
+        assert!(!multiple.incomplete);
+        assert!(
+            find_filename_under_roots("../vault-recovery-step.html", &roots)
+                .paths
+                .is_empty()
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn filename_search_does_not_follow_symlinks_outside_roots() {
+        let base = non_temp_test_dir("filename-search-symlinks");
+        let _ = std::fs::remove_dir_all(&base);
+        let project = base.join("project");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("preview.html"), "private").unwrap();
+        std::os::unix::fs::symlink(&outside, project.join("linked-dir")).unwrap();
+        std::os::unix::fs::symlink(outside.join("preview.html"), project.join("preview.html"))
+            .unwrap();
+        let matches = find_filename_under_roots("preview.html", &[project]);
+        assert!(matches.paths.is_empty());
+        assert!(!matches.incomplete);
+        let _ = std::fs::remove_dir_all(base);
     }
 
     /// Builds an `AppState` with a live pane scoped to `root`, matching the
