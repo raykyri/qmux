@@ -65,6 +65,7 @@ import {
 } from "../lib/turnTimeline";
 import type { MessageBlock, MessageItem } from "../lib/turnTimeline";
 import DomSearchBar from "./DomSearchBar";
+import EmptyPromptCards from "./EmptyPromptCards";
 import TranscriptImage from "./TranscriptImage";
 import TranscriptPickerLink from "./TranscriptPickerLink";
 import TranscriptMarkdown, {
@@ -118,6 +119,8 @@ interface TurnOverlayProps {
   // Identifies the prompt-library listener that can handle "save message as
   // prompt" requests. Unlike agentId, this is absent for detached transcripts.
   savePromptAgentId?: string | null;
+  promptProjectDir?: string | null;
+  onInsertPrompt?: (text: string) => void;
   // Short diagnostic shown under the empty-state placeholder when the transcript
   // tail is in an unexpected state (stalled/unreadable file, adapter failure).
   notice?: string | null;
@@ -246,6 +249,8 @@ export default function TurnOverlay({
   saveTranscriptScroll,
   registerScrollCapture,
   savePromptAgentId,
+  promptProjectDir = null,
+  onInsertPrompt,
   notice,
   transcriptOptions = [],
   transcriptPath = null,
@@ -1362,6 +1367,13 @@ export default function TurnOverlay({
             ) : notice ? null : (
               <span className="turn-empty-notice">Send a message to continue</span>
             )}
+            {!notice && !readerMode && onInsertPrompt ? (
+              <EmptyPromptCards
+                key={promptProjectDir ?? "global"}
+                projectDir={promptProjectDir}
+                onInsert={onInsertPrompt}
+              />
+            ) : null}
           </div>
         ) : (
           displayedTimelineItems.map((item, index) => {

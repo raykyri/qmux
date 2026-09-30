@@ -15652,6 +15652,10 @@ function MainApp() {
         // cells, split right-pane mode) mount no listener, so offering the
         // menu item there would dispatch into the void — hide it instead.
         savePromptAgentId={showHeader ? (agent?.id ?? null) : null}
+        promptProjectDir={promptProjectDirForPane(surface.pane)}
+        onInsertPrompt={agent && !researchBound
+          ? (text) => requestComposerInsert(agent.id, text)
+          : undefined}
         searchHotkeyActive={activeSurface === "pane" && surface.pane.id === activePane?.id}
         assistantLabel={surface.assistantLabel}
         notice={agent ? surface.transcriptNotice : null}

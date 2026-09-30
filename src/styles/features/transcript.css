@@ -21,7 +21,7 @@
 }
 
 .turn-timeline.is-empty {
-  justify-content: center;
+  justify-content: safe center;
   padding: 24px;
 }
 
@@ -239,9 +239,69 @@
 
 /* Stack the placeholder text and any transcript-health notice vertically. */
 .turn-empty-state {
+  flex: 0 0 auto;
   flex-direction: column;
   gap: 6px;
   font-size: calc(14px + var(--transcript-font-delta, 0px));
+}
+
+.turn-empty-prompts {
+  width: min(100%, 620px);
+  margin-top: 28px;
+  text-align: left;
+}
+
+.turn-empty-prompts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 9px;
+}
+
+.turn-empty-prompt-card {
+  display: flex;
+  min-width: 0;
+  min-height: 88px;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 11px;
+  border: 1px solid var(--surface-border-subtle);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--text-primary) 3%, var(--right-pane-bg));
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.turn-empty-prompt-card:hover {
+  border-color: var(--surface-border-default);
+  background: color-mix(in srgb, var(--text-primary) 5%, var(--right-pane-bg));
+}
+
+.turn-empty-prompt-card:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.turn-empty-prompt-card-name {
+  overflow: hidden;
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turn-empty-prompt-card-preview {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: calc(12px + var(--transcript-font-delta, 0px));
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 /* Empty-queue placeholder shown above the composer when the queue and transcript
