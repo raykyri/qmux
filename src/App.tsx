@@ -19436,13 +19436,15 @@ function MainApp() {
             if (!currentUrl) {
               return;
             }
-            if (isFileServerUrl(currentUrl, configRef.current?.fileServerPort ?? null)) {
-              void browserOpenPreviewExternal(currentUrl).catch((err) => {
-                setError(err instanceof Error ? err.message : String(err));
-              });
-              return;
-            }
-            void openExternalUrl(currentUrl);
+            const opening = isFileServerUrl(
+              currentUrl,
+              configRef.current?.fileServerPort ?? null,
+            )
+              ? browserOpenPreviewExternal(currentUrl)
+              : openExternalUrl(currentUrl);
+            void opening
+              .then(() => closeActiveBrowserOverlay(activeBrowserOwnerId))
+              .catch(reportHumanBrowserError);
           }}
           onClose={() => closeActiveBrowserOverlay(activeBrowserOwnerId)}
           onModeChange={(mode, currentUrl) =>
