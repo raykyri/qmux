@@ -7,6 +7,7 @@ interface UseAnchoredPopoverOptions {
   onClose: () => void;
   triggerRef: RefObject<HTMLElement | null>;
   popoverRef: RefObject<HTMLElement | null>;
+  anchorPoint?: { x: number; y: number };
   preferredWidth: number | "trigger" | ((trigger: HTMLElement, popover: HTMLElement) => number);
   paneRect?: (trigger: HTMLElement) => DOMRect | null;
   align?: "start" | "end";
@@ -22,6 +23,7 @@ export function useAnchoredPopover({
   triggerRef,
   popoverRef,
   preferredWidth,
+  anchorPoint,
   paneRect,
   align = "start",
   prefer = "below",
@@ -29,16 +31,21 @@ export function useAnchoredPopover({
   gap,
   closeOnTab = true,
 }: UseAnchoredPopoverOptions): CSSProperties | null {
+  const pointX = anchorPoint?.x;
+  const pointY = anchorPoint?.y;
   const [style, setStyle] = useState<CSSProperties | null>(null);
 
   const reposition = useCallback(() => {
     const trigger = triggerRef.current;
     const popover = popoverRef.current;
-    if (!trigger || !popover) return;
-    const triggerRect = trigger.getBoundingClientRect();
+    if (!popover || (!trigger && pointX === undefined)) return;
+    const triggerRect =
+      pointX !== undefined
+        ? new DOMRect(pointX, pointY ?? 0, 0, 0)
+        : trigger!.getBoundingClientRect();
     const width =
       typeof preferredWidth === "function"
-        ? preferredWidth(trigger, popover)
+        ? preferredWidth(trigger!, popover)
         : preferredWidth === "trigger"
           ? triggerRect.width
           : preferredWidth;
@@ -46,7 +53,7 @@ export function useAnchoredPopover({
     const placement = placePanePopover({
       triggerRect,
       popoverSize: { width, height },
-      paneRect: paneRect?.(trigger),
+      paneRect: trigger ? paneRect?.(trigger) : undefined,
       align,
       prefer,
       margin,
@@ -59,7 +66,18 @@ export function useAnchoredPopover({
       maxWidth: placement.maxWidth,
       maxHeight: placement.maxHeight,
     });
-  }, [align, gap, margin, paneRect, popoverRef, prefer, preferredWidth, triggerRef]);
+  }, [
+    align,
+    gap,
+    margin,
+    paneRect,
+    pointX,
+    pointY,
+    popoverRef,
+    prefer,
+    preferredWidth,
+    triggerRef,
+  ]);
 
   useLayoutEffect(() => {
     if (!open) {
@@ -73,7 +91,11 @@ export function useAnchoredPopover({
     if (!open) return;
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (!triggerRef.current?.contains(target) && !popoverRef.current?.contains(target)) onClose();
+      if (
+        (pointX !== undefined || !triggerRef.current?.contains(target)) &&
+        !popoverRef.current?.contains(target)
+      )
+        onClose();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -82,6 +104,9 @@ export function useAnchoredPopover({
         onClose();
         requestAnimationFrame(() => triggerRef.current?.focus());
       } else if (closeOnTab && event.key === "Tab") {
+        // Move to the trigger before the browser performs its normal Tab step,
+        // rather than leaving focus in a portal that is about to disappear.
+        if (popoverRef.current?.contains(document.activeElement)) triggerRef.current?.focus();
         onClose();
       }
     };
@@ -95,7 +120,7 @@ export function useAnchoredPopover({
       window.removeEventListener("resize", reposition);
       window.removeEventListener("scroll", reposition, true);
     };
-  }, [closeOnTab, onClose, open, popoverRef, reposition, triggerRef]);
+  }, [closeOnTab, onClose, open, pointX, popoverRef, reposition, triggerRef]);
 
   return style;
 }

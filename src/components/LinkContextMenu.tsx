@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
+import { Menu, MenuItem, useAnchoredPopover } from "./ui";
 import { ExternalLink, FolderOpen, Globe } from "lucide-react";
 
 // Right-click chooser for a link. Web links choose between the internal and OS
@@ -29,48 +30,49 @@ export default function LinkContextMenu({
 }: LinkContextMenuProps) {
   const ref = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!ref.current?.contains(event.target as Node)) {
-        onClose();
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    };
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [onClose]);
+  const triggerRef = useRef<HTMLElement | null>(
+    typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null,
+  );
+  const position = useAnchoredPopover({
+    open: true,
+    onClose,
+    triggerRef,
+    popoverRef: ref,
+    anchorPoint: { x, y },
+    preferredWidth: 230,
+    gap: 0,
+  });
+  const choose = (action: () => void) => {
+    triggerRef.current?.focus();
+    onClose();
+    action();
+  };
 
   return (
-    <div
+    <Menu
       ref={ref}
-      className="popover-surface popover-surface--context link-context-menu"
-      style={{ left: x, top: y }}
+      className="link-context-menu"
+      style={position ?? { left: x, top: y }}
       role="menu"
     >
       {canOpenInternal ? (
-        <button
+        <MenuItem
           type="button"
           role="menuitem"
-          className="menu-item link-context-menu-item"
-          onClick={onOpenInternal}
+          className="link-context-menu-item"
+          onClick={() => choose(onOpenInternal)}
         >
           <Globe size={14} aria-hidden="true" />
           <span>Open</span>
-        </button>
+        </MenuItem>
       ) : null}
-      <button
+      <MenuItem
         type="button"
         role="menuitem"
-        className="menu-item link-context-menu-item"
-        onClick={onOpenExternal}
+        className="link-context-menu-item"
+        onClick={() => choose(onOpenExternal)}
       >
         {externalKind === "reveal" ? (
           <FolderOpen size={14} aria-hidden="true" />
@@ -78,18 +80,18 @@ export default function LinkContextMenu({
           <ExternalLink size={14} aria-hidden="true" />
         )}
         <span>{externalLabel}</span>
-      </button>
+      </MenuItem>
       {onOpenWithDefaultApp ? (
-        <button
+        <MenuItem
           type="button"
           role="menuitem"
-          className="menu-item link-context-menu-item"
-          onClick={onOpenWithDefaultApp}
+          className="link-context-menu-item"
+          onClick={() => choose(onOpenWithDefaultApp)}
         >
           <ExternalLink size={14} aria-hidden="true" />
           <span>Open with default app</span>
-        </button>
+        </MenuItem>
       ) : null}
-    </div>
+    </Menu>
   );
 }

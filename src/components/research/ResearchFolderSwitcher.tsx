@@ -9,6 +9,7 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react";
+import { Button, Menu, MenuItem, PopoverPortal, useAnchoredPopover } from "../ui";
 import type { GroupInfo } from "../../types";
 import type { ResearchFolderScope } from "../../lib/researchScope";
 import { listenToResearchFolderMenuToggle } from "../../lib/researchShortcuts";
@@ -43,172 +44,173 @@ export default function ResearchFolderSwitcher({
   onRemoveFolder,
 }: ResearchFolderSwitcherProps) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const close = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+  const position = useAnchoredPopover({
+    open,
+    onClose: () => setOpen(false),
+    triggerRef,
+    popoverRef: menuRef,
+    preferredWidth: "trigger",
+  });
 
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    function onPointerDown(event: PointerEvent) {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setOpen(false);
-      }
-    }
-    window.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
-
-  // ⌘O routed from the app-level shortcut dispatcher; toggling (rather than
-  // only opening) lets the same chord dismiss the menu it summoned.
+  // The app dispatcher receives Cmd-O even while Ghostty owns native focus.
   useEffect(
-    () => listenToResearchFolderMenuToggle(() => setOpen((current) => !current)),
-    [],
+    () =>
+      listenToResearchFolderMenuToggle(() => {
+        if (open) close();
+        else setOpen(true);
+      }),
+    [open],
   );
 
   const scopedFolder = folders.find((folder) => folder.id === scope);
   const folderName = (folder: GroupInfo) => folder.nameOverride || folder.name;
 
   function select(next: ResearchFolderScope) {
-    setOpen(false);
+    close();
     onSelectScope(next);
   }
 
   return (
-    <div className="research-folder-switcher" ref={rootRef}>
-      <button
-        type="button"
-        className="control-button research-folder-trigger"
+    <div className="research-folder-switcher">
+      <Button
+        ref={triggerRef}
+        className="research-folder-trigger"
         aria-haspopup="menu"
         aria-expanded={open}
         title={scopedFolder?.dir ?? "No research folder selected"}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => (open ? close() : setOpen(true))}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
       >
         <Folder size={13} aria-hidden="true" />
         <span className="research-folder-trigger-copy">
           <span className="research-folder-trigger-name">
             {scopedFolder ? folderName(scopedFolder) : "Research folders"}
           </span>
-          {scopedFolder ? (
-            <span className="research-folder-path">{scopedFolder.dir}</span>
-          ) : null}
+          {scopedFolder ? <span className="research-folder-path">{scopedFolder.dir}</span> : null}
         </span>
         <ChevronDown size={13} aria-hidden="true" className={open ? "is-open" : undefined} />
-      </button>
+      </Button>
       {shortcutHintsShown ? (
-        <span
-          className="pane-tab-shortcut-hint research-folder-shortcut-hint"
-          aria-hidden="true"
-        >
+        <span className="pane-tab-shortcut-hint research-folder-shortcut-hint" aria-hidden="true">
           ⌘O
         </span>
       ) : null}
       {open ? (
-        <div className="research-folder-menu" role="menu" aria-label="Research folders">
-          {folders.length > 0 ? (
-            folders.map((folder) => (
-                <button
-                  key={folder.id}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={scope === folder.id}
-                  className={`control-button research-folder-item${scope === folder.id ? " is-selected" : ""}`}
-                  title={folder.dir}
-                  onClick={() => select(folder.id)}
-                >
-                  <Folder size={13} aria-hidden="true" />
-                  <span className="research-folder-item-copy">
-                    <span className="research-folder-item-name">{folderName(folder)}</span>
-                    <span className="research-folder-path">{folder.dir}</span>
-                  </span>
-                  {scope === folder.id ? <Check size={13} aria-hidden="true" /> : null}
-                  <span className="research-folder-count">{treeCounts.get(folder.id) ?? 0}</span>
-                </button>
-              ))
-          ) : null}
-          <div className="research-folder-menu-separator" role="separator" />
-          <button
-            type="button"
-            role="menuitem"
-            className="control-button research-folder-item"
-            disabled={folderPickerBusy}
-            onClick={() => {
-              setOpen(false);
-              void onNewFolder().then((workspace) => {
-                if (workspace) {
-                  onSelectScope(workspace.id);
-                }
-              });
-            }}
+        <PopoverPortal>
+          <Menu
+            ref={menuRef}
+            className="research-folder-menu"
+            aria-label="Research folders"
+            style={position ?? { left: -9999, top: -9999 }}
           >
-            <FolderPlus size={13} aria-hidden="true" />
-            <span className="research-folder-item-name">Open new folder…</span>
-          </button>
-          {scopedFolder ? (
-            <>
-              <div className="research-folder-menu-separator" role="separator" />
-              <button
-                type="button"
-                role="menuitem"
-                className="control-button research-folder-item"
-                onClick={() => {
-                  setOpen(false);
-                  void onOpenFolder(scopedFolder);
-                }}
-              >
-                <FolderOpen size={13} aria-hidden="true" />
-                <span className="research-folder-item-name">Open selected folder</span>
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="control-button research-folder-item"
-                onClick={() => {
-                  setOpen(false);
-                  onRenameFolder(scopedFolder);
-                }}
-              >
-                <Pencil size={13} aria-hidden="true" />
-                <span className="research-folder-item-name">
-                  Rename “{folderName(scopedFolder)}”
-                </span>
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="control-button research-folder-item"
-                disabled={folderPickerBusy}
-                onClick={() => {
-                  setOpen(false);
-                  void onMoveFolder(scopedFolder);
-                }}
-              >
-                <FolderInput size={13} aria-hidden="true" />
-                <span className="research-folder-item-name">Move selected folder…</span>
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="control-button research-folder-item is-remove"
-                onClick={() => {
-                  setOpen(false);
-                  onRemoveFolder(scopedFolder);
-                }}
-              >
-                <Trash2 size={13} aria-hidden="true" />
-                <span className="research-folder-item-name">Remove selected folder</span>
-              </button>
-            </>
-          ) : null}
-        </div>
+            {folders.length > 0
+              ? folders.map((folder) => (
+                  <MenuItem
+                    key={folder.id}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={scope === folder.id}
+                    className={`research-folder-item${scope === folder.id ? " is-selected" : ""}`}
+                    title={folder.dir}
+                    onClick={() => select(folder.id)}
+                  >
+                    <Folder size={13} aria-hidden="true" />
+                    <span className="research-folder-item-copy">
+                      <span className="research-folder-item-name">{folderName(folder)}</span>
+                      <span className="research-folder-path">{folder.dir}</span>
+                    </span>
+                    {scope === folder.id ? <Check size={13} aria-hidden="true" /> : null}
+                    <span className="research-folder-count">{treeCounts.get(folder.id) ?? 0}</span>
+                  </MenuItem>
+                ))
+              : null}
+            <div className="research-folder-menu-separator" role="separator" />
+            <MenuItem
+              type="button"
+              role="menuitem"
+              className="research-folder-item"
+              disabled={folderPickerBusy}
+              onClick={() => {
+                close();
+                void onNewFolder().then((workspace) => {
+                  if (workspace) {
+                    onSelectScope(workspace.id);
+                  }
+                });
+              }}
+            >
+              <FolderPlus size={13} aria-hidden="true" />
+              <span className="research-folder-item-name">Open new folder…</span>
+            </MenuItem>
+            {scopedFolder ? (
+              <>
+                <div className="research-folder-menu-separator" role="separator" />
+                <MenuItem
+                  type="button"
+                  role="menuitem"
+                  className="research-folder-item"
+                  onClick={() => {
+                    close();
+                    void onOpenFolder(scopedFolder);
+                  }}
+                >
+                  <FolderOpen size={13} aria-hidden="true" />
+                  <span className="research-folder-item-name">Open selected folder</span>
+                </MenuItem>
+                <MenuItem
+                  type="button"
+                  role="menuitem"
+                  className="research-folder-item"
+                  onClick={() => {
+                    close();
+                    onRenameFolder(scopedFolder);
+                  }}
+                >
+                  <Pencil size={13} aria-hidden="true" />
+                  <span className="research-folder-item-name">
+                    Rename “{folderName(scopedFolder)}”
+                  </span>
+                </MenuItem>
+                <MenuItem
+                  type="button"
+                  role="menuitem"
+                  className="research-folder-item"
+                  disabled={folderPickerBusy}
+                  onClick={() => {
+                    close();
+                    void onMoveFolder(scopedFolder);
+                  }}
+                >
+                  <FolderInput size={13} aria-hidden="true" />
+                  <span className="research-folder-item-name">Move selected folder…</span>
+                </MenuItem>
+                <MenuItem
+                  type="button"
+                  role="menuitem"
+                  className="research-folder-item is-remove"
+                  onClick={() => {
+                    close();
+                    onRemoveFolder(scopedFolder);
+                  }}
+                >
+                  <Trash2 size={13} aria-hidden="true" />
+                  <span className="research-folder-item-name">Remove selected folder</span>
+                </MenuItem>
+              </>
+            ) : null}
+          </Menu>
+        </PopoverPortal>
       ) : null}
     </div>
   );

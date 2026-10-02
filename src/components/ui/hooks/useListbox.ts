@@ -31,11 +31,7 @@ export function nextEnabledIndex(
   return -1;
 }
 
-export function nextTypeaheadQuery(
-  previousQuery: string,
-  key: string,
-  elapsedMs: number,
-): string {
+export function nextTypeaheadQuery(previousQuery: string, key: string, elapsedMs: number): string {
   if (elapsedMs > 500 || !previousQuery) return key;
   const normalizedKey = key.toLocaleLowerCase();
   const repeatsKey = Array.from(previousQuery).every(
@@ -60,6 +56,8 @@ export function typeaheadIndex(
 }
 
 interface UseListboxOptions<Option extends ListboxOption> {
+  disabled?: boolean;
+  allowReselect?: boolean;
   options: Option[];
   value: string;
   open: boolean;
@@ -68,6 +66,8 @@ interface UseListboxOptions<Option extends ListboxOption> {
 }
 
 export function useListbox<Option extends ListboxOption>({
+  disabled = false,
+  allowReselect = false,
   options,
   value,
   open,
@@ -103,7 +103,7 @@ export function useListbox<Option extends ListboxOption>({
   }, [initialIndex, open, optionSignature, options, value]);
 
   const openListbox = () => {
-    if (firstEnabledIndex(options) < 0) return;
+    if (disabled || firstEnabledIndex(options) < 0) return;
     setActiveIndex(initialIndex);
     onOpenChange(true);
   };
@@ -112,12 +112,13 @@ export function useListbox<Option extends ListboxOption>({
 
   const chooseIndex = (index: number) => {
     const option = options[index];
-    if (!option || option.disabled) return;
+    if (disabled || !option || option.disabled) return;
     closeListbox();
-    if (option.value !== value) onChange(option.value);
+    if (allowReselect || option.value !== value) onChange(option.value);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (disabled) return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       if (!open) {
@@ -151,12 +152,7 @@ export function useListbox<Option extends ListboxOption>({
       closeListbox();
       return;
     }
-    if (
-      event.key.length === 1 &&
-      !event.altKey &&
-      !event.ctrlKey &&
-      !event.metaKey
-    ) {
+    if (event.key.length === 1 && !event.altKey && !event.ctrlKey && !event.metaKey) {
       const now = Date.now();
       const previous = typeaheadRef.current;
       const query = nextTypeaheadQuery(previous.query, event.key, now - previous.updatedAt);

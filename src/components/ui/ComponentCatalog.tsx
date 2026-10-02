@@ -26,6 +26,7 @@ const sectionStyle = {
 export default function ComponentCatalog() {
   const [selectValue, setSelectValue] = useState("current");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [mediaOpen, setMediaOpen] = useState(false);
   const [segment, setSegment] = useState<"ssh" | "sftp" | "rsync">("ssh");
   return (
     <main
@@ -52,7 +53,9 @@ export default function ComponentCatalog() {
             <Button tone="danger" disabled>
               Danger disabled
             </Button>
-            <Button variant="icon" aria-label="Icon button">•••</Button>
+            <Button variant="icon" aria-label="Icon button">
+              •••
+            </Button>
             <Button variant="link">Link button</Button>
           </div>
         </section>
@@ -76,7 +79,14 @@ export default function ComponentCatalog() {
               { value: "loading", label: "Loading branches…", disabled: true },
             ]}
           />
-          <Select ariaLabel="Disabled select" value="" options={[]} onChange={() => undefined} />
+          <Select ariaLabel="Empty select" value="" options={[]} onChange={() => undefined} />
+          <Select
+            ariaLabel="Disabled select"
+            disabled
+            value="one"
+            options={[{ value: "one", label: "Unavailable" }]}
+            onChange={() => undefined}
+          />
         </section>
         <section style={sectionStyle}>
           <h2 style={{ margin: 0 }}>Segmented control</h2>
@@ -115,8 +125,23 @@ export default function ComponentCatalog() {
         <section style={sectionStyle}>
           <h2 style={{ margin: 0 }}>Dialog</h2>
           <Button onClick={() => setDialogOpen(true)}>Open dialog</Button>
+          <Button onClick={() => setMediaOpen(true)}>Open media dialog</Button>
         </section>
       </div>
+      <DialogRoot open={mediaOpen} onDismiss={() => setMediaOpen(false)}>
+        <Dialog variant="media" aria-label="Media preview">
+          <Button onClick={() => setMediaOpen(false)}>Close media preview</Button>
+          <svg
+            viewBox="0 0 100 100"
+            width="240"
+            height="240"
+            aria-label="Example artwork"
+            role="img"
+          >
+            <circle cx="50" cy="50" r="40" fill="currentColor" />
+          </svg>
+        </Dialog>
+      </DialogRoot>
       <DialogRoot open={dialogOpen} onDismiss={() => setDialogOpen(false)}>
         <Dialog aria-labelledby="catalog-dialog-title">
           <DialogTitle id="catalog-dialog-title">Example dialog</DialogTitle>

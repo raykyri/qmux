@@ -1,11 +1,4 @@
-import {
-  createContext,
-  forwardRef,
-  useContext,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-} from "react";
+import { createContext, forwardRef, useContext, useEffect, useLayoutEffect, useRef } from "react";
 import type {
   FormHTMLAttributes,
   HTMLAttributes,
@@ -130,14 +123,7 @@ export interface DialogBackdropProps extends HTMLAttributes<HTMLDivElement> {
 
 export const DialogBackdrop = forwardRef<HTMLDivElement, DialogBackdropProps>(
   function DialogBackdrop(
-    {
-      onDismiss,
-      dismissDisabled = false,
-      inertAppRoot = false,
-      className,
-      onMouseDown,
-      ...props
-    },
+    { onDismiss, dismissDisabled = false, inertAppRoot = false, className, onMouseDown, ...props },
     forwardedRef,
   ) {
     const backdropRef = useRef<HTMLDivElement | null>(null);
@@ -208,10 +194,20 @@ function handleDialogKeyDown<ElementType extends HTMLElement>(
   }
 }
 
-export interface DialogProps extends HTMLAttributes<HTMLDivElement>, SharedDialogProps {}
+export interface DialogProps extends HTMLAttributes<HTMLDivElement>, SharedDialogProps {
+  variant?: "default" | "media";
+}
 
 export const Dialog = forwardRef<HTMLDivElement, DialogProps>(function Dialog(
-  { onDismiss, dismissDisabled, className, onKeyDown, role = "dialog", ...props },
+  {
+    onDismiss,
+    dismissDisabled,
+    className,
+    onKeyDown,
+    role = "dialog",
+    variant = "default",
+    ...props
+  },
   ref,
 ) {
   const context = useContext(DialogContext);
@@ -223,15 +219,17 @@ export const Dialog = forwardRef<HTMLDivElement, DialogProps>(function Dialog(
       ref={ref}
       role={role}
       aria-modal="true"
-      className={classNames("confirm-dialog", className)}
+      className={classNames(
+        "confirm-dialog",
+        variant === "media" && "confirm-dialog--media",
+        className,
+      )}
       onKeyDown={(event) => handleDialogKeyDown(event, onKeyDown, dismiss, blocked)}
     />
   );
 });
 
-export interface DialogFormProps
-  extends FormHTMLAttributes<HTMLFormElement>,
-    SharedDialogProps {}
+export interface DialogFormProps extends FormHTMLAttributes<HTMLFormElement>, SharedDialogProps {}
 
 export const DialogForm = forwardRef<HTMLFormElement, DialogFormProps>(function DialogForm(
   { onDismiss, dismissDisabled, className, onKeyDown, role = "dialog", ...props },

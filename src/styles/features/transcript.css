@@ -2049,3 +2049,13 @@ html.wrap-code-blocks .turn-markdown-code-block pre code {
   padding: 2px 7px;
   font-size: var(--fs-sm);
 }
+
+.turn-empty-picker-popover .session-menu-item.is-highlighted {
+  background: var(--surface-fill-hover);
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+
+.diagram-lightbox .confirm-dialog--media {
+  align-items: stretch;
+}

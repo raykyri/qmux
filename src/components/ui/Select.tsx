@@ -34,10 +34,22 @@ export default function Select({
   const generatedId = useId();
   const triggerId = id ?? `select-${generatedId}`;
   const listboxId = `${triggerId}-options`;
-  const [open, setOpen] = useState(false);
+  const [requestedOpen, setOpen] = useState(false);
+  const unavailable = disabled || options.every((option) => option.disabled);
+  const open = requestedOpen && !unavailable;
+  useLayoutEffect(() => {
+    if (unavailable) setOpen(false);
+  }, [unavailable]);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
-  const listbox = useListbox({ options, value, open, onOpenChange: setOpen, onChange });
+  const listbox = useListbox({
+    options,
+    value,
+    open,
+    disabled: unavailable,
+    onOpenChange: setOpen,
+    onChange,
+  });
   const popoverStyle = useAnchoredPopover({
     open,
     onClose: listbox.closeListbox,
@@ -64,7 +76,6 @@ export default function Select({
     }
     return result;
   }, []);
-  const unavailable = disabled || listbox.empty;
 
   return (
     <div className={classNames("custom-select", className)}>
@@ -88,10 +99,7 @@ export default function Select({
         onKeyDown={listbox.handleKeyDown}
       >
         <span
-          className={classNames(
-            "custom-select-value",
-            !listbox.selectedOption && "is-placeholder",
-          )}
+          className={classNames("custom-select-value", !listbox.selectedOption && "is-placeholder")}
         >
           {listbox.selectedOption?.label ?? placeholder}
         </span>
@@ -137,7 +145,11 @@ export default function Select({
                 );
               });
               return group.label ? (
-                <div key={`${group.label}-${groupIndex}`} role="group" aria-labelledby={groupLabelId}>
+                <div
+                  key={`${group.label}-${groupIndex}`}
+                  role="group"
+                  aria-labelledby={groupLabelId}
+                >
                   <div id={groupLabelId} className="custom-select-group-label">
                     {group.label}
                   </div>
