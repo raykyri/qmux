@@ -1,3 +1,4 @@
+import { readBoundedResponseText } from "./responseText";
 import {
   createCipheriv,
   createDecipheriv,
@@ -438,37 +439,10 @@ function parseJson<T>(raw: string, label: string) {
   }
 }
 
-async function responseTextLimited(
-  response: Response,
-  maxBytes: number,
-  label: string,
-) {
-  const declaredLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    await response.body?.cancel();
-    throw new Error(`${label} was too large.`);
-  }
-  if (!response.body) {
-    return "";
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      totalBytes += value.byteLength;
-      if (totalBytes > maxBytes) {
-        await reader.cancel();
-        throw new Error(`${label} was too large.`);
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), totalBytes).toString("utf8");
+function responseTextLimited(response: Response, maxBytes: number, label: string) {
+  return readBoundedResponseText(
+    response,
+    maxBytes,
+    () => new Error(`${label} was too large.`),
+  );
 }

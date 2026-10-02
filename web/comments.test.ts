@@ -20,7 +20,7 @@ import type {
   ResearchTreeDetail,
   Turn,
 } from "../src/types";
-import { safeReturnTo } from "./githubAuth";
+import { completeGitHubAuthorization, safeReturnTo } from "./githubAuth";
 import { createQmuxRequestHandler } from "./server";
 
 const pane: PaneInfo = {
@@ -557,6 +557,55 @@ test("OAuth return paths reject response-header control characters", () => {
   assert.equal(safeReturnTo("/p/comment12345#comments"), "/p/comment12345#comments");
   assert.equal(safeReturnTo("/p/comment12345\r\nX-Test: injected"), "/");
   assert.equal(safeReturnTo("//example.com"), "/");
+});
+
+test("OAuth keeps its caller-specific error when a response exceeds the byte limit", async () => {
+  let fetches = 0;
+  const fetchImpl: typeof fetch = async () => {
+    fetches += 1;
+    return new Response("{}", {
+      headers: { "Content-Length": String(128 * 1024 + 1) },
+    });
+  };
+  const config = {
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    sessionSecret: "c".repeat(32),
+    publicOrigin: "https://qmux.app",
+    secureCookies: false,
+  };
+  const handler = createQmuxRequestHandler({
+    ...config,
+    oauthClientId: config.clientId,
+    oauthClientSecret: config.clientSecret,
+    fetchImpl,
+  });
+  const begin = await dispatch(handler, request("GET", "/auth/github"));
+  const state = new URL(begin.header("location")).searchParams.get("state");
+  assert.ok(state);
+  const url = new URL(
+    `/auth/github/callback?code=oauth-code&state=${encodeURIComponent(state)}`,
+    config.publicOrigin,
+  );
+  const incoming = request("GET", url.pathname + url.search, "", {
+    cookie: cookiePair(begin.setCookies(), "qmux_oauth_state"),
+  });
+  const response = new MemoryResponse();
+  await assert.rejects(
+    completeGitHubAuthorization(
+      incoming,
+      response as unknown as ServerResponse,
+      url,
+      config,
+      fetchImpl,
+    ),
+    { message: "GitHub OAuth response was too large." },
+  );
+  assert.equal(fetches, 1);
+  assert.equal(
+    response.setCookies().some((cookie) => cookie.startsWith("qmux_session=")),
+    false,
+  );
 });
 
 type RequestHandler = ReturnType<typeof createQmuxRequestHandler>;

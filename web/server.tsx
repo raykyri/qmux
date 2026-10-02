@@ -1,3 +1,4 @@
+import { readBoundedResponseText } from "./responseText";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -1124,39 +1125,12 @@ function validatedGitHubRawUrl(value: string | undefined, label: string) {
   return url.toString();
 }
 
-async function readResponseTextLimited(
-  response: Response,
-  maxBytes: number,
-  label: string,
-) {
-  const declaredLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    await response.body?.cancel();
-    throw new PublicationHttpError(413, `${label} is too large to render.`);
-  }
-  if (!response.body) {
-    return "";
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      totalBytes += value.byteLength;
-      if (totalBytes > maxBytes) {
-        await reader.cancel();
-        throw new PublicationHttpError(413, `${label} is too large to render.`);
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), totalBytes).toString("utf8");
+function readResponseTextLimited(response: Response, maxBytes: number, label: string) {
+  return readBoundedResponseText(
+    response,
+    maxBytes,
+    () => new PublicationHttpError(413, `${label} is too large to render.`),
+  );
 }
 
 function retainPublicationFiles(gist: GitHubGist, publication: Publication) {
