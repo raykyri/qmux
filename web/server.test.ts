@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import test from "node:test";
@@ -97,6 +99,11 @@ test("the public server renders a valid transcript without executing raw HTML", 
   assert.match(body, /Server render/);
   assert.match(body, /octocat/);
   assert.equal(body.includes("<script>alert"), false);
+  const client = readFileSync(new URL("./client/publication.js", import.meta.url), "utf8");
+  assert.ok(body.includes(`<script>${client}</script>`));
+  const clientHash = createHash("sha256").update(client).digest("base64");
+  assert.ok(response.headers.get("content-security-policy")?.includes(`'sha256-${clientHash}'`));
+
   assert.equal(body.includes("Answer"), true);
   assert.match(response.headers.get("content-security-policy") ?? "", /default-src 'none'/);
 });
