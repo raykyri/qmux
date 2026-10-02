@@ -3119,11 +3119,11 @@ fn mark_events_listener_ready() {
     native_terminal::set_events_listener_ready(true);
 }
 
-/// User-invoked escape hatch (pane context menu) for a terminal a crashed or
-/// killed TUI left in a broken state: clears latched modes — kitty keyboard
-/// flags, mouse/focus reporting, the alternate screen — without touching the
-/// running process or the visible content. Async like the other pane commands
-/// that take the scrollback I/O lock.
+/// Internal recovery escape hatch, intentionally kept out of the UI. Retain
+/// the IPC command for explicit diagnostic use; automatic recovery also uses
+/// the underlying reset helper. Clears latched input/reporting modes without
+/// interrupting the running process or changing visible content. Async like
+/// the other pane commands that take the scrollback I/O lock.
 #[tauri::command(async)]
 fn pane_reset_terminal_modes(
     state: tauri::State<'_, AppState>,
