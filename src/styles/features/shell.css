@@ -514,6 +514,16 @@
   user-select: none;
 }
 
+.pane-group.is-pending .pane-group-header {
+  cursor: default;
+}
+
+.pane-group-pending-message {
+  padding: 4px 5px;
+  color: var(--text-subtle);
+  font-size: var(--fs-sm);
+}
+
 .pane-group.has-panes .pane-group-header {
   margin-bottom: 2px;
 }

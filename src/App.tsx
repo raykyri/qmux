@@ -5,6 +5,9 @@ import type {
 } from "./components/repositoryDialogs.types";
 import WorktreeCreateDialog from "./components/WorktreeCreateDialog";
 import RepositoryBrowserDialog from "./components/RepositoryBrowserDialog";
+import PendingRemoteGroup from "./components/PendingRemoteGroup";
+import { useRemoteGroupCreation } from "./hooks/useRemoteGroupCreation";
+import { waitForPaintedFrame } from "./lib/paint";
 import { useRemoteSettings } from "./hooks/useRemoteSettings";
 import RemoteSettingsForm, { RemoteProbeStatus } from "./components/RemoteSettingsForm";
 import { unknownErrorMessage } from "./lib/errors";
@@ -20,6 +23,7 @@ import {
 } from "./lib/remoteConnection";
 import { reconnectPane } from "./lib/api";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -1090,12 +1094,6 @@ const DRAFT_FLUSH_DEBOUNCE_MS = 1000;
 // session.
 const MAX_HOOK_EVENTS_PER_AGENT = 2000;
 
-function waitForPaintedFrame(): Promise<void> {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-  });
-}
-
 interface PendingFirstMessageTitle {
   paneId: string;
   checkedMessages: number;
@@ -1937,6 +1935,7 @@ function MainApp() {
   );
   const [settingsMenu, setSettingsMenu] = useState<{ x: number; y: number } | null>(null);
   const [newRemoteGroupDialogOpen, setNewRemoteGroupDialogOpen] = useState(false);
+  const { pendingRemoteGroups, createPendingRemoteGroup } = useRemoteGroupCreation();
   const paneContextMenuRef = useRef<HTMLDivElement | null>(null);
   const groupMenuRef = useRef<HTMLDivElement | null>(null);
   const settingsMenuRef = useRef<HTMLDivElement | null>(null);
@@ -6448,29 +6447,36 @@ function MainApp() {
     setNewRemoteGroupDialogOpen(true);
   }
 
-  /** Creates a remote workspace and its first tab atomically, opening in the
-   * remote account's home directory: the remote's durable tmux shell for ssh,
-   * or a direct sftp client. A failed launch rolls the group back just like
-   * local creation; errors are thrown so the dialog can show them. */
+  /** Show a placeholder before remote setup; the backend still owns atomic
+   * group/first-pane creation and rollback. Failures surface outside the closed
+   * dialog, and temporary groups never enter the persisted group list. */
   async function createRemoteGroup(remoteId: string, protocol: RemoteGroupProtocol) {
     setError(null);
-    const created = await createGroupWithShell(
-      "~",
-      launchGroupId() ?? null,
-      estimateInitialPaneSize(false),
-      remoteId,
-      protocol,
-    );
     setNewRemoteGroupDialogOpen(false);
-    const orderedPanes = panesWithNewTabInLaunchPosition(created.pane, created.group.id);
-    setPanesPreservingRecoveredDismissals(orderedPanes);
-    setActivePaneId(created.pane.id);
-    setLastActiveGroupId(created.group.id);
+    const afterGroupId = launchGroupId() ?? null;
+    const label = config?.remotes.find((remote) => remote.id === remoteId)?.label ?? remoteId;
     try {
-      await refreshGroups();
+      const created = await createPendingRemoteGroup(
+        remoteId,
+        label,
+        protocol,
+        afterGroupId,
+        estimateInitialPaneSize(false),
+      );
+      // Install the returned group with its pane, without another round trip
+      // between removing the placeholder and displaying the real tab.
+      setGroups((current) => {
+        if (current.some((group) => group.id === created.group.id)) return current;
+        const anchor = current.findIndex((group) => group.id === afterGroupId);
+        const index = anchor < 0 ? current.length : anchor + 1;
+        return [...current.slice(0, index), created.group, ...current.slice(index)];
+      });
+      const orderedPanes = panesWithNewTabInLaunchPosition(created.pane, created.group.id);
+      setPanesPreservingRecoveredDismissals(orderedPanes);
+      setActivePaneId(created.pane.id);
+      setLastActiveGroupId(created.group.id);
     } catch (err) {
-      // The group exists and the dialog is gone, so report it app-wide.
-      setError(err instanceof Error ? err.message : String(err));
+      setError(unknownErrorMessage(err));
     }
   }
 
@@ -7972,6 +7978,21 @@ function MainApp() {
     sidebarMode,
     sidebarScrollElement,
   ]);
+
+  // A new group can be below the viewport even when its anchor is visible.
+  // Reveal each placeholder once, without pulling the user back on completion
+  // or when another pending request fails.
+  const revealedPendingRemoteGroupRef = useRef(0);
+  useLayoutEffect(() => {
+    const pending = pendingRemoteGroups[pendingRemoteGroups.length - 1];
+    const list = paneListRef.current;
+    if (!pending || !list || pending.id <= revealedPendingRemoteGroupRef.current) return;
+    const row = list.querySelector<HTMLElement>(`[data-pending-remote-group-id="${pending.id}"]`);
+    if (row) {
+      scrollChildIntoViewVertically(list, row);
+      revealedPendingRemoteGroupRef.current = pending.id;
+    }
+  }, [pendingRemoteGroups, sidebarMode, leftSidebarCollapsed]);
 
   // Report the focused pane to the backend so it can stamp `last_active_at`, which
   // feeds the group's spawn-cwd heuristic (most-recently-active shell pane). One
@@ -11460,7 +11481,7 @@ function MainApp() {
       return null;
     }
 
-    const rows = Array.from(list.querySelectorAll(".pane-group")).filter(
+    const rows = Array.from(list.querySelectorAll(".pane-group[data-group-id]")).filter(
       (child): child is HTMLElement =>
         child instanceof HTMLElement && child.classList.contains("pane-group"),
     );
@@ -15819,8 +15840,8 @@ function MainApp() {
               ? collapsedGroupStatusAgents(groupPanes)
               : [];
             return (
+              <Fragment key={group.id}>
               <section
-                key={group.id}
                 className={`pane-group${hasGroupPanes ? " has-panes" : ""}${
                   isActiveGroup ? " is-active-group" : ""
                 }${isCollapsedGroup ? " is-collapsed" : ""}${
@@ -15948,8 +15969,15 @@ function MainApp() {
                   </div>
                 )}
               </section>
+              {pendingRemoteGroups.filter((pending) => pending.afterGroupId === group.id).map((pending) => (
+                <PendingRemoteGroup key={pending.id} group={pending} />
+              ))}
+              </Fragment>
             );
           }) : null}
+          {sidebarMode === "terminal" ? pendingRemoteGroups
+            .filter((pending) => !terminalGroups.some((group) => group.id === pending.afterGroupId))
+            .map((pending) => <PendingRemoteGroup key={pending.id} group={pending} />) : null}
           {sidebarMode === "research" && scopedResearchPanes.length > 0 ? (
             <section className="research-live-terminals" aria-label="Live research terminals">
               <div className="research-sidebar-heading">
