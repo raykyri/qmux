@@ -676,26 +676,7 @@ pub struct PrepareShellAgentLaunchRequest {
     pub prepared_agent_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PreparedShellAgentLaunch {
-    pub binary: String,
-    pub cwd: String,
-    pub args: Vec<String>,
-    pub envs: Vec<LaunchEnv>,
-    /// Whether `qmux agent-exec` should bind and supervise this process as an
-    /// agent. Adapters can return `false` for utility invocations of a shared
-    /// CLI (for example `pi install`) that must pass through the shell wrapper
-    /// without creating an agent.
-    pub supervised: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LaunchEnv {
-    pub key: String,
-    pub value: String,
-}
+pub use qmux_proto::{LaunchEnv, PreparedShellAgentLaunch};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -11,11 +11,11 @@ mod muse;
 mod public_cli;
 pub mod transcript_stream;
 
+use qmux_proto::PreparedShellAgentLaunch as PreparedAgentLaunch;
 use qmux_proto::{
     BrowserOpenFileHeader, ControlRequest, ControlResponse, MAX_REMOTE_OPEN_FILE_BYTES,
     WorkspaceObservation, WorkspaceObservationKind,
 };
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::env;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -42,23 +42,6 @@ pub fn error_report(error: &str) -> (&str, i32) {
     } else {
         (error, 1)
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PreparedAgentLaunch {
-    binary: String,
-    cwd: String,
-    args: Vec<String>,
-    envs: Vec<PreparedLaunchEnv>,
-    supervised: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PreparedLaunchEnv {
-    key: String,
-    value: String,
 }
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -1021,6 +1004,7 @@ fn add_transcript_path(payload: &mut Value, path: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qmux_proto::LaunchEnv as PreparedLaunchEnv;
 
     #[test]
     fn hook_payload_adds_a_bounded_transcript_hint_without_overriding_native_metadata() {

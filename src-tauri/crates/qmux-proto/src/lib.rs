@@ -10,6 +10,29 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Agent launch response shared by the app and shell CLI. Field names and
+/// required fields preserve the existing wire contract.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedShellAgentLaunch {
+    pub binary: String,
+    pub cwd: String,
+    pub args: Vec<String>,
+    pub envs: Vec<LaunchEnv>,
+    /// Whether `qmux agent-exec` should bind and supervise this process as an
+    /// agent. Adapters can return `false` for utility invocations of a shared
+    /// CLI (for example `pi install`) that must pass through the shell wrapper
+    /// without creating an agent.
+    pub supervised: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchEnv {
+    pub key: String,
+    pub value: String,
+}
+
 /// A single control request. `token` normally scopes the request to exactly one
 /// pane: the server resolves the pane from the token and treats any pane id
 /// inside `payload` as advisory only. The notification-only public entry point
@@ -194,5 +217,31 @@ mod tests {
         .unwrap();
         assert_eq!(value["gitRoot"], "/srv/code/project");
         assert_eq!(value["kind"], "linkedWorktree");
+    }
+}
+
+#[cfg(test)]
+mod launch_response_tests {
+    use super::*;
+
+    #[test]
+    fn launch_response_preserves_existing_wire_shape() {
+        let fixture = serde_json::json!({
+            "binary": "claude", "cwd": "/work", "args": ["--resume", "session"],
+            "envs": [{"key": "QMUX_PANE_ID", "value": "pane"}], "supervised": true
+        });
+        let response: PreparedShellAgentLaunch = serde_json::from_value(fixture.clone()).unwrap();
+        assert_eq!(response.envs[0].key, "QMUX_PANE_ID");
+        assert_eq!(serde_json::to_value(response).unwrap(), fixture);
+        let mut passthrough = fixture.clone();
+        passthrough["supervised"] = serde_json::json!(false);
+        assert!(
+            !serde_json::from_value::<PreparedShellAgentLaunch>(passthrough)
+                .unwrap()
+                .supervised
+        );
+        let mut missing = fixture;
+        missing.as_object_mut().unwrap().remove("supervised");
+        assert!(serde_json::from_value::<PreparedShellAgentLaunch>(missing).is_err());
     }
 }
