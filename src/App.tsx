@@ -1,6 +1,15 @@
+import type {
+  WorktreeCreateAction,
+  WorktreeCreateDialogState,
+  RepositoryBrowserState,
+} from "./components/repositoryDialogs.types";
+import WorktreeCreateDialog from "./components/WorktreeCreateDialog";
+import RepositoryBrowserDialog from "./components/RepositoryBrowserDialog";
+import { useRemoteSettings } from "./hooks/useRemoteSettings";
+import RemoteSettingsForm, { RemoteProbeStatus } from "./components/RemoteSettingsForm";
+import { unknownErrorMessage } from "./lib/errors";
 import { recordRemoteStartup, reconcileRemoteReservation } from "./lib/remoteStartup";
 import RemoteConnectionDetailsText from "./components/RemoteConnectionDetailsText";
-import RemoteProbeChecks from "./components/RemoteProbeChecks";
 import NewRemoteGroupDialog, {
   type RemoteGroupProtocol,
 } from "./components/NewRemoteGroupDialog";
@@ -117,7 +126,6 @@ import {
   DialogTitle,
   Input,
   NativeSelect,
-  Select,
   Textarea,
 } from "./components/ui";
 import { queuedTurnDeliveryLabel } from "./components/QueuedTurnCard";
@@ -276,12 +284,8 @@ import {
 } from "./lib/appHelpers";
 import { sanitizeTerminalTitle } from "./lib/terminalTitle";
 import {
-  availableRemoteId,
-  remoteDraftFromSshAlias,
-  remoteIdFromLabel,
-  savedRemoteFromSettingsDraft,
+  remoteSettingsDraft,
   unconfiguredSshAliases,
-  type RemoteSettingsDraft,
 } from "./lib/remoteSettings";
 import {
   agentTabStatusDotClass,
@@ -524,7 +528,6 @@ import {
   closeWorktreePane,
   confirmAppExit,
   createGroupWithShell,
-  deleteRemote,
   pickGroupFolder,
   createResearchWorkspaceWithFolder,
   renameResearchWorkspace,
@@ -562,7 +565,6 @@ import {
   getShowHideShortcut,
   activatePane,
   getRuntimeConfig,
-  probeRemote,
   probeAgentAdapters,
   getUseLoginShell,
   getResearchLaunchInstruction,
@@ -662,7 +664,6 @@ import {
   sendNextQueuedAgentTurn,
   setQueuedTurnPause,
   submitAgentTurn,
-  upsertRemote,
   unpauseAgent,
   updateMenuBar,
   worktreeStatus,
@@ -694,10 +695,7 @@ import type {
   ResearchTreeDetail,
   ResearchTreeSummary,
   RuntimeConfig,
-  RemoteChoice,
-  RemoteProbeResult,
   RepositoryBranch,
-  RepositoryInventory,
   SavedPrompt,
   ShellAgentJobInfo,
   ThreadGraph,
@@ -710,43 +708,6 @@ import type { NativeTerminalTheme, ShowHideShortcutSetting } from "./lib/api";
 import type { MenuBarSnapshot, MenuBarStatusTone } from "./lib/api";
 
 const LEFT_SIDEBAR_DEFAULT_WIDTH = 268;
-
-type WorktreeCreateAction =
-  | { kind: "open" }
-  | { kind: "fork"; prompt?: string; anchor?: MessageAnchor };
-
-type WorktreeCreateDialogState = {
-  pane: PaneInfo;
-  action: WorktreeCreateAction;
-  name: string;
-  suggestedName: string;
-  creating: boolean;
-  error: string | null;
-  inventory: RepositoryInventory | null;
-  inventoryLoading: boolean;
-  inventoryError: string | null;
-  startRef: string | null;
-  requestId: number;
-};
-
-type RepositoryBrowserState = {
-  pane: PaneInfo;
-  inventory: RepositoryInventory | null;
-  error: string | null;
-  opening: string | null;
-  names: Record<string, string>;
-};
-
-function remoteSettingsDraft(remote: RemoteChoice): RemoteSettingsDraft {
-  return {
-    id: remote.id,
-    label: remote.label,
-    host: remote.host,
-    workspaceRoot: remote.workspaceRoot ?? "",
-    qmuxCli: remote.qmuxCli ?? "",
-    multiplexer: remote.multiplexer,
-  };
-}
 
 // How long the artifact tray's undo footer holds the last removal.
 const ARTIFACT_UNDO_MS = 10_000;
@@ -1360,10 +1321,6 @@ function scrollChildIntoViewVertically(container: HTMLElement, child: HTMLElemen
   } else if (childRect.bottom > containerRect.bottom) {
     container.scrollTop += childRect.bottom - containerRect.bottom;
   }
-}
-
-function unknownErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 // Recognizes the errors Apple Foundation Models raise when the on-device model
@@ -2713,27 +2670,34 @@ function MainApp() {
     () => new Set(),
   );
   const settingsAgentExpansionSeededRef = useRef(false);
-  const [expandedSettingsRemoteId, setExpandedSettingsRemoteId] = useState<string | null>(null);
-  const [remoteAddMenuOpen, setRemoteAddMenuOpen] = useState(false);
-  const remoteAddMenuRef = useRef<HTMLDivElement | null>(null);
-  const remoteAddMenuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [remoteSettingsDraftState, setRemoteSettingsDraftState] =
-    useState<RemoteSettingsDraft | null>(null);
-  const [remoteSettingsDraftIsNew, setRemoteSettingsDraftIsNew] = useState(false);
-  const [remoteSettingsIdManuallyEdited, setRemoteSettingsIdManuallyEdited] = useState(false);
-  const [remoteSettingsSaving, setRemoteSettingsSaving] = useState(false);
-  const [remoteSettingsError, setRemoteSettingsError] = useState<string | null>(null);
-  const [remoteDeleteConfirm, setRemoteDeleteConfirm] = useState<{
-    id: string;
-    label: string;
-  } | null>(null);
-  const remoteDeleteConfirmButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [remoteProbeResults, setRemoteProbeResults] = useState<
-    Record<string, RemoteProbeResult>
-  >({});
-  const [remoteProbeLoadingId, setRemoteProbeLoadingId] = useState<string | null>(null);
-  const remoteProbeRequestRef = useRef(0);
-  const remoteProbeGenerationByKeyRef = useRef<Record<string, number>>({});
+  const remoteSettings = useRemoteSettings({
+    config,
+    setConfig,
+    settingsOpen,
+    settingsTab,
+    showAppToast,
+  });
+  const {
+    expandedSettingsRemoteId,
+    remoteAddMenuOpen,
+    setRemoteAddMenuOpen,
+    remoteAddMenuRef,
+    remoteAddMenuButtonRef,
+    remoteSettingsDraftState,
+    remoteSettingsDraftIsNew,
+    remoteSettingsSaving,
+    remoteSettingsError,
+    remoteDeleteConfirm,
+    setRemoteDeleteConfirm,
+    remoteDeleteConfirmButtonRef,
+    remoteProbeLoadingId,
+    beginAddingRemote,
+    beginAddingRemoteFromSshAlias,
+    beginCopyingRemote,
+    toggleRemoteSettings,
+    testRemoteSettings,
+    removeRemoteSettings,
+  } = remoteSettings;
   const [sshConfigAliases, setSshConfigAliases] = useState<string[]>([]);
   const [sshConfigAliasesLoading, setSshConfigAliasesLoading] = useState(false);
   const [sshConfigAliasesError, setSshConfigAliasesError] = useState<string | null>(null);
@@ -4382,378 +4346,6 @@ function MainApp() {
     setSettingsMenu(null);
     setSettingsTab("remotes");
     setSettingsOpen(true);
-  }
-
-  function remoteProbeKey(id: string | null | undefined) {
-    const trimmed = id?.trim();
-    return trimmed && trimmed.length > 0 ? trimmed : "__new__";
-  }
-
-  function resetRemoteProbe(id: string) {
-    const key = remoteProbeKey(id);
-    remoteProbeGenerationByKeyRef.current[key] = ++remoteProbeRequestRef.current;
-    setRemoteProbeResults((current) => {
-      if (!(key in current)) {
-        return current;
-      }
-      const next = { ...current };
-      delete next[key];
-      return next;
-    });
-    setRemoteProbeLoadingId((current) => (current === key ? null : current));
-  }
-
-  function changeRemoteSettingsDraft(
-    update: (current: RemoteSettingsDraft) => RemoteSettingsDraft,
-  ) {
-    if (remoteSettingsDraftState) {
-      resetRemoteProbe(remoteSettingsDraftState.id);
-    }
-    setRemoteSettingsError(null);
-    setRemoteSettingsDraftState((current) => (current ? update(current) : current));
-  }
-
-  function beginAddingRemote() {
-    const id = availableRemoteId("remote", config?.remotes ?? []);
-    setExpandedSettingsRemoteId("__new__");
-    setRemoteSettingsDraftState({
-      id,
-      label: "",
-      host: "",
-      workspaceRoot: "",
-      qmuxCli: "",
-      multiplexer: "tmux",
-    });
-    setRemoteSettingsDraftIsNew(true);
-    setRemoteSettingsIdManuallyEdited(false);
-    setRemoteSettingsError(null);
-    setRemoteDeleteConfirm(null);
-  }
-
-  function beginAddingRemoteFromSshAlias(alias: string) {
-    setExpandedSettingsRemoteId("__new__");
-    setRemoteSettingsDraftState(remoteDraftFromSshAlias(alias, config?.remotes ?? []));
-    setRemoteSettingsDraftIsNew(true);
-    setRemoteSettingsIdManuallyEdited(false);
-    setRemoteSettingsError(null);
-    setRemoteDeleteConfirm(null);
-  }
-
-  function beginCopyingRemote(remote: RemoteChoice) {
-    const id = availableRemoteId(`${remote.id}-copy`, config?.remotes ?? []);
-    setExpandedSettingsRemoteId("__new__");
-    setRemoteSettingsDraftState({
-      ...remoteSettingsDraft(remote),
-      id,
-      label: `${remote.label} copy`,
-      // The UI only creates driveable remotes. A config entry may retain the
-      // documented future-facing `herdr` value, but its editable copy should
-      // be immediately usable by qmux.
-      multiplexer: "tmux",
-    });
-    setRemoteSettingsDraftIsNew(true);
-    setRemoteSettingsIdManuallyEdited(false);
-    setRemoteSettingsError(null);
-    setRemoteDeleteConfirm(null);
-  }
-
-  function toggleRemoteSettings(remote: RemoteChoice) {
-    if (expandedSettingsRemoteId === remote.id) {
-      setExpandedSettingsRemoteId(null);
-      setRemoteSettingsDraftState(null);
-      setRemoteSettingsError(null);
-      setRemoteDeleteConfirm(null);
-      return;
-    }
-    setExpandedSettingsRemoteId(remote.id);
-    setRemoteSettingsDraftState(remoteSettingsDraft(remote));
-    setRemoteSettingsDraftIsNew(false);
-    setRemoteSettingsIdManuallyEdited(true);
-    setRemoteSettingsError(null);
-    setRemoteDeleteConfirm(null);
-  }
-
-  async function saveRemoteSettings() {
-    const draft = remoteSettingsDraftState;
-    if (!draft || remoteSettingsSaving) {
-      return;
-    }
-    const id = draft.id.trim();
-    const label = draft.label.trim();
-    const host = draft.host.trim();
-    if (!id || !label || !host) {
-      setRemoteSettingsError("Name, ID, and SSH host are required.");
-      return;
-    }
-    if (remoteSettingsDraftIsNew && (config?.remotes ?? []).some((remote) => remote.id === id)) {
-      setRemoteSettingsError(`A remote with the ID “${id}” already exists.`);
-      return;
-    }
-    const remote = savedRemoteFromSettingsDraft({ ...draft, label, host });
-    setRemoteSettingsSaving(true);
-    setRemoteSettingsError(null);
-    try {
-      const remotes = await upsertRemote(id, remote);
-      setConfig((current) => (current ? { ...current, remotes } : current));
-      setExpandedSettingsRemoteId(id);
-      setRemoteSettingsDraftState({ ...draft, id, label, host });
-      setRemoteSettingsDraftIsNew(false);
-      showAppToast(remoteSettingsDraftIsNew ? "Remote added" : "Remote updated");
-    } catch (err) {
-      setRemoteSettingsError(unknownErrorMessage(err));
-    } finally {
-      setRemoteSettingsSaving(false);
-    }
-  }
-
-  async function testRemoteSettings(draft: RemoteSettingsDraft) {
-    if (!draft.host.trim()) {
-      setRemoteSettingsError("Enter an SSH host before testing.");
-      return;
-    }
-    const key = remoteProbeKey(draft.id);
-    const generation = ++remoteProbeRequestRef.current;
-    remoteProbeGenerationByKeyRef.current[key] = generation;
-    setRemoteProbeLoadingId(key);
-    setRemoteProbeResults((current) => {
-      if (!(key in current)) {
-        return current;
-      }
-      const next = { ...current };
-      delete next[key];
-      return next;
-    });
-    setRemoteSettingsError(null);
-    try {
-      const result = await probeRemote(savedRemoteFromSettingsDraft(draft));
-      if (remoteProbeGenerationByKeyRef.current[key] !== generation) {
-        return;
-      }
-      setRemoteProbeResults((current) => ({ ...current, [key]: result }));
-    } catch (err) {
-      if (remoteProbeGenerationByKeyRef.current[key] !== generation) {
-        return;
-      }
-      setRemoteSettingsError(unknownErrorMessage(err));
-    } finally {
-      if (remoteProbeGenerationByKeyRef.current[key] === generation) {
-        setRemoteProbeLoadingId((current) => (current === key ? null : current));
-      }
-    }
-  }
-
-  async function removeRemoteSettings(id: string) {
-    if (remoteSettingsSaving) {
-      return;
-    }
-    setRemoteSettingsSaving(true);
-    setRemoteSettingsError(null);
-    try {
-      const remotes = await deleteRemote(id);
-      setConfig((current) => (current ? { ...current, remotes } : current));
-      setExpandedSettingsRemoteId(null);
-      setRemoteSettingsDraftState(null);
-      setRemoteDeleteConfirm(null);
-      resetRemoteProbe(id);
-      showAppToast("Remote removed");
-    } catch (err) {
-      setRemoteSettingsError(unknownErrorMessage(err));
-    } finally {
-      setRemoteSettingsSaving(false);
-    }
-  }
-
-  function renderRemoteProbeStatus(probeKey: string) {
-    const probeLoading = remoteProbeLoadingId === probeKey;
-    const probeResult = remoteProbeResults[probeKey];
-    if (probeLoading) {
-      return (
-        <div className="settings-remote-probe-loading" role="status">
-          <LoaderCircle size={14} className="is-spinning" aria-hidden="true" />
-          Checking SSH, tmux, qmux-cli, and agent providers…
-        </div>
-      );
-    }
-    if (!probeResult) {
-      return null;
-    }
-    const remoteAdapters = probeResult.adapters.filter((adapter) => adapter.supportsRemote);
-    return (
-      <div className="settings-remote-probe-result" aria-live="polite">
-        <RemoteProbeChecks checks={probeResult.checks} />
-        {remoteAdapters.length > 0 ? (
-          <div className="settings-remote-provider-results">
-            <span>Remote agent providers</span>
-            {remoteAdapters.map((adapter) => (
-              <div key={adapter.instanceId}>
-                <strong>{adapter.label}</strong>
-                <span className={`settings-agent-status is-${adapter.readiness}`}>
-                  {adapterReadinessLabel(adapter)}
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </div>
-    );
-  }
-
-  function renderRemoteSettingsForm() {
-    const draft = remoteSettingsDraftState;
-    if (!draft) {
-      return null;
-    }
-    const fieldPrefix = `settings-remote-${encodeURIComponent(draft.id || "new")}`;
-    const probeKey = remoteProbeKey(draft.id);
-    const probeLoading = remoteProbeLoadingId === probeKey;
-    return (
-      <div className="settings-remote-detail">
-        <div className="settings-remote-fields settings-remote-fields-id">
-          <label htmlFor={`${fieldPrefix}-id`}>
-            <span>ID</span>
-            <Input
-              id={`${fieldPrefix}-id`}
-              type="text"
-              value={draft.id}
-              disabled={!remoteSettingsDraftIsNew}
-              spellCheck={false}
-              onChange={(event) => {
-                const id = remoteIdFromLabel(event.currentTarget.value);
-                setRemoteSettingsIdManuallyEdited(true);
-                changeRemoteSettingsDraft((current) => ({ ...current, id }));
-              }}
-            />
-          </label>
-        </div>
-        <div className="settings-remote-fields">
-          <label htmlFor={`${fieldPrefix}-label`}>
-            <span>Name</span>
-            <Input
-              id={`${fieldPrefix}-label`}
-              type="text"
-              autoFocus={remoteSettingsDraftIsNew}
-              value={draft.label}
-              placeholder="Build server"
-              onChange={(event) => {
-                const label = event.currentTarget.value;
-                changeRemoteSettingsDraft((current) => {
-                  const nextSlug = remoteIdFromLabel(label);
-                  const id =
-                    remoteSettingsDraftIsNew && !remoteSettingsIdManuallyEdited && nextSlug
-                      ? availableRemoteId(nextSlug, config?.remotes ?? [])
-                      : current.id;
-                  return { ...current, label, id };
-                });
-              }}
-            />
-          </label>
-          <label htmlFor={`${fieldPrefix}-host`}>
-            <span>SSH host</span>
-            <Input
-              id={`${fieldPrefix}-host`}
-              type="text"
-              value={draft.host}
-              placeholder="devbox or user@host"
-              list={sshConfigAliases.length > 0 ? "settings-ssh-host-aliases" : undefined}
-              spellCheck={false}
-              onChange={(event) => {
-                const host = event.currentTarget.value;
-                changeRemoteSettingsDraft((current) => ({ ...current, host }));
-              }}
-            />
-            {sshConfigAliases.length > 0 ? (
-              <small>{sshConfigAliases.length} aliases available from ~/.ssh/config</small>
-            ) : null}
-          </label>
-          <label htmlFor={`${fieldPrefix}-root`}>
-            <span>Workspace root <small>optional</small></span>
-            <Input
-              id={`${fieldPrefix}-root`}
-              type="text"
-              value={draft.workspaceRoot}
-              placeholder="~/.qmux/workspaces"
-              spellCheck={false}
-              onChange={(event) => {
-                const workspaceRoot = event.currentTarget.value;
-                changeRemoteSettingsDraft((current) => ({ ...current, workspaceRoot }));
-              }}
-            />
-          </label>
-          <label htmlFor={`${fieldPrefix}-cli`}>
-            <span>qmux CLI <small>optional</small></span>
-            <Input
-              id={`${fieldPrefix}-cli`}
-              type="text"
-              value={draft.qmuxCli}
-              placeholder="qmux-cli"
-              spellCheck={false}
-              onChange={(event) => {
-                const qmuxCli = event.currentTarget.value;
-                changeRemoteSettingsDraft((current) => ({ ...current, qmuxCli }));
-              }}
-            />
-          </label>
-          <datalist id="settings-ssh-host-aliases">
-            {sshConfigAliases.map((alias) => (
-              <option value={alias} key={alias} />
-            ))}
-          </datalist>
-        </div>
-        {remoteSettingsError ? (
-          <p className="settings-agent-error" role="alert">{remoteSettingsError}</p>
-        ) : null}
-        {renderRemoteProbeStatus(probeKey)}
-        <div className="settings-remote-actions">
-          <button
-            type="button"
-            className="control-button settings-remote-test"
-            disabled={remoteSettingsSaving || probeLoading}
-            onClick={() => void testRemoteSettings(draft)}
-          >
-            {probeLoading ? "Testing…" : "Test connection"}
-          </button>
-          {!remoteSettingsDraftIsNew ? (
-            <button
-              type="button"
-              className="control-button settings-remote-remove"
-              disabled={remoteSettingsSaving}
-              onClick={() => {
-                setRemoteSettingsError(null);
-                setRemoteDeleteConfirm({
-                  id: draft.id,
-                  label: draft.label.trim() || draft.id,
-                });
-              }}
-            >
-              Remove
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="control-button settings-remote-remove"
-              disabled={remoteSettingsSaving}
-              onClick={() => {
-                setExpandedSettingsRemoteId(null);
-                setRemoteSettingsDraftState(null);
-                setRemoteSettingsDraftIsNew(false);
-                setRemoteSettingsError(null);
-                resetRemoteProbe(draft.id);
-              }}
-            >
-              Cancel
-            </button>
-          )}
-          <button
-            type="button"
-            className="control-button settings-remote-save"
-            disabled={remoteSettingsSaving}
-            onClick={() => void saveRemoteSettings()}
-          >
-            {remoteSettingsSaving ? "Saving…" : remoteSettingsDraftIsNew ? "Add remote" : "Save"}
-          </button>
-        </div>
-      </div>
-    );
   }
 
   function setPaneTitleRegenerationBusy(paneId: string, busy: boolean) {
@@ -11268,21 +10860,6 @@ function MainApp() {
   }, [refreshSshConfigAliases, settingsOpen, settingsTab]);
 
   useEffect(() => {
-    if (!settingsOpen || settingsTab !== "remotes") {
-      setRemoteAddMenuOpen(false);
-      setRemoteDeleteConfirm(null);
-      const generation = ++remoteProbeRequestRef.current;
-      for (const key of Object.keys(remoteProbeGenerationByKeyRef.current)) {
-        remoteProbeGenerationByKeyRef.current[key] = generation;
-      }
-      setRemoteProbeLoadingId((current) => (current === null ? current : null));
-      setRemoteProbeResults((current) =>
-        Object.keys(current).length === 0 ? current : {},
-      );
-    }
-  }, [settingsOpen, settingsTab]);
-
-  useEffect(() => {
     if (!remoteAddMenuOpen) {
       return;
     }
@@ -16039,11 +15616,6 @@ function MainApp() {
     renamingGroup?.scope === "research" ? renamingGroup : undefined;
   const linkMenuLocalPath = linkMenu ? pathFromQmuxFileHref(linkMenu.url) : undefined;
   const linkMenuPaneId = linkMenu?.paneId ?? null;
-  const worktreeStartBranch = worktreeCreateDialog?.startRef
-    ? worktreeCreateDialog.inventory?.branches.find(
-        (branch) => branch.fullRef === worktreeCreateDialog.startRef,
-      )
-    : undefined;
 
   return (
     <main
@@ -17359,7 +16931,11 @@ function MainApp() {
                         <Globe size={16} aria-hidden="true" />
                         <strong>New remote</strong>
                       </div>
-                      {renderRemoteSettingsForm()}
+                      <RemoteSettingsForm
+                        controller={remoteSettings}
+                        remotes={config?.remotes ?? []}
+                        sshConfigAliases={sshConfigAliases}
+                      />
                     </section>
                   ) : null}
                   {(config?.remotes ?? []).map((remote) => {
@@ -17394,7 +16970,11 @@ function MainApp() {
                         {isExpanded ? (
                           <div id={detailsId} role="region" aria-labelledby={summaryId}>
                             {remote.source === "preferences" ? (
-                              renderRemoteSettingsForm()
+                              <RemoteSettingsForm
+                                controller={remoteSettings}
+                                remotes={config?.remotes ?? []}
+                                sshConfigAliases={sshConfigAliases}
+                              />
                             ) : (
                               <div className="settings-remote-detail settings-remote-readonly">
                                 <dl className="settings-agent-details">
@@ -17420,7 +17000,7 @@ function MainApp() {
                                     {remoteSettingsError}
                                   </p>
                                 ) : null}
-                                {renderRemoteProbeStatus(remote.id)}
+                                <RemoteProbeStatus controller={remoteSettings} probeKey={remote.id} />
                                 <div className="settings-remote-actions">
                                   <button
                                     type="button"
@@ -18409,121 +17989,13 @@ function MainApp() {
       ) : null}
 
       {repositoryBrowser ? (
-        <DialogRoot
-          onDismiss={() => setRepositoryBrowser(null)}
-          dismissDisabled={Boolean(repositoryBrowser.opening)}
-        >
-          <Dialog className="repository-browser-dialog" aria-labelledby="repository-browser-title">
-            <div className="repository-browser-header">
-              <div>
-                <DialogTitle id="repository-browser-title">Branches and worktrees</DialogTitle>
-                {repositoryBrowser.inventory ? (
-                  <p title={repositoryBrowser.inventory.repositoryRoot}>
-                    {formatPaneDir(repositoryBrowser.inventory.repositoryRoot)}
-                  </p>
-                ) : null}
-              </div>
-              <Button
-                disabled={Boolean(repositoryBrowser.opening)}
-                onClick={() => setRepositoryBrowser(null)}
-                aria-label="Close branches and worktrees"
-              >
-                <X size={14} aria-hidden="true" />
-              </Button>
-            </div>
-            {!repositoryBrowser.inventory && !repositoryBrowser.error ? (
-              <p className="repository-browser-loading">
-                <LoaderCircle
-                  className="confirm-dialog-action-spinner"
-                  size={14}
-                  aria-hidden="true"
-                />{" "}
-                Loading repository…
-              </p>
-            ) : null}
-            {repositoryBrowser.error ? (
-              <p className="confirm-dialog-error" role="alert">
-                {repositoryBrowser.error}
-              </p>
-            ) : null}
-            {repositoryBrowser.inventory ? (
-              <div className="repository-browser-content">
-                <section>
-                  <h3>Worktrees</h3>
-                  <div className="repository-browser-list">
-                    {repositoryBrowser.inventory.worktrees.map((worktree) => (
-                      <div className="repository-browser-row" key={worktree.path}>
-                        <div className="repository-browser-row-copy">
-                          <strong>{worktree.branch ?? "Detached HEAD"}</strong>
-                          <span title={worktree.path}>{formatPaneDir(worktree.path)}</span>
-                        </div>
-                        <button
-                          className="control-button"
-                          type="button"
-                          disabled={Boolean(repositoryBrowser.opening) || worktree.prunable}
-                          onClick={() => void openInventoryWorktree(worktree.path)}
-                        >
-                          {repositoryBrowser.opening === worktree.path ? "Opening…" : "Open"}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-                <section>
-                  <h3>Branches</h3>
-                  <div className="repository-browser-list">
-                    {repositoryBrowser.inventory.branches.map((branch) => (
-                      <div className="repository-browser-row" key={branch.fullRef}>
-                        <div className="repository-browser-row-copy">
-                          <strong>{branch.name}</strong>
-                          <span>
-                            {branch.remote
-                              ? "Remote branch"
-                              : branch.checkedOutPath
-                                ? `Checked out at ${formatPaneDir(branch.checkedOutPath)}`
-                                : branch.upstream
-                                  ? `Tracks ${branch.upstream.replace(/^refs\/remotes\//, "")}`
-                                  : "Local branch"}
-                          </span>
-                        </div>
-                        {!branch.checkedOutPath ? (
-                          <Input
-                            className="repository-browser-name"
-                            aria-label={`Worktree name for ${branch.name}`}
-                            value={repositoryBrowser.names[branch.fullRef] ?? ""}
-                            disabled={Boolean(repositoryBrowser.opening)}
-                            maxLength={240}
-                            spellCheck={false}
-                            onChange={(event) => {
-                              const name = event.currentTarget.value;
-                              setRepositoryBrowser((current) =>
-                                current
-                                  ? { ...current, names: { ...current.names, [branch.fullRef]: name } }
-                                  : current,
-                              );
-                            }}
-                          />
-                        ) : null}
-                        <button
-                          className="control-button"
-                          type="button"
-                          disabled={
-                            Boolean(repositoryBrowser.opening) ||
-                            (!branch.checkedOutPath &&
-                              !repositoryBrowser.names[branch.fullRef]?.trim())
-                          }
-                          onClick={() => void openInventoryBranch(branch)}
-                        >
-                          {repositoryBrowser.opening === branch.fullRef ? "Opening…" : "Open"}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              </div>
-            ) : null}
-          </Dialog>
-        </DialogRoot>
+        <RepositoryBrowserDialog
+          repositoryBrowser={repositoryBrowser}
+          setRepositoryBrowser={setRepositoryBrowser}
+          openInventoryWorktree={openInventoryWorktree}
+          openInventoryBranch={openInventoryBranch}
+          formatPaneDir={formatPaneDir}
+        />
       ) : null}
 
       {newRemoteGroupDialogOpen ? (
@@ -18543,133 +18015,14 @@ function MainApp() {
       ) : null}
 
       {worktreeCreateDialog ? (
-        <DialogRoot
-          onDismiss={() => dismissWorktreeCreateDialog(false)}
-          dismissDisabled={worktreeCreateDialog.creating}
-        >
-          <DialogForm
-            className="rename-dialog"
-            aria-labelledby="create-worktree-dialog-title"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void createWorktreeFromDialog();
-            }}
-          >
-            <DialogTitle id="create-worktree-dialog-title">
-              {worktreeCreateDialog.action.kind === "fork"
-                ? "Fork session in worktree"
-                : "Open worktree"}
-            </DialogTitle>
-            {worktreeCreateDialog.action.kind === "open" ? (
-              <>
-                <label className="confirm-dialog-field-label" htmlFor="create-worktree-start">
-                  Start at
-                </label>
-                <Select
-                  id="create-worktree-start"
-                  className="create-worktree-start-select"
-                  value={worktreeCreateDialog.startRef ?? ""}
-                  disabled={worktreeCreateDialog.creating}
-                  options={[
-                    { value: "", label: "Current commit (new branch)" },
-                    ...(worktreeCreateDialog.inventory?.branches
-                      .filter((branch) => !branch.remote)
-                      .map((branch) => ({
-                        value: branch.fullRef,
-                        label: `${branch.name}${branch.checkedOutPath ? " — checked out" : ""}`,
-                        group: "Local branches",
-                      })) ?? []),
-                    ...(worktreeCreateDialog.inventory?.branches
-                      .filter((branch) => branch.remote)
-                      .map((branch) => ({
-                        value: branch.fullRef,
-                        label: branch.name,
-                        group: "Remote branches",
-                      })) ?? []),
-                    ...(worktreeCreateDialog.inventoryLoading
-                      ? [{ value: "__loading", label: "Loading branches…", disabled: true }]
-                      : []),
-                  ]}
-                  onChange={(nextValue) => {
-                    const startRef = nextValue || null;
-                    setWorktreeCreateDialog((current) => {
-                      if (!current) return current;
-                      const branch = startRef
-                        ? current.inventory?.branches.find(
-                            (candidate) => candidate.fullRef === startRef,
-                          )
-                        : undefined;
-                      return {
-                        ...current,
-                        startRef,
-                        name: branch ? repositoryWorktreeName(branch) : current.suggestedName,
-                        error: null,
-                      };
-                    });
-                  }}
-                />
-                {worktreeCreateDialog.inventoryError ? (
-                  <p className="confirm-dialog-error" role="alert">
-                    Could not load branches: {worktreeCreateDialog.inventoryError}
-                  </p>
-                ) : null}
-              </>
-            ) : null}
-            <label className="confirm-dialog-field-label" htmlFor="create-worktree-name">
-              Worktree name
-            </label>
-            <Input
-              ref={worktreeNameInputRef}
-              id="create-worktree-name"
-              className="rename-dialog-input"
-              value={worktreeCreateDialog.name}
-              disabled={worktreeCreateDialog.creating}
-              spellCheck={false}
-              maxLength={240}
-              onChange={(event) => {
-                const name = event.currentTarget.value;
-                setWorktreeCreateDialog((current) =>
-                  current ? { ...current, name, error: null } : current,
-                );
-              }}
-              aria-describedby="create-worktree-name-hint"
-            />
-            <p id="create-worktree-name-hint" className="rename-dialog-hint">
-              {worktreeCreateDialog.action.kind === "fork"
-                ? "Use letters, numbers, hyphens, or underscores. The worktree and branch use this exact name and start at this tab’s current commit."
-                : worktreeStartBranch?.checkedOutPath
-                  ? `This branch is already checked out at ${formatPaneDir(worktreeStartBranch.checkedOutPath)}. qmux will open that checkout.`
-                  : worktreeStartBranch?.remote
-                    ? `Use letters, numbers, hyphens, or underscores. qmux creates a local branch and worktree with this name, tracking ${worktreeStartBranch.name}.`
-                    : worktreeStartBranch
-                      ? `Use letters, numbers, hyphens, or underscores. The worktree uses this name and checks out ${worktreeStartBranch.name}.`
-                      : "Use letters, numbers, hyphens, or underscores. The worktree and new branch use this exact name and start at this tab’s current commit."}
-            </p>
-            {worktreeCreateDialog.error ? (
-              <p className="confirm-dialog-error" role="alert">
-                {worktreeCreateDialog.error}
-              </p>
-            ) : null}
-            <DialogActions>
-              <Button
-                disabled={worktreeCreateDialog.creating}
-                onClick={() => dismissWorktreeCreateDialog(false)}
-              >
-                Cancel
-              </Button>
-              <ConfirmDialogActionButton
-                type="submit"
-                disabled={!worktreeCreateDialog.name.trim() || worktreeCreateDialog.creating}
-                pending={worktreeCreateDialog.creating}
-                pendingLabel={
-                  worktreeCreateDialog.action.kind === "fork" ? "Creating…" : "Opening…"
-                }
-              >
-                {worktreeCreateDialog.action.kind === "fork" ? "Fork session" : "Open worktree"}
-              </ConfirmDialogActionButton>
-            </DialogActions>
-          </DialogForm>
-        </DialogRoot>
+        <WorktreeCreateDialog
+          worktreeCreateDialog={worktreeCreateDialog}
+          setWorktreeCreateDialog={setWorktreeCreateDialog}
+          dismissWorktreeCreateDialog={dismissWorktreeCreateDialog}
+          createWorktreeFromDialog={createWorktreeFromDialog}
+          worktreeNameInputRef={worktreeNameInputRef}
+          formatPaneDir={formatPaneDir}
+        />
       ) : null}
 
       {remoteDeleteConfirm ? (

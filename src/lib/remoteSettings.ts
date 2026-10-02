@@ -72,3 +72,14 @@ export function savedRemoteFromSettingsDraft(draft: RemoteSettingsDraft): SavedR
     workspaceRoot: draft.workspaceRoot.trim() || null,
   };
 }
+
+export function remoteSettingsDraft(remote: RemoteChoice): RemoteSettingsDraft {
+  return {
+    id: remote.id,
+    label: remote.label,
+    host: remote.host,
+    workspaceRoot: remote.workspaceRoot ?? "",
+    qmuxCli: remote.qmuxCli ?? "",
+    multiplexer: remote.multiplexer,
+  };
+}
