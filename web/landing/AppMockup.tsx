@@ -15,7 +15,6 @@
 //     ran it appears.
 //   * `data-mock-features` lists the enhancements to run; drop a name and that
 //     feature stays off while the rest keep working.
-import React from "react";
 import {
   ArchiveIcon,
   ArrowLeftIcon,

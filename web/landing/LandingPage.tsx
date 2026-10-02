@@ -1,7 +1,6 @@
 // The marketing page at "/". Server-rendered from these components rather than
 // hand-maintained HTML, so the page and the app replica it embeds share one
 // component tree and one build.
-import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import AppMockup, { MOCKUP_FEATURES, RESEARCH_MOCKUP_FEATURES } from "./AppMockup";
 import FeatureMiniMockups from "./MiniMockups";

@@ -3,7 +3,6 @@
 // barrel-import cost at boot.
 //
 // Path data: LobeHub Icons (MIT). https://github.com/lobehub/lobe-icons
-import React from "react";
 import type { ReactNode, SVGProps } from "react";
 import { SUPPORTED_AGENTS } from "./content";
 
