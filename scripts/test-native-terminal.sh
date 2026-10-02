@@ -6,6 +6,11 @@ if [[ "$(uname -s)" != Darwin ]]; then
   echo "Native terminal tests require macOS and the Swift/Xcode toolchain." >&2
   exit 1
 fi
+if ! xcrun --find xctest >/dev/null 2>&1; then
+  echo "Native terminal tests require full Xcode, not only Command Line Tools." >&2
+  echo "Select Xcode with DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer npm run test:native" >&2
+  exit 1
+fi
 
 # build.rs prepares the exact patched Ghostty package linked by the app. Using
 # its preparation keeps native tests from accidentally testing the unpatched

@@ -265,6 +265,8 @@ final class NativeTerminalLayoutTests: XCTestCase {
                 backing: .buffered,
                 defer: false
             )
+            // Swift owns this fixture; close must not also release it through AppKit.
+            window.isReleasedWhenClosed = false
             window.contentView = root
             defer {
                 NativeTerminalHost.shared.shutdown()
@@ -449,6 +451,7 @@ final class NativeTerminalLayoutTests: XCTestCase {
         layoutRevisionCounter = 0
         let root = NSView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800))
         let window = NSWindow(contentRect: root.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
         window.contentView = root
         XCTAssertTrue(NativeTerminalHost.shared.attach(to: root))
         NativeTerminalHost.shared.seedSettings(Self.settings)
@@ -465,6 +468,7 @@ final class NativeTerminalLayoutTests: XCTestCase {
         defer {
             NativeTerminalHost.shared.shutdown()
             NativeTerminalCallbackRecorder.shared.reset()
+            window.close()
             withExtendedLifetime((root, window)) {}
         }
         try await body(paneID, frame)

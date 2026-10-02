@@ -162,6 +162,9 @@ npm run verify:release
 # Run the native suite by itself (prepares the patched Ghostty dependency)
 npm run test:native
 
+# If xcode-select points at Command Line Tools, select full Xcode for this run:
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer npm run test:native
+
 # Check Rust formatting
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
