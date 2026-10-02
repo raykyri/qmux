@@ -144,8 +144,7 @@ if ! have_apple_id_creds && have_api_key_creds && [[ ! -f "$APPLE_API_KEY_PATH" 
   exit 1
 fi
 
-npm run test:pane-splits
-cargo test --manifest-path src-tauri/Cargo.toml
+npm run verify:release
 
 export QMUX_REBUILD_REMOTE_CLI=1
 if have_notary_creds; then

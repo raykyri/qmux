@@ -16,11 +16,11 @@
     "build:site:server": "tsc -p web/tsconfig.json && esbuild web/server.tsx --bundle --packages=external --platform=node --format=esm --target=node20 --outfile=dist-site/server.mjs && mkdir -p dist-site/client && cp web/client/publication.js dist-site/client/publication.js",
     "start:site": "node dist-site/server.mjs",
     "format": "cargo fmt --manifest-path src-tauri/Cargo.toml --check",
-    "test": "npm run test:unit && npm run test:integration && npm run test:plugins && npm run test:rust",
+    "test": "npm run test:unit && npm run test:integration && npm run test:plugins && npm run test:rust && npm run test:native",
     "test:unit": "node --import tsx --test tests/*.test.ts",
     "test:integration": "TSX_TSCONFIG_PATH=web/tsconfig.json node --import tsx --test web/server.test.ts web/comments.test.ts",
     "test:plugins": "npm run test:opencode-plugin && npm run test:pi-extension && npm run test:cursor-plugin",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:rust": "cargo test --workspace --manifest-path src-tauri/Cargo.toml",
     "test:app-shortcuts": "node --import tsx --test tests/appShortcuts.test.ts",
     "test:terminal-attention": "node --import tsx --test tests/terminalAttention.test.ts",
     "test:completion-sounds": "node --import tsx --test tests/completionSounds.test.ts",
@@ -60,7 +60,10 @@
     "test:opencode-plugin": "node --experimental-default-type=module --test qmux-opencode-plugin/tests/*.test.mjs",
     "test:pi-extension": "node --test qmux-pi-extension/tests/*.test.mjs",
     "test:cursor-plugin": "node --test qmux-cursor-plugin/tests/*.test.mjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "typecheck": "tsc --noEmit && tsc -p web/tsconfig.json",
+    "verify:release": "npm run typecheck && npm run format && npm test",
+    "test:native": "bash scripts/test-native-terminal.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

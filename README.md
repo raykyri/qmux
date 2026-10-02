@@ -153,8 +153,14 @@ release script.
 Development:
 
 ```
-# Run the complete JavaScript, plugin, integration, and Rust test suite
+# Run JavaScript, plugin, integration, workspace Rust, and native Swift tests (macOS)
 npm test
+
+# Run the same type, formatting, and test checks used before release
+npm run verify:release
+
+# Run the native suite by itself (prepares the patched Ghostty dependency)
+npm run test:native
 
 # Check Rust formatting
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
@@ -163,7 +169,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo check --manifest-path src-tauri/Cargo.toml
 
 # Run Rust tests:
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo test --workspace --manifest-path src-tauri/Cargo.toml
 ```
 
 ### Publishing configuration

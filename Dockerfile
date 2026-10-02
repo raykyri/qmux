@@ -8,6 +8,7 @@ RUN npm ci
 COPY tsconfig.json tsconfig.node.json ./
 COPY web ./web
 COPY src ./src
+COPY site ./site
 
 RUN npm run build:site:server
 
