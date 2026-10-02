@@ -1,12 +1,11 @@
 use super::{
     AdapterNotification, AdapterNotificationOutcome, AgentAdapter, ComposerPolicy,
-    FORK_AT_MESSAGE_EMPTY_ERROR, LaunchEnv, MessageAnchor, PermissionAction,
-    PrepareShellAgentLaunchRequest, PreparedShellAgentLaunch, ShellCommandIntegration,
-    SpawnAgentRequest, TranscriptLifecycleEvent, WorkspaceObservation, apply_shell_cli_model,
-    ensure_on_path, model_from_claude_native_transcript_line, new_uuid_v4,
-    parse_transcript_records, prepared_shell_agent, record_shell_fork_lineage,
-    record_shell_session_lineage, reusable_session_agent, shell_cli_model, shell_quote_arg,
-    shell_quote_path,
+    FORK_AT_MESSAGE_EMPTY_ERROR, LaunchEnv, MessageAnchor, PrepareShellAgentLaunchRequest,
+    PreparedShellAgentLaunch, ShellCommandIntegration, SpawnAgentRequest, TranscriptLifecycleEvent,
+    WorkspaceObservation, apply_shell_cli_model, ensure_on_path,
+    model_from_claude_native_transcript_line, new_uuid_v4, parse_transcript_records,
+    prepared_shell_agent, record_shell_fork_lineage, record_shell_session_lineage,
+    reusable_session_agent, shell_cli_model, shell_quote_arg, shell_quote_path,
 };
 use crate::config::QmuxConfig;
 use crate::events::QmuxEvent;
@@ -317,18 +316,6 @@ impl AgentAdapter for ClaudeAdapter {
                 AgentStatus::AwaitingPermission,
             ],
             steer_statuses: vec![AgentStatus::Starting, AgentStatus::Running],
-            permission_actions: vec![
-                PermissionAction {
-                    id: "approve",
-                    label: "Approve",
-                    input: "y",
-                },
-                PermissionAction {
-                    id: "deny",
-                    label: "Deny",
-                    input: "n",
-                },
-            ],
         }
     }
 }

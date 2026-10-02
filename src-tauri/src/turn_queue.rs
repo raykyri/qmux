@@ -1881,7 +1881,7 @@ fn send_direct_or_queue(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::{ComposerPolicy, PermissionAction};
+    use crate::adapters::ComposerPolicy;
     use crate::config::{
         AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
         MuseAdapterConfig, OpencodeAdapterConfig, QmuxConfig,
@@ -2108,18 +2108,6 @@ mod tests {
                 AgentStatus::AwaitingPermission,
             ],
             steer_statuses: vec![AgentStatus::Starting, AgentStatus::Running],
-            permission_actions: vec![
-                PermissionAction {
-                    id: "approve",
-                    label: "Approve",
-                    input: "y",
-                },
-                PermissionAction {
-                    id: "deny",
-                    label: "Deny",
-                    input: "n",
-                },
-            ],
         }
     }
 

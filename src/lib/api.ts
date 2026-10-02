@@ -49,8 +49,6 @@ import type {
   ReorderQueuedAgentTurnResult,
   ResearchBranchRemoval,
   RecentActivityCursor,
-  RecentResearchQueryCursor,
-  RecentResearchQueryPage,
   ResearchHighlight,
   ResearchHighlightAnchor,
   ResearchTree,
@@ -481,10 +479,6 @@ export function listHomeTurnHistory(
   });
 }
 
-export function listThreadGraphs() {
-  return invoke<ThreadGraph[]>("list_thread_graphs");
-}
-
 export function getThreadGraph(threadId: string) {
   return invoke<ThreadGraph | null>("get_thread_graph", { threadId });
 }
@@ -518,16 +512,6 @@ export function setResearchFolders(folders: ResearchFolderState) {
 
 export function listResearchActivity() {
   return invoke<ResearchNode[]>("list_research_activity");
-}
-
-export function listRecentResearchQueries(
-  limit = 50,
-  before?: RecentResearchQueryCursor | null,
-) {
-  return invoke<RecentResearchQueryPage>("list_recent_research_queries", {
-    limit,
-    before: before ?? null,
-  });
 }
 
 export function listRecentActivity(
@@ -703,13 +687,6 @@ export function createResearchHighlight(
   });
 }
 
-export function removeResearchHighlight(nodeId: string, highlightId: string) {
-  return invoke<ResearchHighlight>("remove_research_highlight", {
-    nodeId,
-    highlightId,
-  });
-}
-
 export function removeResearchHighlights(nodeId: string, highlightIds: string[]) {
   return invoke<ResearchHighlight[]>("remove_research_highlights", {
     nodeId,
@@ -747,10 +724,6 @@ export function listGlobalDrafts() {
 
 export function createGlobalDraft(text: string) {
   return invoke<GlobalDraft>("create_global_draft", { text });
-}
-
-export function updateGlobalDraft(draftId: string, text: string) {
-  return invoke<GlobalDraft>("update_global_draft", { draftId, text });
 }
 
 export function deleteGlobalDraft(draftId: string) {
@@ -1498,11 +1471,6 @@ export function setNativeTerminalBrowserOverlayOpen(active: boolean) {
   return nativeTerminalBrowserOverlayUpdate;
 }
 
-/** Enables viewport/content events only while a visible pane has annotations. */
-export function setNativeTerminalAnnotationMonitoring(paneId: string, enabled: boolean) {
-  return invoke<void>("native_terminal_set_annotation_monitoring", { paneId, enabled });
-}
-
 export interface NativeWebOverlayRegion {
   regionId: string;
   x: number;
@@ -1691,53 +1659,6 @@ export async function listNativeTerminalThemes(): Promise<NativeTerminalTheme[]>
  */
 export function readNativeTerminalViewportText(paneId: string) {
   return invoke<string>("native_terminal_read_viewport_text", { paneId });
-}
-
-export interface NativeTerminalAnnotationSelectionSnapshot {
-  selectedText: string;
-  viewportCellStart: number;
-  viewportCellLength: number;
-  selectionStartXPoints: number;
-  selectionBaselineYPoints: number;
-  scrollbar: {
-    totalRows: number;
-    offsetRows: number;
-    visibleRows: number;
-  };
-  scrollbarIsInitialized: boolean;
-  columns: number;
-  rows: number;
-  cellWidthPoints: number;
-  cellHeightPoints: number;
-  gridOriginXPoints: number;
-  gridOriginYPoints: number;
-  backingScaleFactor: number;
-  viewportRevision: number;
-  contentGeneration: number;
-  viewportFullyContained: boolean;
-}
-
-export type NativeTerminalAnnotationViewportSnapshot = Omit<
-  NativeTerminalAnnotationSelectionSnapshot,
-  | "selectedText"
-  | "viewportCellStart"
-  | "viewportCellLength"
-  | "selectionStartXPoints"
-  | "selectionBaselineYPoints"
-  | "viewportFullyContained"
->;
-
-/**
- * Current native selection and geometry. A false `viewportFullyContained`
- * allows quote capture but must never be used to paint a cell anchor.
- */
-export async function readNativeTerminalAnnotationSelection(
-  paneId: string,
-): Promise<NativeTerminalAnnotationSelectionSnapshot> {
-  const snapshot = await invoke<string>("native_terminal_annotation_selection_snapshot", {
-    paneId,
-  });
-  return JSON.parse(snapshot) as NativeTerminalAnnotationSelectionSnapshot;
 }
 
 export function paneActivity(paneId: string) {

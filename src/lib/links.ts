@@ -306,22 +306,6 @@ export function canRenderInInternalBrowser(url: string): boolean {
   return parsed.protocol === "http:" || parsed.protocol === "https:";
 }
 
-// Fallback used only when the Chromium automation runtime is unavailable. The
-// Tauri webview CSP permits unsandboxed frames for loopback HTTP development
-// servers, but deliberately not arbitrary external pages.
-export function canRenderInLocalPreviewFrame(url: string): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return false;
-  }
-  return (
-    parsed.protocol === "http:" &&
-    (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")
-  );
-}
-
 // A token-bearing file-server URL (see file_server.rs): its path is
 // `/<64-hex-token>/<file path>` on the loopback file-server port. Such URLs must always
 // load sandboxed (opaque origin) and must never be handed to the OS browser — an

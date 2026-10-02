@@ -528,29 +528,6 @@ export function reconcileReplacedTurns(
   return next;
 }
 
-// Preserves object identity across thread-graph refetches. A refetch
-// re-deserializes every graph into fresh objects even when nothing changed,
-// but downstream memoization (the per-agent turn-info cache in App) keys on
-// graph identity to avoid rebuilding branch turn lists — and, transitively,
-// re-parsing the visible transcript's markdown. Content equality falls back to
-// a JSON comparison, gated behind cheap discriminators so clearly-changed
-// graphs never pay for it. Returns the previous array itself when every graph
-// (and their order) is unchanged, so the state update is a no-op.
-export function reconcileThreadGraphs(
-  previous: ThreadGraph[],
-  next: ThreadGraph[],
-): ThreadGraph[] {
-  const previousById = new Map(previous.map((graph) => [graph.threadId, graph]));
-  const reconciled = next.map((graph) => reconcileThreadGraph(previousById.get(graph.threadId), graph));
-  if (
-    reconciled.length === previous.length &&
-    reconciled.every((graph, index) => graph === previous[index])
-  ) {
-    return previous;
-  }
-  return reconciled;
-}
-
 function reconcileThreadGraph(prior: ThreadGraph | undefined, graph: ThreadGraph): ThreadGraph {
   if (
     prior &&

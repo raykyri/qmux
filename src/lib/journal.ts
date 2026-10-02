@@ -66,10 +66,6 @@ export function emptyJournalState(): JournalState {
   return { version: JOURNAL_STATE_VERSION, entries: [] };
 }
 
-export function isEmptyJournalState(state: JournalState): boolean {
-  return state.entries.length === 0;
-}
-
 export function normalizeJournalEntry(value: unknown): JournalEntry | null {
   if (typeof value !== "object" || value === null) {
     return null;

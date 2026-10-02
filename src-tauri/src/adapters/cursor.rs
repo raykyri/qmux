@@ -205,7 +205,6 @@ impl AgentAdapter for CursorAdapter {
                 AgentStatus::AwaitingPermission,
             ],
             steer_statuses: vec![AgentStatus::Starting, AgentStatus::Running],
-            permission_actions: Vec::new(),
         }
     }
 }

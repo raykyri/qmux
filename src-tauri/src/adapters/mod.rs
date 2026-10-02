@@ -734,16 +734,6 @@ pub struct ShellCommandIntegration {
     pub adapter_id: &'static str,
 }
 
-#[derive(Clone, Debug)]
-pub struct PermissionAction {
-    #[allow(dead_code)]
-    pub id: &'static str,
-    #[allow(dead_code)]
-    pub label: &'static str,
-    #[allow(dead_code)]
-    pub input: &'static str,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TranscriptLifecycleEvent {
     Interrupted,
@@ -779,8 +769,6 @@ pub struct ComposerPolicy {
     pub ready_statuses: Vec<AgentStatus>,
     pub queue_statuses: Vec<AgentStatus>,
     pub steer_statuses: Vec<AgentStatus>,
-    #[allow(dead_code)]
-    pub permission_actions: Vec<PermissionAction>,
 }
 
 impl ComposerPolicy {

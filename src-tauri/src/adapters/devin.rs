@@ -225,7 +225,6 @@ impl AgentAdapter for DevinAdapter {
                 AgentStatus::AwaitingPermission,
             ],
             steer_statuses: vec![AgentStatus::Starting, AgentStatus::Running],
-            permission_actions: Vec::new(),
         }
     }
 }

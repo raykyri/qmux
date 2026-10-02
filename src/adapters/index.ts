@@ -64,7 +64,3 @@ export function findAgentUiAdapter(adapterId: string | null | undefined): AgentU
 export function getAgentUiAdapter(adapterId: string | null | undefined): AgentUiAdapter {
   return findAgentUiAdapter(adapterId) ?? claudeUiAdapter;
 }
-
-export function getDefaultAgentUiAdapter(adapterId?: string | null): AgentUiAdapter {
-  return getAgentUiAdapter(adapterId ?? "claude");
-}

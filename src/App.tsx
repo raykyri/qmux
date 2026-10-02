@@ -29,7 +29,6 @@ import type {
 import {
   Check,
   ChevronDown,
-  ChevronLeft,
   ChevronsDownUp,
   ChevronsUpDown,
   Columns2,
@@ -510,7 +509,6 @@ import {
 } from "./lib/settings";
 import {
   acknowledgeAgent,
-  artifactFileUrl,
   artifactList,
   artifactOpenExternal,
   artifactRemove,
@@ -664,7 +662,6 @@ import {
   sendNextQueuedAgentTurn,
   setQueuedTurnPause,
   submitAgentTurn,
-  submitPaneInput,
   upsertRemote,
   unpauseAgent,
   updateMenuBar,
@@ -5374,9 +5371,6 @@ function MainApp() {
       return;
     }
 
-    const currentIndex = launcherAdapterOptions.findIndex(
-      (option) => option.value === launchAdapter.id,
-    );
     const enabledOptions = launcherAdapterOptions.filter((option) => !option.disabled);
     const enabledIndex = enabledOptions.findIndex((option) => option.value === launchAdapter.id);
     const nextIndex =
