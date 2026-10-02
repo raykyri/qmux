@@ -2478,6 +2478,28 @@ mod tests {
 
     #[test]
     fn supervisor_repeated_unlink_recovery_does_not_grow_fds() {
+        // Descriptor counts are process-wide. Run this measurement alone so
+        // unrelated parallel tests cannot look like a control-socket leak.
+        const CHILD_ENV: &str = "QMUX_CONTROL_SOCKET_FD_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "control_socket::tests::supervisor_repeated_unlink_recovery_does_not_grow_fds",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()
+                .expect("run isolated descriptor-count test");
+            assert!(
+                output.status.success(),
+                "isolated descriptor-count test failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
+
         let (state, socket_path) = runtime_fixture();
         let token = state.pane_token("pane-1").unwrap();
         let runtime = start_control_socket_runtime(state, MAX_CONCURRENT_CLIENTS).unwrap();
