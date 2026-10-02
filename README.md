@@ -542,6 +542,9 @@ The stream transfers UTF-8 chunks of at most 128 KiB, allowing image-bearing
 records larger than a transport frame to be reassembled locally. Historical
 records loaded on connection or reconnect update the transcript without
 changing live agent status or advancing queued prompts.
+Live Codex completion is driven by the mirrored transcript's `task_complete`
+record. A remote Stop hook alone does not settle the turn, even if transcript
+streaming is temporarily unavailable.
 
 In Terminal mode, the sidebar menu lists each saved remote above **New group…**.
 **New remote group** atomically creates a group plus its first shell in that
@@ -582,11 +585,8 @@ through SSH; no TCP listener or bearer token is exposed on the network.
 
 Current limitations:
 
-- Remote Research/SDK runs are disabled. Remote transcript files are not yet
-  streamed into the local transcript sidebar, so message-anchored forks are
-  unavailable; session-head resume/fork and terminal lifecycle hooks still work.
-- Codex completion state uses its Stop hook remotely because the authoritative
-  transcript `task_complete` record is not streamed yet.
+- Remote Research/SDK runs and message-anchored forks remain unavailable;
+  session-head resume/fork and terminal lifecycle hooks still work.
 - `herdr` is listed but intentionally not driveable; only managed tmux is
   supported.
 - qmux does not blindly reap unclaimed `qmux-*` sessions at startup: two live
