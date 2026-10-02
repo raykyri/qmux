@@ -789,17 +789,19 @@ exec "${{cli#QMUX_CLI=}}" ping
         {
             return Ok(shell);
         }
-        let output = self
-            .command(RemoteCommand {
-                program: "sh",
-                args: vec![
-                    "-lc".to_string(),
-                    "printf '%s' \"${SHELL:-/bin/sh}\"".to_string(),
-                ],
-                ..Default::default()
-            })
-            .output()
-            .map_err(|err| format!("failed to resolve shell on {}: {err}", target.label))?;
+        let command = self.command(RemoteCommand {
+            program: "sh",
+            args: vec![
+                "-lc".to_string(),
+                "printf '%s' \"${SHELL:-/bin/sh}\"".to_string(),
+            ],
+            ..Default::default()
+        });
+        let output = crate::remote_process::output(
+            command,
+            None,
+            &format!("resolve shell on {}", target.label),
+        )?;
         let shell = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !output.status.success()
             || !Path::new(&shell).is_absolute()
@@ -852,24 +854,20 @@ exec "${{cli#QMUX_CLI=}}" ping
             return std::fs::create_dir_all(dir)
                 .map_err(|err| format!("failed to create {}: {err}", dir.display()));
         }
-        let output = self
-            .command(RemoteCommand {
-                program: "mkdir",
-                args: vec![
-                    "-p".to_string(),
-                    "--".to_string(),
-                    dir.display().to_string(),
-                ],
-                ..Default::default()
-            })
-            .output()
-            .map_err(|err| {
-                format!(
-                    "failed to create {} on {}: {err}",
-                    dir.display(),
-                    self.label()
-                )
-            })?;
+        let command = self.command(RemoteCommand {
+            program: "mkdir",
+            args: vec![
+                "-p".to_string(),
+                "--".to_string(),
+                dir.display().to_string(),
+            ],
+            ..Default::default()
+        });
+        let output = crate::remote_process::output(
+            command,
+            None,
+            &format!("create {} on {}", dir.display(), self.label()),
+        )?;
         if output.status.success() {
             return Ok(());
         }
@@ -961,22 +959,15 @@ fn remote_home(target: &RemoteTarget) -> Result<String, String> {
         return Ok(home.clone());
     }
 
-    // Deliberately *not* built through `remote_command_line`: this is the one
-    // command whose point is that the far side's shell expands it, and it is
-    // safe to leave unquoted precisely because it is a fixed literal with no
-    // user-influenced part.
-    let output = Command::new("ssh")
-        .args([
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            &format!("ConnectTimeout={CONNECT_TIMEOUT_SECONDS}"),
-            "--",
-            &target.ssh,
-            "printf %s \"$HOME\"",
-        ])
-        .output()
-        .map_err(|err| format!("failed to reach remote '{}': {err}", target.label))?;
+    // Expand the fixed literal in the remote shell while reusing the common
+    // BatchMode, keepalive, and multiplexing options.
+    let command = Host::Remote(target.clone()).command(RemoteCommand {
+        program: "sh",
+        args: vec!["-c".into(), "printf %s \"$HOME\"".into()],
+        ..Default::default()
+    });
+    let output =
+        crate::remote_process::output(command, None, &format!("read home on {}", target.label))?;
     if !output.status.success() {
         return Err(format!(
             "could not read the home directory on remote '{}': {}",

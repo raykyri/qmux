@@ -27,6 +27,7 @@ mod publishing;
 mod recovery;
 mod remote_cli;
 mod remote_files;
+mod remote_process;
 mod remote_terminal;
 mod remote_transcript;
 mod research;

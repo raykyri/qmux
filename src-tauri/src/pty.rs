@@ -69,7 +69,7 @@ impl Drop for RemoteRecoveryScope {
 }
 
 const SUBMIT_KEY: &[u8] = b"\r";
-const REMOTE_BATCH_TIMEOUT: Duration = Duration::from_secs(55);
+const REMOTE_BATCH_TIMEOUT: Duration = crate::remote_process::BATCH_TIMEOUT;
 static VALIDATED_TMUX_VERSIONS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 // End by clearing Kitty keyboard enhancements. Historical agent output is
@@ -2544,107 +2544,18 @@ pub(crate) fn remote_command_output(
 }
 
 pub(crate) fn remote_command_output_with_timeout(
-    mut command: Command,
+    command: Command,
     input: Option<Vec<u8>>,
     action: &str,
     timeout: Duration,
 ) -> Result<Output, String> {
-    if remote_recovery_cancelled() {
-        return Err("recovery superseded".into());
-    }
-    command
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|err| format!("failed to {action}: {err}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| format!("failed to capture output while trying to {action}"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| format!("failed to capture errors while trying to {action}"))?;
-    let stdout_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut stdout = stdout;
-        let _ = stdout.read_to_end(&mut bytes);
-        bytes
-    });
-    let stderr_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut stderr = stderr;
-        let _ = stderr.read_to_end(&mut bytes);
-        bytes
-    });
-    let input_writer = input.map(|bytes| {
-        let mut stdin = child.stdin.take();
-        thread::spawn(move || -> Result<(), String> {
-            stdin
-                .as_mut()
-                .ok_or_else(|| "failed to open remote command stdin".to_string())?
-                .write_all(&bytes)
-                .map_err(|err| format!("failed to upload remote command input: {err}"))
-        })
-    });
-
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline && !remote_recovery_cancelled() => {
-                thread::sleep(Duration::from_millis(20))
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                if let Some(writer) = input_writer {
-                    let _ = writer.join();
-                }
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                if remote_recovery_cancelled() {
-                    return Err("recovery superseded".into());
-                }
-                return Err(format!(
-                    "failed to {action}: timed out after {} seconds",
-                    timeout.as_secs_f64()
-                ));
-            }
-            Err(err) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                if let Some(writer) = input_writer {
-                    let _ = writer.join();
-                }
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(format!("failed to {action}: {err}"));
-            }
-        }
-    };
-    if let Some(writer) = input_writer {
-        writer
-            .join()
-            .map_err(|_| format!("failed to {action}: input writer panicked"))??;
-    }
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| format!("failed to {action}: output reader panicked"))?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| format!("failed to {action}: error reader panicked"))?;
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
+    crate::remote_process::output_with_timeout(
+        command,
+        input,
+        action,
+        timeout,
+        remote_recovery_cancelled,
+    )
 }
 
 fn run_remote_argv(argv: &[String], action: &str) -> Result<(), String> {
