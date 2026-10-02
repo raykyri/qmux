@@ -30,6 +30,7 @@ mod remote_files;
 mod remote_process;
 mod remote_terminal;
 mod remote_transcript;
+mod remote_transport;
 mod research;
 mod research_runtime;
 mod scrollback;

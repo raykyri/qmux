@@ -144,6 +144,8 @@ pub struct RemoteTmuxCommands {
     pub create_argv: Vec<String>,
     pub configure_argv: Vec<String>,
     pub attach_argv: Vec<String>,
+    /// Owned by the remote transport manager, independently of a TTY channel.
+    pub hook_forward: Option<SocketForward>,
     pub probe_argv: Vec<String>,
     pub clients_argv: Vec<String>,
     pub capture_argv: Vec<String>,
@@ -421,10 +423,7 @@ exec "${{cli#QMUX_CLI=}}" ping
                 &RemoteCommand {
                     program: "tmux",
                     args: attach_args,
-                    forwards: vec![SocketForward {
-                        remote_path: remote_socket_path.clone(),
-                        local_path: local_socket.to_string(),
-                    }],
+                    // The manager registers the forward before opening this channel.
                     ..Default::default()
                 },
                 Interaction::Interactive,
@@ -456,6 +455,10 @@ exec "${{cli#QMUX_CLI=}}" ping
             create_argv: Vec::new(),
             configure_argv: batch_argv(configure_args),
             attach_argv,
+            hook_forward: Some(SocketForward {
+                remote_path: remote_socket_path.clone(),
+                local_path: local_socket.to_string(),
+            }),
             probe_argv: batch_argv(probe_args),
             clients_argv: batch_argv(clients_args),
             capture_argv: batch_argv(capture_args),
@@ -643,16 +646,18 @@ exec "${{cli#QMUX_CLI=}}" ping
             // control, no window size, and anything checking `isatty` takes its
             // non-interactive branch.
             argv.push("-t".to_string());
-            // Modern OpenSSH delays interactive packets to obscure keystroke
-            // timing (20 ms intervals by default). A managed terminal values
-            // immediate delivery, and its encrypted SSH transport still
-            // protects the input contents. Ventura's older client predates
-            // this option, so tell it to ignore the setting rather than fail.
-            argv.push("-o".to_string());
-            argv.push("IgnoreUnknown=ObscureKeystrokeTiming".to_string());
-            argv.push("-o".to_string());
-            argv.push("ObscureKeystrokeTiming=no".to_string());
         }
+        // Batch commands can create the master used by interactive channels.
+        // Modern OpenSSH delays interactive packets to obscure keystroke
+        // timing (20 ms intervals by default). A managed terminal values
+        // immediate delivery, and its encrypted SSH transport still
+        // protects the input contents. Ventura's older client predates
+        // this option, so tell it to ignore the setting rather than fail.
+        argv.push("-o".to_string());
+        argv.push("IgnoreUnknown=ObscureKeystrokeTiming".to_string());
+        argv.push("-o".to_string());
+        argv.push("ObscureKeystrokeTiming=no".to_string());
+
         argv.push("-o".to_string());
         argv.push(format!("ConnectTimeout={CONNECT_TIMEOUT_SECONDS}"));
         // Detect half-open links (sleep/NAT/firewall drops) so the PTY reader
@@ -663,18 +668,20 @@ exec "${{cli#QMUX_CLI=}}" ping
         argv.push("ServerAliveCountMax=3".to_string());
         if remote.forwards.is_empty() {
             // Reuse a transport for probes, uploads, and create/configure calls.
-            // ~/.ssh is owner-only; %C hashes the full connection tuple.
+            // The app-run namespace isolates our masters from other apps.
             argv.push("-o".to_string());
             argv.push("ControlMaster=auto".to_string());
             argv.push("-o".to_string());
             argv.push("ControlPersist=60".to_string());
             argv.push("-o".to_string());
-            argv.push("ControlPath=~/.ssh/qmux-%C".to_string());
+            argv.push(format!(
+                "ControlPath={}",
+                crate::remote_transport::control_path(&target.ssh)
+            ));
         } else {
-            // A hook forward must live and die with its attachment. A shared
-            // master retains -R registrations after a client exits and accepts
-            // duplicate requests without rebinding. After reconnect unlinks
-            // the old socket, that leaves a working TTY with no hook socket.
+            // Unmanaged forwards still require their own connection. Managed
+            // tmux panes instead give the forward to remote_transport and open
+            // their attachment without -R.
             // ControlMaster=no alone still permits joining an existing master;
             // ControlPath=none also prevents reuse of user-configured masters.
             argv.push("-o".to_string());
@@ -1152,10 +1159,14 @@ printf '{"ok":true,"data":{"status":"ok"}}\n'
         assert!(argv.iter().any(|arg| arg == "ServerAliveCountMax=3"));
         assert!(argv.iter().any(|arg| arg == "ControlMaster=auto"));
         assert!(argv.iter().any(|arg| arg == "ControlPersist=60"));
-        assert!(argv.iter().any(|arg| arg == "ControlPath=~/.ssh/qmux-%C"));
+        assert!(argv.iter().any(|arg| arg
+            == &format!(
+                "ControlPath={}",
+                crate::remote_transport::control_path("user@devbox")
+            )));
         assert!(
-            !argv.iter().any(|arg| arg == "ObscureKeystrokeTiming=no"),
-            "batch commands do not carry interactive keystroke traffic"
+            argv.iter().any(|arg| arg == "ObscureKeystrokeTiming=no"),
+            "batch commands may start a master later used by terminal channels"
         );
         assert!(!argv.contains(&"-t".to_string()), "batch needs no tty");
         assert!(
@@ -1527,9 +1538,18 @@ printf '{"ok":true,"data":{"status":"ok"}}\n'
                 .windows(2)
                 .any(|pair| { pair == ["-o", "ObscureKeystrokeTiming=no"] })
         );
+        assert!(!commands.attach_argv.iter().any(|arg| arg == "-R"));
         assert!(
-            commands.attach_argv.windows(2).any(|pair| {
-                pair == ["-R", "/tmp/qmux-pane-7-deadbeef.sock:/local/run/qmux.sock"]
+            commands
+                .attach_argv
+                .iter()
+                .any(|arg| arg == "ControlMaster=auto")
+        );
+        assert_eq!(
+            commands.hook_forward,
+            Some(SocketForward {
+                remote_path: "/tmp/qmux-pane-7-deadbeef.sock".into(),
+                local_path: "/local/run/qmux.sock".into(),
             })
         );
 
@@ -1721,7 +1741,11 @@ printf '{"ok":true,"data":{"status":"ok"}}\n'
         assert!(argv.iter().any(|arg| arg == "ControlPath=none"));
         assert!(argv.iter().any(|arg| arg == "ControlPersist=no"));
         assert!(!argv.iter().any(|arg| arg == "ControlMaster=auto"));
-        assert!(!argv.iter().any(|arg| arg == "ControlPath=~/.ssh/qmux-%C"));
+        assert!(!argv.iter().any(|arg| arg
+            == &format!(
+                "ControlPath={}",
+                crate::remote_transport::control_path("user@devbox")
+            )));
         assert!(
             argv.windows(2)
                 .any(|pair| pair == ["-R", "/tmp/qmux-remote.sock:/run/qmux.sock"]),

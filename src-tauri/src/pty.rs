@@ -2021,7 +2021,7 @@ struct RemoteReaderContext {
 }
 
 /// One SSH request provisions files, creates/configures the session, captures
-/// initial history and clears the forwarding pathname. Output is history only.
+/// initial history. Hook forwarding belongs to the transport manager. Output is history only.
 fn remote_bootstrap_script(
     host: &Host,
     files: &[SupportFile],
@@ -2079,10 +2079,9 @@ fn remote_bootstrap_script(
         }
     }
     script.push_str(&format!(
-        "{} >/dev/null\n{} >/dev/null\n{} >/dev/null\n{}\ntrap - EXIT HUP INT TERM\n",
+        "{} >/dev/null\n{} >/dev/null\n{}\ntrap - EXIT HUP INT TERM\n",
         line(&commands.create_argv)?,
         line(&commands.configure_argv)?,
-        line(&commands.forward_cleanup_argv)?,
         line(&commands.capture_argv)?
     ));
     Ok(script)
@@ -2347,7 +2346,7 @@ fn spawn_remote_tmux_inner(
                         rows: current_pane.rows,
                     }));
                     let attachment =
-                        spawn_remote_attachment(&state, &commands.attach_argv, attachment_size)?;
+                        spawn_managed_remote_attachment(&state, &commands, attachment_size)?;
                     let reader = match attachment
                         .master
                         .lock()
@@ -2475,6 +2474,15 @@ fn retire_remote_attachment(pane_id: &str, attachment: RemoteAttachment) {
     });
 }
 
+fn spawn_managed_remote_attachment(
+    state: &AppState,
+    commands: &crate::host::RemoteTmuxCommands,
+    initial_size: InitialPaneSize,
+) -> Result<RemoteAttachment, String> {
+    let argv = crate::remote_transport::prepare_attachment(commands, remote_recovery_cancelled)?;
+    spawn_remote_attachment(state, &argv, initial_size)
+}
+
 fn spawn_remote_attachment(
     state: &AppState,
     attach_argv: &[String],
@@ -2591,6 +2599,7 @@ fn finish_remote_bootstrap(
 }
 
 fn cleanup_remote_launch(commands: &crate::host::RemoteTmuxCommands) {
+    crate::remote_transport::release_forward(commands);
     let _ = run_remote_argv(&commands.kill_argv, "clean up remote tmux session");
     cleanup_remote_support(commands);
 }
@@ -2849,32 +2858,6 @@ fn check_remote_hook_health(state: &AppState, pane_id: &str) -> RemoteHookHealth
         remote_health_output(&argv, "check remote hooks")
     })();
     remote_hook_health(output)
-}
-
-fn retire_remote_master(commands: &crate::host::RemoteTmuxCommands) {
-    let argv = &commands.probe_argv;
-    // Never terminate a user-owned/default SSH master, or a test helper.
-    if argv.first().map(String::as_str) != Some("ssh")
-        || !argv.iter().any(|arg| arg == "ControlPath=~/.ssh/qmux-%C")
-    {
-        return;
-    }
-    let Some(destination) = argv.iter().position(|arg| arg == "--") else {
-        return;
-    };
-    let Some(host) = argv.get(destination + 1) else {
-        return;
-    };
-    let mut command = Command::new("ssh");
-    command
-        .args(&argv[1..destination])
-        .args(["-O", "exit", "--", host]);
-    let _ = remote_command_output_with_timeout(
-        command,
-        None,
-        "retire stale qmux SSH transport",
-        Duration::from_secs(2),
-    );
 }
 
 fn remote_failure_needs_attention(error: &str) -> bool {
@@ -3177,7 +3160,7 @@ fn schedule_remote_reconnect(
                     });
                     let attention = remote_failure_needs_attention(&error);
                     if error.contains("timed out") {
-                        retire_remote_master(&commands);
+                        crate::remote_transport::retire_unhealthy(&commands);
                     }
                     drop(host_guard);
                     if missing || attention {
@@ -3318,11 +3301,7 @@ fn attach_remote_generation(
     if let Some(previous) = previous {
         retire_remote_attachment(pane_id, previous);
     }
-    run_remote_argv(
-        &commands.forward_cleanup_argv,
-        "remove stale remote hook socket",
-    )?;
-    let attachment = spawn_remote_attachment(state, &commands.attach_argv, initial_size)?;
+    let attachment = spawn_managed_remote_attachment(state, &commands, initial_size)?;
     let reader = match attachment
         .master
         .lock()
@@ -4332,6 +4311,7 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
         if let Some(attachment) = attachment {
             retire_remote_attachment(&pane_id, attachment);
         }
+        crate::remote_transport::release_forward(&commands);
         cleanup_remote_support(&commands);
         if let Some(agent_id) = pane_agent_id.as_deref()
             && let Err(err) = abort_fork_barrier_for_child(
@@ -4433,8 +4413,8 @@ pub fn kill_all_panes(state: &AppState) {
     let mut pending = Vec::new();
     for pane in state.list_panes().unwrap_or_default() {
         if let Ok(Some((controller, _, _))) = state.pane_remote_control(&pane.id) {
+            controller.cancel_recovery();
             if controller.initial_launch_in_progress() {
-                controller.cancel_recovery();
                 pending.push(controller);
             }
         }
@@ -4442,6 +4422,7 @@ pub fn kill_all_panes(state: &AppState) {
     for controller in pending {
         controller.wait_for_initial_launch();
     }
+    crate::remote_transport::shutdown();
     let children = match state.all_pane_children() {
         Ok(children) => children,
         Err(err) => {
@@ -5909,6 +5890,7 @@ mod tests {
                 *argv = vec!["/bin/sh".into(), "-c".into(), argv.last().unwrap().clone()];
             }
             commands.forward_cleanup_argv = vec!["/usr/bin/true".into()];
+            commands.hook_forward = None;
             let output = Command::new("tmux")
                 .args([
                     "-L",
@@ -6268,6 +6250,7 @@ mod tests {
             ],
             configure_argv: Vec::new(),
             attach_argv: Vec::new(),
+            hook_forward: None,
             probe_argv: Vec::new(),
             clients_argv: Vec::new(),
             capture_argv: Vec::new(),
@@ -7654,6 +7637,7 @@ mod tests {
             create_argv: Vec::new(),
             configure_argv: Vec::new(),
             attach_argv: Vec::new(),
+            hook_forward: None,
             probe_argv: Vec::new(),
             clients_argv: Vec::new(),
             capture_argv: Vec::new(),
