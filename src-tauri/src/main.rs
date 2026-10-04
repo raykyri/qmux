@@ -27,6 +27,7 @@ mod publishing;
 mod recovery;
 mod remote_cli;
 mod remote_files;
+mod remote_preview;
 mod remote_process;
 mod remote_terminal;
 mod remote_transcript;
@@ -989,6 +990,28 @@ fn resolve_local_link_target(
         trimmed,
         cwd.as_deref().and_then(std::path::Path::to_str),
     )
+}
+
+#[tauri::command(async)]
+fn remote_preview_start(
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+    transcript: String,
+    path: String,
+    cached_only: bool,
+) -> Result<String, String> {
+    remote_preview::start(&state, pane_id, transcript, path, cached_only)
+}
+#[tauri::command(async)]
+fn remote_preview_status(
+    state: tauri::State<'_, AppState>,
+    request_id: String,
+) -> Result<remote_preview::Status, String> {
+    remote_preview::status(&state, &request_id)
+}
+#[tauri::command]
+fn remote_preview_close(state: tauri::State<'_, AppState>, request_id: String) {
+    remote_preview::close(&state, &request_id);
 }
 
 fn grant_staged_artifact_to_pane(
@@ -3967,8 +3990,10 @@ fn main() {
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
+                    let state = state.clone();
                     std::thread::spawn(move || {
                         remote_files::remove_orphaned(&workspace_root, &referenced);
+                        remote_preview::cleanup(&state);
                     });
                 }
                 workspace::reconcile_imported_research_archives(&state);
@@ -4069,6 +4094,9 @@ fn main() {
             human_browser::human_browser_navigate_history,
             open_external_url,
             browser_open_preview_external,
+            remote_preview_start,
+            remote_preview_status,
+            remote_preview_close,
             browser_open_local_path,
             browser_open_terminal_path,
             browser_reveal_local_path,

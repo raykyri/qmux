@@ -65,40 +65,89 @@ pub fn stage<R: Read>(
         return Err(format!("failed to secure remote preview storage: {err}"));
     }
 
-    let temporary = upload_dir.join(".upload");
-    let final_path = upload_dir.join(name);
+    let result = stage_in_directory(&upload_dir, name, size, reader, |_| Ok(()), |_| Ok(()));
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&upload_dir);
+    }
+    result
+}
+
+/// Shared push/pull staging. `directory` is a freshly reserved, private local
+/// directory. Validate the transport trailer before publishing any complete file.
+/// Callers own directory cleanup and any cache index / UI side effects.
+pub fn stage_in_directory<R: Read>(
+    directory: &Path,
+    name: &str,
+    size: u64,
+    reader: &mut R,
+    mut progress: impl FnMut(u64) -> Result<(), String>,
+    validate_completion: impl FnOnce(&mut R) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    validate_name(name)?;
+    if size > MAX_REMOTE_OPEN_FILE_BYTES {
+        return Err("Remote preview exceeds the 10 MiB limit".into());
+    }
+    if !store_root_is_directory(directory) {
+        return Err("Unsafe preview staging directory".into());
+    }
+    let temporary = directory.join(".upload");
+    let final_path = directory.join(name);
+    // Never replace an immutable snapshot, even if a caller reuses a directory.
+    if fs::symlink_metadata(&final_path).is_ok() {
+        return Err("Preview snapshot already exists".into());
+    }
     let result = (|| {
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(&temporary)
-            .map_err(|err| format!("failed to create remote preview: {err}"))?;
-        let copied = std::io::copy(&mut reader.take(size), &mut file)
-            .map_err(|err| format!("failed to receive remote preview: {err}"))?;
-        if copied != size {
-            return Err(format!(
-                "remote preview ended after {copied} bytes; expected {size}"
-            ));
+            .map_err(|e| e.to_string())?;
+        let mut copied = 0;
+        let mut buffer = [0u8; 64 * 1024];
+        progress(0)?;
+        while copied < size {
+            let count = reader
+                .read(&mut buffer[..(size - copied).min(65536) as usize])
+                .map_err(|e| format!("Failed to receive remote preview: {e}"))?;
+            if count == 0 {
+                return Err(format!(
+                    "remote preview ended after {copied} bytes; expected {size}"
+                ));
+            }
+            file.write_all(&buffer[..count])
+                .map_err(|e| e.to_string())?;
+            copied += count as u64;
+            progress(copied)?;
         }
-        file.flush()
-            .map_err(|err| format!("failed to flush remote preview: {err}"))?;
-        file.sync_all()
-            .map_err(|err| format!("failed to sync remote preview: {err}"))?;
+        validate_completion(reader)?;
+        file.flush().map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
         drop(file);
-        fs::rename(&temporary, &final_path)
-            .map_err(|err| format!("failed to publish remote preview: {err}"))?;
+        fs::rename(&temporary, &final_path).map_err(|e| e.to_string())?;
         let _ = OpenOptions::new()
             .read(true)
-            .open(&upload_dir)
-            .and_then(|directory| directory.sync_all());
-        Ok(final_path.clone())
+            .open(directory)
+            .and_then(|f| f.sync_all());
+        Ok(final_path)
     })();
-
     if result.is_err() {
-        let _ = fs::remove_dir_all(&upload_dir);
+        let _ = fs::remove_file(temporary);
     }
     result
+}
+
+/// Both pushed and pulled snapshots use a strict capability, independent of pane roots.
+pub fn preview_url(
+    state: &crate::state::AppState,
+    pane: &str,
+    path: &Path,
+) -> Result<String, String> {
+    let port = state
+        .file_server_port()
+        .ok_or("Preview server is unavailable")?;
+    let token = state.strict_file_preview_token(pane, path)?;
+    Ok(crate::file_server::file_url(port, &token, path))
 }
 
 /// Returns the canonical path only when it is one complete file in qmux's

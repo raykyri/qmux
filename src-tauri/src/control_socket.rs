@@ -1351,9 +1351,9 @@ fn handle_browser_open_file<R: Read>(
     let header = serde_json::from_value::<BrowserOpenFileHeader>(request.payload)
         .map_err(|err| format!("invalid browser.open_file payload: {err}"))?;
     crate::remote_files::validate_name(&header.name)?;
-    let port = state
-        .file_server_port()
-        .ok_or_else(|| "the file server is not running".to_string())?;
+    if state.file_server_port().is_none() {
+        return Err("The file server is not running".into());
+    }
     let upload_id = state.next_id("remote-file");
     let path = crate::remote_files::stage(
         &state.config().workspace_root,
@@ -1371,12 +1371,7 @@ fn handle_browser_open_file<R: Read>(
             return Err(err);
         }
     };
-    let token = if crate::file_server::is_executable_preview_path(&canonical) {
-        state.exact_file_preview_token(&authed_pane, &canonical)?
-    } else {
-        state.pane_file_token(&authed_pane)?
-    };
-    let url = crate::file_server::file_url(port, &token, &canonical);
+    let url = crate::remote_files::preview_url(state, &authed_pane, &canonical)?;
     state.emit(QmuxEvent::new(
         "browser.open",
         Some(authed_pane.clone()),

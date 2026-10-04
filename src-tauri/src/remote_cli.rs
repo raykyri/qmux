@@ -154,6 +154,7 @@ pub fn ensure_cli(host: &Host) -> Result<EnsureCliResult, String> {
     if let Some(version) = remote_cli_version(host, &expanded)
         && version == VERSION
         && remote_transcript_stream_supported(host, &expanded)
+        && remote_file_fetch_supported(host, &expanded)
         && remote_open_file_supported(host, &expanded)
         && remote_workspace_observation_supported(host, &expanded)
     {
@@ -194,6 +195,11 @@ pub fn ensure_cli(host: &Host) -> Result<EnsureCliResult, String> {
             "bundled qmux-cli is missing transcript streaming; rebuild remote-cli artifacts".into(),
         );
     }
+    if !remote_file_fetch_supported(host, &expanded) {
+        return Err(
+            "bundled qmux-cli is missing file fetching; rebuild remote-cli artifacts".into(),
+        );
+    }
     if !remote_open_file_supported(host, &expanded) {
         return Err(
             "bundled qmux-cli is missing remote file opening; rebuild remote-cli artifacts".into(),
@@ -221,6 +227,11 @@ pub fn ensure_cli(host: &Host) -> Result<EnsureCliResult, String> {
 fn remote_transcript_stream_supported(host: &Host, path: &str) -> bool {
     remote_stdout(host, path, vec!["--transcript-stream-version".into()])
         .is_ok_and(|output| output.trim() == "4")
+}
+
+fn remote_file_fetch_supported(host: &Host, path: &str) -> bool {
+    remote_stdout(host, path, vec!["--file-fetch-version".into()])
+        .is_ok_and(|output| output.trim() == "1")
 }
 
 fn remote_open_file_supported(host: &Host, path: &str) -> bool {

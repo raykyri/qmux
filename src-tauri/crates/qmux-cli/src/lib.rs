@@ -10,6 +10,7 @@ mod mcp;
 mod muse;
 mod public_cli;
 pub mod transcript_stream;
+pub mod file_fetch;
 
 use qmux_proto::PreparedShellAgentLaunch as PreparedAgentLaunch;
 use qmux_proto::{
@@ -86,6 +87,8 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
     let mut args = remaining.into_iter();
 
     match command.as_str() {
+        "file-fetch" => { file_fetch::run(args.collect())?; Ok(true) }
+        "--file-fetch-version" => { println!("1"); Ok(true) }
         "transcript-stream" => {
             transcript_stream::run(args.collect())?;
             Ok(true)
