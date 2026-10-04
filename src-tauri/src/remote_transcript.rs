@@ -29,6 +29,10 @@ struct Binding {
     remote_id: String,
     remote_host: String,
     hint: String,
+    #[serde(default)]
+    cwd: String,
+    #[serde(default)]
+    roots: Vec<String>,
 }
 #[derive(Default, Serialize, Deserialize)]
 struct Checkpoint {
@@ -107,6 +111,60 @@ fn live_host(state: &AppState, binding: &Binding) -> Option<Host> {
     (remote.id == binding.remote_id && remote.ssh == binding.remote_host).then_some(host)
 }
 
+/// Resolve provenance from the selected mirrored transcript, never the pane's live cwd.
+/// Old mirrors without provenance fail closed rather than guessing a remote base.
+pub fn preview_source(
+    state: &AppState,
+    pane: &str,
+    transcript: &str,
+) -> Result<(Host, String, Vec<String>, String), String> {
+    let agent = state
+        .agent_by_pane(pane)?
+        .ok_or("No transcript agent for this pane")?;
+    if agent.transcript_path.as_deref() != Some(transcript) {
+        return Err("The selected transcript changed; open the link again".into());
+    }
+    let root = fs::canonicalize(directory(state, &agent.id))
+        .map_err(|_| "Remote transcript provenance is unavailable")?;
+    let path = fs::canonicalize(transcript).map_err(|_| "Remote transcript is unavailable")?;
+    if !path.starts_with(&root) {
+        return Err("Remote transcript provenance is unavailable".into());
+    }
+    let dir = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("Invalid transcript location")?;
+    let binding: Binding = serde_json::from_slice(
+        &fs::read(dir.join("preview-source.json"))
+            .map_err(|_| "This transcript has no saved remote file context")?,
+    )
+    .map_err(|e| e.to_string())?;
+    if binding.agent != agent.id
+        || binding.cwd.is_empty()
+        || dir != session_directory(&root, &binding)
+    {
+        return Err("Remote transcript provenance does not match this session".into());
+    }
+    let group = state
+        .group(&agent.group_id)?
+        .ok_or("Workspace is unavailable")?;
+    let host = host::for_group(group.remote.as_ref());
+    let remote = host
+        .remote()
+        .ok_or("The transcript's remote is unavailable")?;
+    if remote.id != binding.remote_id || remote.ssh != binding.remote_host {
+        return Err("The transcript's remote binding changed".into());
+    }
+    let identity = serde_json::to_string(&(
+        binding.remote_id,
+        binding.remote_host,
+        binding.agent,
+        binding.session,
+    ))
+    .map_err(|e| e.to_string())?;
+    Ok((host, binding.cwd, binding.roots, identity))
+}
+
 /// Called only after adapter ingestion has accepted the session identity. Ignore
 /// subagent and stale-session metadata rather than following a different session.
 pub fn observe(state: &AppState, pane: &str, payload: &Value) {
@@ -156,6 +214,8 @@ pub fn observe(state: &AppState, pane: &str, payload: &Value) {
             .unwrap_or("")
             .to_string();
         let mut binding = Binding {
+            cwd: agent.worktree_dir.clone(),
+            roots: vec![group.dir.clone(), agent.worktree_dir.clone()],
             agent: agent.id,
             pane: pane.into(),
             adapter: agent.adapter,
@@ -185,6 +245,12 @@ pub fn observe(state: &AppState, pane: &str, payload: &Value) {
             {
                 binding.hint = old.hint;
             }
+        }
+        let session_dir = session_directory(&root, &binding);
+        fs::create_dir_all(&session_dir).map_err(|e| e.to_string())?;
+        let source_path = session_dir.join("preview-source.json");
+        if !source_path.exists() {
+            save_json(&source_path, &binding)?;
         }
         if readers.get(&root) == Some(&binding) {
             return Ok(());
@@ -491,6 +557,8 @@ mod tests {
 
     fn test_binding(adapter: &str, session: &str) -> Binding {
         Binding {
+            cwd: "/remote/project".into(),
+            roots: vec!["/remote/project".into()],
             agent: "agent".into(),
             pane: "pane".into(),
             adapter: adapter.into(),
@@ -546,6 +614,8 @@ mod tests {
         let key = directory(&state, "a");
         // Reserve the worker slot to exercise metadata routing without SSH.
         let reserved = Binding {
+            cwd: "/remote".into(),
+            roots: vec!["/remote".into()],
             agent: "a".into(),
             pane: "p".into(),
             adapter: "claude".into(),
@@ -568,6 +638,28 @@ mod tests {
         let saved: Binding =
             serde_json::from_slice(&fs::read(key.join("binding.json")).unwrap()).unwrap();
         assert_eq!(saved, binding);
+        // Provenance stays with the transcript even after the live agent moves.
+        let transcript = session_directory(&key, &binding).join("0/session.jsonl");
+        fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        fs::write(&transcript, "").unwrap();
+        let transcript = transcript.to_string_lossy().into_owned();
+        state
+            .mutate_agent("a", |a| {
+                a.transcript_path = Some(transcript.clone());
+                a.worktree_dir = "/other/project".into();
+            })
+            .unwrap();
+        assert_eq!(
+            preview_source(&state, "p", &transcript).unwrap().1,
+            "/remote"
+        );
+        assert!(preview_source(&state, "p", "/wrong/transcript").is_err());
+        state
+            .mutate_agent("a", |a| {
+                a.transcript_path = None;
+                a.worktree_dir = "/remote".into();
+            })
+            .unwrap();
         for payload in [
             json!({"session_id":"stale", "transcript_path":"/bad"}),
             json!({"agent_id":"subagent", "session_id":"session", "transcript_path":"/bad"}),

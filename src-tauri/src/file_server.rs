@@ -323,6 +323,9 @@ fn resolve_file_request_path(
     if let Some(canonical) = resolve_exact_file(requested, &[source]) {
         return Some(canonical);
     }
+    if !state.preview_token_allows_subresources(token) {
+        return None;
+    }
     let roots = state.pane_file_roots(&pane_id);
     let canonical = resolve_under_roots(requested, &roots)?;
     fetch_dest_matches_path(fetch_dest?, &canonical).then_some(canonical)
@@ -2128,6 +2131,31 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn strict_snapshot_token_cannot_inherit_local_pane_roots() {
+        let base = non_temp_test_dir("strict-snapshot");
+        let root = base.join("ws");
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("report.html");
+        let sibling = root.join("secret.js");
+        fs::write(&source, "hello").unwrap();
+        fs::write(&sibling, "secret").unwrap();
+        let state = test_state(&root, &base, "strict-pane");
+        let token = state
+            .strict_file_preview_token("strict-pane", &source)
+            .unwrap();
+        assert!(resolve_file_request_path(&state, &token, &source, None).is_some());
+        assert!(resolve_file_request_path(&state, &token, &sibling, Some("script")).is_none());
+        let ordinary = state
+            .exact_file_preview_token("strict-pane", &source)
+            .unwrap();
+        assert_ne!(token, ordinary);
+        assert!(resolve_file_request_path(&state, &ordinary, &sibling, Some("script")).is_some());
+        state.revoke_snapshot_preview(&fs::canonicalize(&source).unwrap());
+        assert!(resolve_file_request_path(&state, &token, &source, None).is_none());
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]

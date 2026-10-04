@@ -345,7 +345,7 @@ struct AppStateInner {
     // get a narrower token for their exact source and correctly typed browser assets
     // beneath the pane's approved roots.
     file_tokens: Mutex<HashMap<String, String>>,
-    exact_file_tokens: Mutex<HashMap<String, (String, std::path::PathBuf)>>,
+    exact_file_tokens: Mutex<HashMap<String, (String, std::path::PathBuf, bool)>>,
     // Exact, canonical files outside a pane's normal project roots that the
     // trusted UI explicitly granted to its preview. Codex inline visualizations
     // live under qmux's private workspace metadata, so granting the whole root

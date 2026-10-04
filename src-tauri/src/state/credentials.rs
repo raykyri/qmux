@@ -34,6 +34,24 @@ impl AppState {
         pane_id: &str,
         path: &std::path::Path,
     ) -> Result<String, String> {
+        self.file_preview_token_with_policy(pane_id, path, true)
+    }
+
+    /// A snapshot capability never inherits the viewing pane's filesystem roots.
+    pub fn strict_file_preview_token(
+        &self,
+        pane_id: &str,
+        path: &std::path::Path,
+    ) -> Result<String, String> {
+        self.file_preview_token_with_policy(pane_id, path, false)
+    }
+
+    fn file_preview_token_with_policy(
+        &self,
+        pane_id: &str,
+        path: &std::path::Path,
+        allow_subresources: bool,
+    ) -> Result<String, String> {
         if !self.pane_exists(pane_id)? {
             return Err(format!("pane {pane_id} was not found"));
         }
@@ -47,13 +65,17 @@ impl AppState {
             .exact_file_tokens
             .lock()
             .unwrap_or_else(|err| err.into_inner());
-        if let Some(existing) = tokens.iter().find_map(|(token, (owner, source))| {
-            (owner == pane_id && source == &canonical).then(|| token.clone())
+        if let Some(existing) = tokens.iter().find_map(|(token, (owner, source, assets))| {
+            (owner == pane_id && source == &canonical && *assets == allow_subresources)
+                .then(|| token.clone())
         }) {
             return Ok(existing);
         }
         let token = random_token()?;
-        tokens.insert(token.clone(), (pane_id.to_string(), canonical));
+        tokens.insert(
+            token.clone(),
+            (pane_id.to_string(), canonical, allow_subresources),
+        );
         Ok(token)
     }
 
@@ -66,7 +88,24 @@ impl AppState {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .get(token)
-            .cloned()
+            .map(|(pane, path, _)| (pane.clone(), path.clone()))
+    }
+
+    pub fn preview_token_allows_subresources(&self, token: &str) -> bool {
+        self.inner
+            .exact_file_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(token)
+            .is_some_and(|(_, _, allow)| *allow)
+    }
+
+    pub fn revoke_snapshot_preview(&self, path: &std::path::Path) {
+        self.inner
+            .exact_file_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, (_, source, allow)| *allow || source != path);
     }
 
     /// Add one exact file to a pane's read-only preview capability. The caller
@@ -342,7 +381,7 @@ impl AppState {
             tokens.remove(pane_id);
         }
         if let Ok(mut tokens) = self.inner.exact_file_tokens.lock() {
-            tokens.retain(|_, (owner, _)| owner != pane_id);
+            tokens.retain(|_, (owner, _, _)| owner != pane_id);
         }
         if let Ok(mut grants) = self.inner.file_preview_grants.lock() {
             grants.remove(pane_id);
