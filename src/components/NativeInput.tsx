@@ -57,6 +57,7 @@ import {
 import { useConfirm } from "../hooks/useConfirm";
 import {
   completeSavedPromptSlashCommand,
+  composerEndsWithPrompt,
   listenToComposerInsert,
   listenToPromptLibraryChanged,
   matchingSavedPromptSlashCommands,
@@ -383,7 +384,8 @@ export default function NativeInput({
   // Saved-prompt insertion requests from the pane header's library menu. The
   // caret lives here, so the splice happens here: insert at the selection (or
   // append when the textarea never had focus), then restore focus with the caret
-  // after the inserted text. The draft and setter are read through latest-refs
+  // after the inserted text. Repeated selections of the draft's suffix only
+  // focus its end. The draft and setter are read through latest-refs
   // so the splice always sees the current text without the effect re-subscribing
   // the listener on every keystroke (its old `value` dependency did exactly that).
   const valueForInsertRef = useRef(value);
@@ -391,13 +393,19 @@ export default function NativeInput({
   const setValueForInsertRef = useRef(setValue);
   setValueForInsertRef.current = setValue;
   useEffect(() => {
-    return listenToComposerInsert(agent.id, (text) => {
+    return listenToComposerInsert(agent.id, (text, onlyIfPresent) => {
       const textarea = textareaRef.current;
       const current = valueForInsertRef.current;
       const start = textarea?.selectionStart ?? current.length;
       const end = textarea?.selectionEnd ?? current.length;
-      setValueForInsertRef.current(current.slice(0, start) + text + current.slice(end));
-      const caret = start + text.length;
+      const alreadyInserted = composerEndsWithPrompt(current, text);
+      if (onlyIfPresent && !alreadyInserted) return false;
+      if (!alreadyInserted) {
+        const next = current.slice(0, start) + text + current.slice(end);
+        valueForInsertRef.current = next;
+        setValueForInsertRef.current(next);
+      }
+      const caret = alreadyInserted ? current.length : start + text.length;
       requestAnimationFrame(() => {
         const el = textareaRef.current;
         if (!el) {
@@ -406,6 +414,7 @@ export default function NativeInput({
         el.focus();
         el.setSelectionRange(caret, caret);
       });
+      return alreadyInserted;
     });
   }, [agent.id]);
 

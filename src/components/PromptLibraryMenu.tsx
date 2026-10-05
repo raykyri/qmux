@@ -1,4 +1,4 @@
-import { BookMarked, Ellipsis, Plus } from "lucide-react";
+import { BookMarked, Plus } from "lucide-react";
 import {
   type DragEvent,
   useCallback,
@@ -19,8 +19,10 @@ import {
   discoverPlaceholders,
   fillPlaceholders,
   listenToSaveDraftAsPrompt,
+  listenToPromptAction,
   notifyPromptLibraryChanged,
   promptNameError,
+  requestComposerPromptReselect,
   slugifyPromptName,
   slugifyPromptNameInput,
 } from "../lib/promptLibrary";
@@ -29,6 +31,7 @@ import {
   ComposerSubmitShortcutGlyph,
   isComposerSubmitShortcut,
 } from "./ComposerSubmitShortcut";
+import { PromptRowMenu } from "./PromptOptionsMenu";
 import ConfirmDialogActionButton from "./ConfirmDialogActionButton";
 import {
   Button,
@@ -41,7 +44,6 @@ import {
 } from "./ui";
 
 const MENU_PREFERRED_WIDTH = 300;
-const ROW_MENU_PREFERRED_WIDTH = 140;
 // Custom MIME type so prompt rows only accept drops that started as prompt rows,
 // never stray text/file drags from elsewhere.
 const PROMPT_DRAG_TYPE = "application/x-qmux-prompt";
@@ -61,6 +63,7 @@ type Dialog =
 interface PromptLibraryMenuProps {
   // Identifies the composer whose draft-save requests this menu handles.
   agentId?: string | null;
+  hideTrigger?: boolean;
   // Inserts the chosen prompt text into the active composer at its caret.
   // Absent (e.g. a terminal pane with no agent) the trigger is disabled.
   onInsert?: (text: string) => void;
@@ -76,146 +79,6 @@ export function promptFirstLine(content: string): string {
   return content.trim().split("\n", 1)[0] || "(empty)";
 }
 
-// The floating "…" menu on a prompt row, mirroring the message-title menu in the
-// right sidebar: a single hover-revealed trigger that overlays the row (no layout
-// shift) and opens a small portaled menu with Edit / Delete.
-function PromptRowMenu({
-  onEdit,
-  onDelete,
-}: {
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const popoverRef = useRef<HTMLDivElement | null>(null);
-  const [pos, setPos] = useState<{
-    left: number;
-    top: number;
-    maxHeight: number;
-    maxWidth: number;
-  } | null>(null);
-
-  const position = useCallback(() => {
-    const trigger = triggerRef.current;
-    const popover = popoverRef.current;
-    if (!trigger || !popover) {
-      return;
-    }
-    const { height } = popover.getBoundingClientRect();
-    setPos(
-      placePanePopover({
-        triggerRect: trigger.getBoundingClientRect(),
-        popoverSize: { width: ROW_MENU_PREFERRED_WIDTH, height },
-        paneRect: turnPaneRectFrom(trigger),
-        align: "end",
-        prefer: "below",
-      }),
-    );
-  }, []);
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (!triggerRef.current?.contains(target) && !popoverRef.current?.contains(target)) {
-        setOpen(false);
-      }
-    };
-    // Registered on window (which captures before document) so this Escape
-    // closes only the row menu, not the prompt-library popover underneath —
-    // its own capture listener sits on document and is stopped here.
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handlePointerDown);
-    window.addEventListener("keydown", handleKeyDown, true);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      window.removeEventListener("keydown", handleKeyDown, true);
-    };
-  }, [open]);
-
-  useLayoutEffect(() => {
-    if (!open) {
-      setPos(null);
-      return;
-    }
-    position();
-    const onReflow = () => position();
-    window.addEventListener("resize", onReflow);
-    window.addEventListener("scroll", onReflow, true);
-    return () => {
-      window.removeEventListener("resize", onReflow);
-      window.removeEventListener("scroll", onReflow, true);
-    };
-  }, [open, position]);
-
-  const item = (label: string, action: () => void, danger = false) => (
-    <button
-      type="button"
-      role="menuitem"
-      className={`menu-item prompt-library-row-menu-item${danger ? " is-danger" : ""}`}
-      onClick={() => {
-        setOpen(false);
-        action();
-      }}
-    >
-      {label}
-    </button>
-  );
-
-  return (
-    <>
-      <button
-        ref={triggerRef}
-        type="button"
-        className={`control-button prompt-library-item-menu-trigger${open ? " is-open" : ""}`}
-        title="Prompt options"
-        aria-label="Prompt options"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={(event) => {
-          event.stopPropagation();
-          setOpen((current) => !current);
-        }}
-      >
-        <Ellipsis size={14} aria-hidden="true" />
-      </button>
-      {open
-        ? createPortal(
-            <div
-              ref={popoverRef}
-              className="popover-surface popover-surface--context prompt-library-row-menu-popover"
-              role="menu"
-              aria-label="Prompt options"
-              style={
-                pos
-                  ? {
-                      left: pos.left,
-                      top: pos.top,
-                      maxHeight: pos.maxHeight,
-                      width: Math.min(ROW_MENU_PREFERRED_WIDTH, pos.maxWidth),
-                      maxWidth: pos.maxWidth,
-                    }
-                  : { left: -9999, top: -9999 }
-              }
-            >
-              {item("Edit", onEdit)}
-              {item("Delete", onDelete, true)}
-            </div>,
-            document.body,
-          )
-        : null}
-    </>
-  );
-}
-
 // The pane header's saved-prompt library: a bookmark button opening a portaled
 // popover with a searchable list of reusable messages, split into a Global
 // section (~/.qmux/prompts/, visible everywhere) and a Project section keyed
@@ -229,6 +92,7 @@ function PromptRowMenu({
 // before insertion, Smithers-style.
 export default function PromptLibraryMenu({
   agentId,
+  hideTrigger = false,
   onInsert,
   projectDir,
   projectPath,
@@ -260,6 +124,8 @@ export default function PromptLibraryMenu({
     maxHeight: number;
     maxWidth: number;
   } | null>(null);
+  const dialogReturnFocusRef = useRef<HTMLElement | null>(null);
+  const dialogFallbackFocusRef = useRef<HTMLElement | null>(null);
   const deleteDialogOpen = dialog?.kind === "delete";
 
   useLayoutEffect(() => {
@@ -300,6 +166,21 @@ export default function PromptLibraryMenu({
     setDialogError(null);
     setDialog({ kind: "editor", original });
   };
+
+  useEffect(() => {
+    if (!agentId) return;
+    return listenToPromptAction(agentId, ({ action, prompt, returnFocusTo }) => {
+      dialogReturnFocusRef.current = returnFocusTo;
+      dialogFallbackFocusRef.current = returnFocusTo.closest(".turn-timeline");
+      setDialogError(null);
+      if (action === "edit") {
+        openEditor(prompt);
+      } else {
+        setDialog({ kind: "delete", prompt });
+      }
+      void refresh();
+    });
+  }, [agentId, refresh]);
 
   // Composer and sent-message menus can open the editor dialog with reusable
   // text. Composer drafts lock to Global; sent messages merely default there.
@@ -401,8 +282,14 @@ export default function PromptLibraryMenu({
     if (!wasOpen || isOpen || dialogProjectDirRef.current !== projectDir) {
       return;
     }
-    (searchInputRef.current ?? triggerRef.current)?.focus();
-  }, [dialog, projectDir]);
+    const returnFocusTo = dialogReturnFocusRef.current;
+    dialogReturnFocusRef.current = null;
+    const fallback = dialogFallbackFocusRef.current;
+    dialogFallbackFocusRef.current = null;
+    (returnFocusTo?.isConnected
+      ? returnFocusTo
+      : searchInputRef.current ?? (hideTrigger ? fallback : triggerRef.current))?.focus();
+  }, [dialog, projectDir, hideTrigger]);
 
   const position = useCallback(() => {
     const trigger = triggerRef.current;
@@ -460,6 +347,10 @@ export default function PromptLibraryMenu({
     const placeholders = discoverPlaceholders(prompt.content);
     if (placeholders.length === 0) {
       insert(prompt.content);
+      return;
+    }
+    if (agentId && requestComposerPromptReselect(agentId, prompt.content)) {
+      setOpen(false);
       return;
     }
     // Seed every discovered name as an OWN empty string (Object.fromEntries
@@ -900,6 +791,8 @@ export default function PromptLibraryMenu({
     <div className="prompt-library">
       <button
         ref={triggerRef}
+        hidden={hideTrigger}
+        style={hideTrigger ? { display: "none" } : undefined}
         type="button"
         className={`control-button turn-pane-header-button${open ? " is-active" : ""}`}
         title="Prompt library"

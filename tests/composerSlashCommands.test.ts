@@ -12,6 +12,7 @@ import {
 } from "../src/lib/composerActions";
 import {
   completeSavedPromptSlashCommand,
+  composerEndsWithPrompt,
   matchingSavedPromptSlashCommands,
   promptNameError,
   savedPromptForExactSlashCommand,
@@ -24,6 +25,17 @@ import type { PromptScope, SavedPrompt } from "../src/types";
 function savedPrompt(name: string, content: string, scope: PromptScope = "global"): SavedPrompt {
   return { name, content, scope, modifiedMs: 1 };
 }
+
+test("reselecting a prompt recognizes only its entire text at the draft's end", () => {
+  const text = "Review the changes\nand their tests.";
+  assert.equal(composerEndsWithPrompt(text, text), true);
+  assert.equal(composerEndsWithPrompt(`Context\n${text}`, text), true);
+  assert.equal(composerEndsWithPrompt(`Context\n${text} \n`, ` \n${text}\n`), true);
+  assert.equal(composerEndsWithPrompt(`${text}\nMore instructions`, text), false);
+  assert.equal(composerEndsWithPrompt("and their tests.", text), false);
+  assert.equal(composerEndsWithPrompt("Review the changes and their tests.", text), false);
+  assert.equal(composerEndsWithPrompt("Draft", " \n"), false);
+});
 
 test("matches command prefixes only in the first unfinished token", () => {
   assert.deepEqual(

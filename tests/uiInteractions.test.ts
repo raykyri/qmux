@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, afterEach, test } from "node:test";
 import { JSDOM } from "jsdom";
 import { act, createElement as h } from "react";
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 
 const dom = new JSDOM('<!doctype html><div id="root"></div>', {
   url: "http://localhost",
@@ -15,6 +16,7 @@ for (const key of [
   "Node",
   "DOMRect",
   "CustomEvent",
+  "Event",
   "MouseEvent",
   "KeyboardEvent",
 ]) {
@@ -37,6 +39,9 @@ const { default: DiagramLightbox } = await import("../src/components/DiagramLigh
 const { openImageLightbox, closeImageLightbox } = await import("../src/lib/imageLightbox");
 const { openDiagramLightbox, closeDiagramLightbox } = await import("../src/lib/diagramLightbox");
 const { requestResearchFolderMenuToggle } = await import("../src/lib/researchShortcuts");
+const { default: EmptyPromptCards } = await import("../src/components/EmptyPromptCards");
+const { default: PromptLibraryMenu } = await import("../src/components/PromptLibraryMenu");
+const { listenToComposerInsert } = await import("../src/lib/promptLibrary");
 const container = document.getElementById("root")!;
 let root = createRoot(container);
 const click = async (el: Element) =>
@@ -57,6 +62,7 @@ afterEach(async () => {
     closeDiagramLightbox();
     root.unmount();
   });
+  clearMocks();
   document.body.innerHTML = "";
   document.body.appendChild(container);
   root = createRoot(container);
@@ -252,4 +258,93 @@ test("remote link menu skips unavailable cache, copies, and restores focus on Ta
   (document.querySelector("[role=menuitem]") as HTMLElement).focus();
   await key("Tab");
   assert.ok(closed); assert.equal(document.activeElement, trigger);
+});
+
+
+for (const headerless of [false, true]) {
+  test(`prompt cards open their Edit/Delete menu and restore focus (${headerless ? "headerless" : "header"})`, async () => {
+    const prompt = { name: "review", content: "Review changes", scope: "project", modifiedMs: 7 };
+    let prompts = [prompt];
+    const inserted: string[] = [];
+    let deletion: unknown;
+    mockIPC((command, args) => {
+      if (command === "prompt_library_list") return { prompts, hasProjectScope: true };
+      if (command === "prompt_library_delete") {
+        deletion = args;
+        prompts = [];
+      }
+    });
+    await act(() => root.render(h("div", { className: "turn-pane" },
+      !headerless ? h(PromptLibraryMenu, { agentId: "agent", projectDir: "/project" }) : null,
+      h("div", { className: "turn-timeline", tabIndex: 0 },
+        h(EmptyPromptCards, {
+          projectDir: "/project",
+          promptLibraryAgentId: headerless ? null : "agent",
+          onInsert: (text: string) => inserted.push(text),
+        }),
+      ),
+    )));
+    const card = document.querySelector<HTMLButtonElement>(".turn-empty-prompt-card")!;
+    await click(card);
+    assert.deepEqual(inserted, [prompt.content]);
+    const openContext = async () => act(() => {
+      card.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 90, clientY: 100 }));
+    });
+    await openContext();
+    assert.equal(document.activeElement?.textContent, "Edit");
+    await key("ArrowDown");
+    assert.equal(document.activeElement?.textContent, "Delete");
+    await key("Escape");
+    assert.equal(document.querySelector('[aria-label="Prompt options"][role="menu"]'), null);
+    assert.equal(document.activeElement, card);
+
+    await openContext();
+    await click(document.activeElement!);
+    assert.equal(document.querySelector('[role="dialog"]')?.getAttribute("aria-label"), "Edit prompt");
+    assert.equal(document.querySelector<HTMLInputElement>(".prompt-library-name-input")?.value, "review");
+    await key("Escape");
+    assert.equal(document.activeElement, card);
+
+    await key("F10", true);
+    assert.equal(document.activeElement?.textContent, "Edit");
+    await key("Tab");
+    assert.equal(document.querySelector('[aria-label="Prompt options"][role="menu"]'), null);
+
+    await openContext();
+    await key("ArrowDown");
+    await click(document.activeElement!);
+    assert.equal(document.querySelector('[role="dialog"]')?.getAttribute("aria-label"), "Delete prompt");
+    await click(document.querySelector(".confirm-dialog-actions button:last-child")!);
+    assert.deepEqual(deletion, {
+      scope: "project", name: "review", projectDir: "/project", expectedModifiedMs: 7,
+    });
+    assert.equal(document.querySelector(".turn-empty-prompt-card"), null);
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(document.activeElement, document.querySelector(headerless ? ".turn-timeline" : ".turn-pane-header-button"));
+    assert.deepEqual(inserted, [prompt.content], "context-menu actions never insert the prompt");
+  });
+}
+
+
+test("reselecting a placeholder prompt already in the composer skips the fill form", async () => {
+  const prompt = { name: "review", content: "Review {target}", scope: "global", modifiedMs: 1 };
+  mockIPC((command) => command === "prompt_library_list" ? { prompts: [prompt], hasProjectScope: false } : undefined);
+  const selections: string[] = [];
+  const stop = listenToComposerInsert("agent", (text, onlyIfPresent) => {
+    assert.equal(onlyIfPresent, true);
+    selections.push(text);
+    return true;
+  });
+  try {
+    await act(() => root.render(h("div", { className: "turn-pane" },
+      h(PromptLibraryMenu, { agentId: "agent", onInsert: () => assert.fail("must only refocus") }),
+    )));
+    await click(document.querySelector(".turn-pane-header-button")!);
+    await click(document.querySelector(".prompt-library-item-main")!);
+    assert.deepEqual(selections, [prompt.content]);
+    assert.equal(document.querySelector(".prompt-library-menu"), null);
+    assert.equal(document.querySelector(".prompt-library-fill-snippet"), null);
+  } finally {
+    stop();
+  }
 });

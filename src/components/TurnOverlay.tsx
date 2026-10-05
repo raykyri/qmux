@@ -1026,11 +1026,17 @@ export default function TurnOverlay({
         ? composerHeight + COMPOSER_CLEARANCE
         : DEFAULT_COMPOSER_RESERVE
       : 0;
-  const timelineStyle: CSSProperties | undefined = !readerMode && queueSplit
-    ? { bottom: effectiveQueueSplitHeight, paddingBottom: 10 }
-    : tailReserveHeight > 0
-      ? { paddingBottom: 0 }
-      : undefined;
+  const emptyComposerReserve = !readerMode && !queueSplit && input
+    ? (composerHeight || DEFAULT_COMPOSER_RESERVE) + COMPOSER_CLEARANCE
+    : 0;
+  const timelineStyle: CSSProperties & { "--turn-empty-composer-reserve": string } = {
+    "--turn-empty-composer-reserve": `${emptyComposerReserve}px`,
+    ...(!readerMode && queueSplit
+      ? { bottom: effectiveQueueSplitHeight, paddingBottom: 10 }
+      : tailReserveHeight > 0
+        ? { paddingBottom: 0 }
+        : {}),
+  };
   const inputStyle: CSSProperties | undefined = !readerMode && queueSplit
     ? { height: effectiveQueueSplitHeight }
     : undefined;
@@ -1372,6 +1378,7 @@ export default function TurnOverlay({
                 key={promptProjectDir ?? "global"}
                 projectDir={promptProjectDir}
                 onInsert={onInsertPrompt}
+                promptLibraryAgentId={savePromptAgentId}
               />
             ) : null}
           </div>

@@ -92,6 +92,12 @@ export function completeSavedPromptSlashCommand(value: string, prompt: SavedProm
   return value === token ? prompt.content : token;
 }
 
+/** A repeated selection should focus the draft rather than append the same prompt. */
+export function composerEndsWithPrompt(value: string, text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.length > 0 && (value.endsWith(text) || value.trimEnd().endsWith(trimmed));
+}
+
 export function shouldExpandExactSavedPromptOnKey(key: string, slashMenuOpen: boolean): boolean {
   return key === " " || (key === "Enter" && !slashMenuOpen);
 }
@@ -130,6 +136,30 @@ export function fillPlaceholders(content: string, values: Record<string, string>
 const COMPOSER_INSERT_EVENT = "qmux:composer-insert";
 const SAVE_DRAFT_AS_PROMPT_EVENT = "qmux:save-draft-as-prompt";
 const PROMPT_LIBRARY_CHANGED_EVENT = "qmux:prompt-library-changed";
+const PROMPT_ACTION_EVENT = "qmux:prompt-action";
+
+interface PromptActionDetail {
+  agentId: string;
+  action: "edit" | "delete";
+  prompt: SavedPrompt;
+  returnFocusTo: HTMLElement;
+}
+
+export function requestPromptAction(detail: PromptActionDetail) {
+  window.dispatchEvent(new CustomEvent<PromptActionDetail>(PROMPT_ACTION_EVENT, { detail }));
+}
+
+export function listenToPromptAction(
+  agentId: string,
+  onAction: (detail: PromptActionDetail) => void,
+): () => void {
+  const handler = (event: Event) => {
+    const { detail } = event as CustomEvent<PromptActionDetail>;
+    if (detail?.agentId === agentId) onAction(detail);
+  };
+  window.addEventListener(PROMPT_ACTION_EVENT, handler);
+  return () => window.removeEventListener(PROMPT_ACTION_EVENT, handler);
+}
 
 export function notifyPromptLibraryChanged() {
   window.dispatchEvent(new Event(PROMPT_LIBRARY_CHANGED_EVENT));
@@ -143,9 +173,11 @@ export function listenToPromptLibraryChanged(onChange: () => void): () => void {
 interface ComposerInsertDetail {
   agentId: string;
   text: string;
+  onlyIfPresent?: boolean;
+  alreadyPresent?: boolean;
 }
 
-/** Asks the composer bound to `agentId` to insert `text` at its caret and focus. */
+/** Inserts at the caret, or focuses the draft's end when it already ends with this prompt. */
 export function requestComposerInsert(agentId: string, text: string) {
   window.dispatchEvent(
     new CustomEvent<ComposerInsertDetail>(COMPOSER_INSERT_EVENT, {
@@ -154,15 +186,22 @@ export function requestComposerInsert(agentId: string, text: string) {
   );
 }
 
+/** Lets placeholder prompts skip the fill form when the full text is already present. */
+export function requestComposerPromptReselect(agentId: string, text: string): boolean {
+  const detail: ComposerInsertDetail = { agentId, text, onlyIfPresent: true };
+  window.dispatchEvent(new CustomEvent<ComposerInsertDetail>(COMPOSER_INSERT_EVENT, { detail }));
+  return detail.alreadyPresent === true;
+}
+
 /** Subscribes a composer to insert requests; returns the unsubscribe function. */
 export function listenToComposerInsert(
   agentId: string,
-  onInsert: (text: string) => void,
+  onInsert: (text: string, onlyIfPresent: boolean) => boolean,
 ): () => void {
   const handler = (event: Event) => {
     const { detail } = event as CustomEvent<ComposerInsertDetail>;
     if (detail?.agentId === agentId && typeof detail.text === "string") {
-      onInsert(detail.text);
+      detail.alreadyPresent = onInsert(detail.text, detail.onlyIfPresent === true);
     }
   };
   window.addEventListener(COMPOSER_INSERT_EVENT, handler);

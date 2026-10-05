@@ -23,6 +23,7 @@
 .turn-timeline.is-empty {
   justify-content: safe center;
   padding: 24px;
+  padding-bottom: calc(24px + var(--turn-empty-composer-reserve, 148px));
 }
 
 .turn-conversation-history-loader {
@@ -245,9 +246,27 @@
   font-size: calc(14px + var(--transcript-font-delta, 0px));
 }
 
+.turn-timeline > .turn-empty-state {
+  flex-shrink: 1;
+  min-height: 0;
+  max-height: 100%;
+}
+
+.turn-timeline > .turn-empty-state > :not(.turn-empty-prompts) {
+  flex-shrink: 0;
+}
+
 .turn-empty-prompts {
+  min-height: 0;
+  flex: 0 1 auto;
   width: min(100%, 620px);
   margin-top: 28px;
+  /* The timeline starts below the header and reserves the measured composer
+     (including its footer). Leave room for both placeholder lines and padding. */
+  max-height: max(0px, calc(100vh - 48px - var(--turn-empty-composer-reserve, 148px) - 120px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 3px;
   text-align: left;
 }
 
@@ -260,10 +279,10 @@
 .turn-empty-prompt-card {
   display: flex;
   min-width: 0;
-  min-height: 88px;
+  min-height: 80px;
   flex-direction: column;
-  gap: 7px;
-  padding: 10px 11px;
+  gap: 5px;
+  padding: 9px 11px 5px;
   border: 1px solid var(--surface-border-subtle);
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--text-primary) 3%, var(--right-pane-bg));
@@ -285,7 +304,7 @@
 
 .turn-empty-prompt-card-name {
   overflow: hidden;
-  font-size: calc(13px + var(--transcript-font-delta, 0px));
+  font-size: calc(12px + var(--transcript-font-delta, 0px));
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
