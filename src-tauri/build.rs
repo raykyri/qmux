@@ -1,3 +1,4 @@
+#![cfg_attr(not(feature = "desktop"), allow(dead_code))]
 use std::{
     cmp::Ordering,
     env,
@@ -13,9 +14,12 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
     println!("cargo:rerun-if-env-changed=QMUX_REQUIRE_FOUNDATION_MODELS");
     println!("cargo:rerun-if-env-changed=QMUX_ALLOW_MISSING_FOUNDATION_MODELS");
-    build_native_terminal_bridge();
-    build_foundation_title_bridge();
-    tauri_build::build();
+    #[cfg(feature = "desktop")]
+    {
+        build_native_terminal_bridge();
+        build_foundation_title_bridge();
+        tauri_build::build();
+    }
 }
 
 fn build_native_terminal_bridge() {

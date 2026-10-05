@@ -898,7 +898,10 @@ mod tests {
             show_hide_shortcut: Some("Shift+Command+A".to_string()),
             ..Default::default()
         };
-        persistence::save_preferences(&root, &preferences).unwrap();
+        persistence::update_preferences(&root, |saved| {
+            *saved = preferences.clone();
+        })
+        .unwrap();
 
         let state = ShowHideShortcutState::default();
         {

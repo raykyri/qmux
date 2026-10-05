@@ -604,7 +604,7 @@ pub fn spawn_shell_pane_at(
             state,
             spec,
             remote,
-            cfg!(all(target_os = "macos", not(test))),
+            cfg!(all(target_os = "macos", not(test))) && crate::native_terminal::available(),
             true,
         );
     }
@@ -922,7 +922,8 @@ pub fn reattach_remote_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInf
         &identity,
         &state.config().socket_path.display().to_string(),
     )?;
-    let native_surface = cfg!(all(target_os = "macos", not(test)));
+    let native_surface =
+        cfg!(all(target_os = "macos", not(test))) && crate::native_terminal::available();
     let controller = RemoteAttachmentController::new();
     let history = RemoteHistoryCheckpoint::new(read_remote_history_checkpoint(
         &state.config().workspace_root,
@@ -1565,7 +1566,11 @@ fn resolved_initial_size(initial_size: Option<InitialPaneSize>) -> InitialPaneSi
 }
 
 pub fn spawn_pty(state: &AppState, spec: PtySpawnSpec) -> Result<PaneInfo, String> {
-    spawn_portable_pty(state, spec, cfg!(all(target_os = "macos", not(test))))
+    spawn_portable_pty(
+        state,
+        spec,
+        cfg!(all(target_os = "macos", not(test))) && crate::native_terminal::available(),
+    )
 }
 
 /// The base environment shared by both renderers: the resolved child PATH,
@@ -2772,7 +2777,7 @@ fn ensure_remote_tmux_version(argv: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn validate_remote_tmux_version(raw: &str) -> Result<(), String> {
+pub fn validate_remote_tmux_version(raw: &str) -> Result<(), String> {
     let version = raw
         .strip_prefix("tmux ")
         .and_then(|version| {
@@ -3846,7 +3851,7 @@ fn write_pane_sequenced(
 /// Stripping runs to a fixed point: a single non-overlapping `replace` pass can
 /// leave a fresh marker behind when the input nests them (e.g. `\x1b[201\x1b[201~~`
 /// collapses to a live `\x1b[201~`), so we repeat until no marker remains.
-pub(crate) fn strip_bracketed_paste_markers(data: &str) -> Cow<'_, str> {
+pub fn strip_bracketed_paste_markers(data: &str) -> Cow<'_, str> {
     if !data.contains("\x1b[200~") && !data.contains("\x1b[201~") {
         return Cow::Borrowed(data);
     }
@@ -4006,7 +4011,7 @@ pub fn resize_native_host_pane(
 /// Claim Cmd-K only for a remote backend. Local panes keep Ghostty's
 /// clear_screen action; remote panes ask the running shell/TUI to redraw via
 /// Ctrl-L. This intentionally does not erase tmux history.
-pub(crate) fn clear_remote_native_screen(state: &AppState, pane_id: &str) -> bool {
+pub fn clear_remote_native_screen(state: &AppState, pane_id: &str) -> bool {
     match state.pane_remote_control(pane_id) {
         Ok(Some(_)) => {
             if let Err(err) = write_native_host_input(state, pane_id, vec![0x0c]) {
@@ -4955,7 +4960,7 @@ fn running_processes(pids: &[u32]) -> Vec<RunningProcess> {
 /// macOS) per process — every pane close and watcher refresh paid tens to
 /// hundreds of milliseconds. One `ps` is a single subprocess regardless of tree
 /// size.
-pub(crate) fn descendant_process_ids(pid: u32) -> Vec<u32> {
+pub fn descendant_process_ids(pid: u32) -> Vec<u32> {
     descendants_from_parent_pairs(pid, &process_parent_snapshot())
 }
 

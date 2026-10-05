@@ -5,6 +5,7 @@ use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(feature = "desktop")]
 use tauri::Manager;
 
 const MAX_TITLE_CHARS: usize = 120;
@@ -258,6 +259,7 @@ fn emit_log_changed(state: &AppState, log: &NotificationLog) {
     ));
 }
 
+#[cfg(feature = "desktop")]
 fn main_window_is_focused(state: &AppState) -> bool {
     let Some(app) = state.app_handle() else {
         return false;
@@ -317,7 +319,7 @@ pub fn dispatch(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 fn show_native(
     state: &AppState,
     source_pane_id: Option<&str>,
@@ -380,7 +382,7 @@ fn show_native(
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(all(target_os = "macos", feature = "desktop")))]
 fn show_native(
     _state: &AppState,
     _source_pane_id: Option<&str>,
@@ -390,11 +392,13 @@ fn show_native(
     Err("native notifications are unavailable on this platform".to_string())
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn notification_log_get(state: tauri::State<'_, AppState>) -> Result<NotificationLog, String> {
     state.notification_log()
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn notification_log_mark_read(
     state: tauri::State<'_, AppState>,
@@ -405,6 +409,7 @@ pub fn notification_log_mark_read(
     Ok(log)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn notification_log_mark_all_read(
     state: tauri::State<'_, AppState>,
@@ -414,6 +419,7 @@ pub fn notification_log_mark_all_read(
     Ok(log)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn notification_log_clear(
     state: tauri::State<'_, AppState>,
@@ -424,17 +430,19 @@ pub fn notification_log_clear(
     Ok(log)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command(async)]
 pub async fn notification_permission_status() -> Result<NotificationPermissionInfo, String> {
     permission_status().await
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command(async)]
 pub async fn notification_request_permission() -> Result<NotificationPermissionInfo, String> {
     request_permission().await
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 async fn permission_status() -> Result<NotificationPermissionInfo, String> {
     let settings = mac_usernotifications::get_notification_settings()
         .await
@@ -445,7 +453,7 @@ async fn permission_status() -> Result<NotificationPermissionInfo, String> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(all(target_os = "macos", feature = "desktop")))]
 async fn permission_status() -> Result<NotificationPermissionInfo, String> {
     Ok(NotificationPermissionInfo {
         supported: false,
@@ -453,7 +461,7 @@ async fn permission_status() -> Result<NotificationPermissionInfo, String> {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 async fn request_permission() -> Result<NotificationPermissionInfo, String> {
     mac_usernotifications::request_auth()
         .await
@@ -461,7 +469,7 @@ async fn request_permission() -> Result<NotificationPermissionInfo, String> {
     permission_status().await
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(all(target_os = "macos", feature = "desktop")))]
 async fn request_permission() -> Result<NotificationPermissionInfo, String> {
     permission_status().await
 }
@@ -572,4 +580,9 @@ mod tests {
             Some("cap-204")
         );
     }
+}
+
+#[cfg(not(feature = "desktop"))]
+fn main_window_is_focused(_: &AppState) -> bool {
+    false
 }

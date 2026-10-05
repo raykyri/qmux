@@ -1,52 +1,42 @@
-mod adapters;
+use qmux::adapters;
 mod browser_backend;
 mod browser_engine;
-mod claude_sdk;
-mod completion_sound;
-mod config;
-mod connection_limit;
-mod control;
-mod control_socket;
-mod events;
-mod file_server;
+use qmux::completion_sound;
+use qmux::config;
+use qmux::control_socket;
+use qmux::events;
+use qmux::file_server;
 mod global_task_launcher;
-mod headless_process;
-mod history;
-mod host;
+use qmux::history;
+use qmux::host;
 mod human_browser;
-mod image_files;
-mod journal;
-mod launch_path;
-mod mcp;
+use qmux::image_files;
+use qmux::journal;
+use qmux::launch_path;
 mod menu_bar;
 mod native_terminal;
-mod persistence;
-mod prompt_library;
-mod pty;
+use qmux::persistence;
+use qmux::prompt_library;
+use qmux::pty;
 mod publishing;
-mod recovery;
-mod remote_cli;
-mod remote_files;
-mod remote_preview;
-mod remote_process;
-mod remote_terminal;
-mod remote_transcript;
-mod remote_transport;
-mod research;
-mod research_runtime;
-mod scrollback;
-mod shell_jobs;
+use qmux::recovery;
+use qmux::remote_cli;
+use qmux::remote_files;
+use qmux::remote_preview;
+use qmux::research;
+use qmux::research_runtime;
+use qmux::scrollback;
 mod show_hide_shortcut;
 mod sleep;
-mod ssh_config;
-mod state;
-mod thread_graph;
-mod title_generation;
-mod transcript;
-mod turn_queue;
+use qmux::ssh_config;
+use qmux::state;
+use qmux::thread_graph;
+use qmux::title_generation;
+use qmux::transcript;
+use qmux::turn_queue;
 mod updater;
-mod user_notifications;
-mod workspace;
+use qmux::user_notifications;
+use qmux::workspace;
 
 use adapters::{
     MessageAnchor, SpawnAgentRequest, SpawnClaudeRequest, agent_fork as fork_agent_pane,
@@ -3809,6 +3799,7 @@ pub(crate) fn ensure_rustls_crypto_provider() -> Result<(), String> {
 }
 
 fn main() {
+    qmux::native_terminal::install(std::sync::Arc::new(DesktopTerminal));
     ensure_rustls_crypto_provider().unwrap_or_else(|err| {
         eprintln!("{err}");
         std::process::exit(1);
@@ -4411,5 +4402,39 @@ mod browser_preview_url_tests {
         assert!(validated_preview_url("http://localhost:5173/", 8123).is_err());
         assert!(validated_preview_url("https://localhost:8123/token/file", 8123).is_err());
         assert!(validated_preview_url("http://example.com:8123/token/file", 8123).is_err());
+    }
+}
+
+struct DesktopTerminal;
+impl qmux::native_terminal::TerminalHost for DesktopTerminal {
+    fn create(&self, id: &str, cwd: Option<&str>) -> Result<(), String> {
+        native_terminal::create_host_managed(id, cwd)
+    }
+    fn receive(&self, id: &str, bytes: &[u8], replay: bool) -> Result<(), String> {
+        native_terminal::receive(id, bytes, replay)
+    }
+    fn ready(&self, id: &str) -> Result<bool, String> {
+        native_terminal::is_ready_for_replay(id)
+    }
+    fn remove(&self, id: &str) -> Result<(), String> {
+        native_terminal::remove(id)
+    }
+    fn paste(&self, id: &str, text: &str) -> Result<(), String> {
+        native_terminal::paste_approved_text(id, text)
+    }
+    fn text(&self, id: &str, text: &str) -> Result<(), String> {
+        native_terminal::send_text(id, text)
+    }
+    fn submit(&self, id: &str) -> Result<(), String> {
+        native_terminal::submit(id)
+    }
+    fn viewport(&self, id: String) -> Result<String, String> {
+        native_terminal::native_terminal_read_viewport_text(id)
+    }
+    fn recent_ctrl_d(&self, id: &str) -> bool {
+        native_terminal::take_recent_remote_ctrl_d(id)
+    }
+    fn sound(&self, id: &str) -> Result<(), String> {
+        native_terminal::play_completion_sound(id)
     }
 }

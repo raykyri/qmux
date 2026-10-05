@@ -738,6 +738,7 @@ fn emit_watch_event(
 
 fn warn_control_socket(state: &AppState, message: &str) {
     eprintln!("qmux: {message}");
+    #[cfg(feature = "desktop")]
     if let Some(app) = state.app_handle() {
         use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
         app.dialog()
@@ -748,6 +749,7 @@ fn warn_control_socket(state: &AppState, message: &str) {
     }
 }
 
+#[cfg(feature = "desktop")]
 fn prompt_replace_conflict_socket(
     state: &AppState,
     socket_path: &Path,
@@ -1514,7 +1516,7 @@ fn validate_control_launch_workspace(state: &AppState, pane_id: &str) -> Result<
 /// `url`, whose file-server token goes stale across runs — and is None for
 /// loopback http(s) URLs.
 #[derive(Debug)]
-pub(crate) struct ResolvedBrowserTarget {
+pub struct ResolvedBrowserTarget {
     pub url: String,
     pub sandbox: bool,
     pub path: Option<std::path::PathBuf>,
@@ -1525,7 +1527,7 @@ pub(crate) struct ResolvedBrowserTarget {
 /// (minted into a token-bearing file-server URL and sandboxed). Shared by the
 /// control-socket `browser.open` path and the trusted GUI command that opens
 /// local file links from transcript markdown.
-pub(crate) fn resolve_browser_target(
+pub fn resolve_browser_target(
     state: &AppState,
     authed_pane: &str,
     target: &str,
@@ -2720,4 +2722,12 @@ mod tests {
         wait_for_ping(&socket_path, &token, Duration::from_secs(1));
         runtime.shutdown();
     }
+}
+
+#[cfg(not(feature = "desktop"))]
+fn prompt_replace_conflict_socket(_: &AppState, path: &Path, _: &Arc<SupervisorShared>) {
+    eprintln!(
+        "qmux: control socket conflict at {}; refusing automatic takeover",
+        path.display()
+    );
 }

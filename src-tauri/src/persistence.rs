@@ -50,7 +50,7 @@ const MIN_MIGRATABLE_STATE_VERSION: u32 = 2;
 const STATE_FILE: &str = "state.json";
 const PREFERENCES_FILE: &str = "preferences.json";
 const V2_BACKUP_FILE: &str = "state.v2.bak";
-pub(crate) const STATE_DIR: &str = ".qmux";
+pub const STATE_DIR: &str = ".qmux";
 
 /// Snapshot of everything a qmux restart needs to recreate panes, agents,
 /// groups and queued turns. Live PTY handles are intentionally absent: a
@@ -1125,7 +1125,7 @@ pub(crate) fn process_is_alive(pid: u32) -> bool {
 
 /// Writes `bytes` to `path` and fsyncs the file before returning, so the contents
 /// are on disk before the caller renames it into place.
-pub(crate) fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     // Owner-only: this temp is renamed over state.json / preferences.json, which hold
     // composer drafts and queued-turn prompt text, so keep it 0600 rather than the umask

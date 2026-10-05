@@ -8322,3 +8322,21 @@ fn stale_shell_job_cleanup_must_match_its_agent() {
             .is_some()
     );
 }
+
+#[test]
+fn event_sink_can_read_state_and_detach_during_delivery() {
+    let dir = temp_workspace();
+    let state = AppState::new(test_config(dir.clone()));
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let received = observed.clone();
+    let reader = state.clone();
+    state.set_event_sink(Some(Arc::new(move |event| {
+        reader.list_panes().unwrap();
+        reader.set_event_sink(None);
+        received.lock().unwrap().push(event.event_type);
+    })));
+    state.emit(QmuxEvent::new("test.detached", None, None, json!({})));
+    state.emit(QmuxEvent::new("test.after_detach", None, None, json!({})));
+    assert_eq!(*observed.lock().unwrap(), ["test.detached"]);
+    std::fs::remove_dir_all(dir).unwrap();
+}

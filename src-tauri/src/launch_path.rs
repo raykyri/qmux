@@ -45,7 +45,7 @@ const SYSTEM_FALLBACK_DIRS: &[&str] = &[
 /// main thread inside the startup hook. Warming it as startup's first act
 /// overlaps the probe with the rest of setup, and any spawn that arrives early
 /// simply blocks on the same `OnceLock` init instead of starting a second probe.
-pub(crate) fn warm_login_shell_path() {
+pub fn warm_login_shell_path() {
     std::thread::spawn(|| {
         let _ = login_shell_path_dirs();
     });

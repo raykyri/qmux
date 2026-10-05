@@ -12,9 +12,14 @@ edition = "2024"
 [[bin]]
 name = "qmux"
 path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-clipboard-manager", "dep:tauri-plugin-dialog", "dep:tauri-plugin-global-shortcut", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:window-vibrancy", "dep:mac-usernotifications"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", features = [], optional = true }
 
 [profile.release]
 lto = "thin"
@@ -48,19 +53,19 @@ serde_json = "1"
 # on the 2.11 minor while qmux also reaches the platform WKWebView handle for its
 # native shortcut bridge; that handle is explicitly allowed to change between
 # Tauri minor releases.
-tauri = { version = "~2.11.3", features = ["macos-private-api", "tray-icon", "unstable"] }
+tauri = { optional = true, version = "~2.11.3", features = ["macos-private-api", "tray-icon", "unstable"] }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 url = "2"
-tauri-plugin-clipboard-manager = "2.3.2"
-tauri-plugin-dialog = "2"
-tauri-plugin-global-shortcut = "2.3.2"
-tauri-plugin-single-instance = "2"
-tauri-plugin-updater = "2"
-window-vibrancy = "0.7.1"
+tauri-plugin-clipboard-manager = { version = "2.3.2", optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-global-shortcut = { version = "2.3.2", optional = true }
+tauri-plugin-single-instance = { version = "2", optional = true }
+tauri-plugin-updater = { version = "2", optional = true }
+window-vibrancy = { version = "0.7.1", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
-mac-usernotifications = "0.3.1"
+mac-usernotifications = { version = "0.3.1", optional = true }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",

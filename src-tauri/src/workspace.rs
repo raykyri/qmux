@@ -2898,7 +2898,7 @@ fn dir_holds_nothing_but(dir: &Path, allowed: &str) -> bool {
 /// any other content, the managed directory is left exactly as found — manifest
 /// included, so it stays self-describing — rather than half-dismantled just to
 /// complete best-effort cleanup.
-pub(crate) fn remove_pristine_group_scaffold(group: &GroupInfo) {
+pub fn remove_pristine_group_scaffold(group: &GroupInfo) {
     if group.managed_dir == group.dir {
         return;
     }

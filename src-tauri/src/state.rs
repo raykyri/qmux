@@ -37,7 +37,9 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Url};
+#[cfg(feature = "desktop")]
+use tauri::{AppHandle, Emitter};
+use url::Url;
 
 pub type SharedChild = Arc<Mutex<Box<dyn Child + Send + Sync>>>;
 pub type SharedMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
@@ -365,7 +367,9 @@ struct AppStateInner {
     transcript_binding_candidates: Mutex<HashMap<String, TranscriptBindingCandidate>>,
     next_transcript_binding_candidate: AtomicU64,
     next_id: AtomicU64,
+    #[cfg(feature = "desktop")]
     app_handle: Mutex<Option<AppHandle>>,
+    event_sink: Mutex<Option<Arc<dyn Fn(QmuxEvent) + Send + Sync>>>,
     /// Reload-safe agent-completion lifecycle and the current sound preference.
     /// Kept outside Model: it is process-local UI behavior, not workspace data.
     completion_sound: Mutex<crate::completion_sound::CompletionSoundState>,
@@ -2013,7 +2017,9 @@ impl AppState {
                 transcript_binding_candidates: Mutex::new(HashMap::new()),
                 next_transcript_binding_candidate: AtomicU64::new(1),
                 next_id: AtomicU64::new(1),
+                #[cfg(feature = "desktop")]
                 app_handle: Mutex::new(None),
+                event_sink: Mutex::new(None),
                 completion_sound: Mutex::new(
                     crate::completion_sound::CompletionSoundState::default(),
                 ),
@@ -3084,6 +3090,7 @@ impl AppState {
         thread_graph::flush_dirty_thread_graphs();
     }
 
+    #[cfg(feature = "desktop")]
     pub fn attach_app(&self, app_handle: AppHandle) -> Result<(), String> {
         let mut handle = self
             .inner
@@ -3097,6 +3104,7 @@ impl AppState {
     /// Clones the process app handle without holding the mutex across caller
     /// work. Native callbacks use this to schedule main-thread recovery after
     /// WebKit health probes time out.
+    #[cfg(feature = "desktop")]
     pub fn app_handle(&self) -> Option<AppHandle> {
         self.inner
             .app_handle
@@ -3135,10 +3143,29 @@ impl AppState {
         // the IPC; holding the mutex across that serialized every event in the
         // process behind one lock — including main-thread native-input callbacks
         // contending with transcript tails mid-serialize.
-        let app_handle = self.app_handle();
-        if let Some(app_handle) = app_handle {
-            let _ = app_handle.emit("qmux-event", event);
+        let sink = self
+            .inner
+            .event_sink
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        if let Some(sink) = sink {
+            sink(event);
+        } else {
+            #[cfg(feature = "desktop")]
+            if let Some(app_handle) = self.app_handle() {
+                let _ = app_handle.emit("qmux-event", event);
+            }
         }
+    }
+
+    /// Replace the delivery endpoint without holding state locks during callbacks.
+    pub fn set_event_sink(&self, sink: Option<Arc<dyn Fn(QmuxEvent) + Send + Sync>>) {
+        *self
+            .inner
+            .event_sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = sink;
     }
 
     pub fn set_completion_sound(&self, sound_id: &str) -> Result<(), String> {
@@ -7287,7 +7314,7 @@ fn shell_agent_resume(agent: &AgentInfo) -> Option<ShellAgentResume> {
     })
 }
 
-pub(crate) fn now_millis() -> u128 {
+pub fn now_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
