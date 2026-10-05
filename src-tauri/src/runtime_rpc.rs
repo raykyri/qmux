@@ -1,7 +1,8 @@
 //! Private, bounded runtime IPC. Events are invalidation notices, not model
 //! patches: clients refetch affected entities and replace snapshots on a gap.
-//! A snapshot's cursor is sampled BEFORE its model read, so a concurrent change
-//! can be reported twice but can never be silently skipped.
+//! A snapshot's cursor is sampled BEFORE its model read, so events emitted
+//! during capture remain eligible for replay; clients may refresh twice.
+use crate::runtime_paths::{exclusive_lock, existing_private_directory, private_directory};
 use crate::{events::QmuxEvent, state::AppState};
 use qmux_proto::runtime::{MAX_REQUEST, MAX_RESPONSE, Operation, Request, Response, VERSION};
 use serde::{Serialize, de::DeserializeOwned};
@@ -10,8 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -26,39 +26,6 @@ const EVENT_COUNT: usize = 4096;
 const CLIENT_COUNT: usize = 65_536;
 const TOTAL_REPLY_BYTES: usize = 8 * 1024 * 1024;
 const CACHED_REPLY_BYTES: usize = 512 * 1024;
-
-pub(crate) fn private_directory(root: &Path) -> Result<PathBuf, String> {
-    match fs::DirBuilder::new().mode(0o700).create(root) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e.to_string()),
-    }
-    let meta = fs::symlink_metadata(root).map_err(|e| e.to_string())?;
-    if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
-        return Err("runtime directory must be owned by this user with mode 0700".into());
-    }
-    root.canonicalize().map_err(|e| e.to_string())
-}
-
-pub(crate) fn exclusive_lock(path: &Path) -> Result<File, String> {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)
-        .map_err(|e| e.to_string())?;
-    let meta = file.metadata().map_err(|e| e.to_string())?;
-    if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
-        return Err("runtime lock must be an owner-only regular file".into());
-    }
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err("this runtime or workspace already has an owner".into());
-    }
-    Ok(file)
-}
 
 fn random_id() -> Result<String, String> {
     let mut bytes = [0; 32];
@@ -300,7 +267,20 @@ impl Core {
                             self.shutdown_requested.store(true, Ordering::Release);
                             return Ok(Value::Null);
                         }
-                        crate::runtime_commands::dispatch(&self.state, &method, args.clone())
+                        let result =
+                            crate::runtime_commands::dispatch(&self.state, &method, args.clone());
+                        // Some original desktop commands returned their changed
+                        // entity directly without emitting. Other service clients
+                        // still need an invalidation, including partial failures.
+                        if !crate::runtime_commands::is_read_only(&method) {
+                            self.state.emit(QmuxEvent::new(
+                                "runtime.changed",
+                                None,
+                                None,
+                                json!({"method": method}),
+                            ));
+                        }
+                        result
                     }),
             }
         })();
@@ -477,7 +457,7 @@ pub struct RuntimeClient {
 }
 impl RuntimeClient {
     pub fn connect(root: &Path) -> Result<Self, String> {
-        let root = private_directory(root)?;
+        let root = existing_private_directory(root)?;
         let mut file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
@@ -656,6 +636,17 @@ mod tests {
         let created = client
             .call("create_global_draft", json!({"text":"survives disconnect"}))
             .unwrap();
+        let changes = client.events(0).unwrap();
+        assert!(
+            changes["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["event"]["type"] == "runtime.changed")
+        );
+        let cursor = changes["cursor"].as_u64().unwrap();
+        client.call("list_global_drafts", json!({})).unwrap();
+        assert_eq!(client.events(cursor).unwrap()["events"], json!([]));
         let boot = client.boot.clone();
         drop(client);
         let mut client = RuntimeClient::connect(&root).unwrap();

@@ -36,6 +36,7 @@ pub mod research;
 pub mod research_runtime;
 pub mod research_service;
 pub mod runtime_commands;
+mod runtime_paths;
 pub mod runtime_rpc;
 pub mod runtime_service;
 pub mod scrollback;

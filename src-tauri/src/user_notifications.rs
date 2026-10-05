@@ -453,7 +453,7 @@ async fn permission_status() -> Result<NotificationPermissionInfo, String> {
     })
 }
 
-#[cfg(not(all(target_os = "macos", feature = "desktop")))]
+#[cfg(all(not(target_os = "macos"), feature = "desktop"))]
 async fn permission_status() -> Result<NotificationPermissionInfo, String> {
     Ok(NotificationPermissionInfo {
         supported: false,
@@ -469,7 +469,7 @@ async fn request_permission() -> Result<NotificationPermissionInfo, String> {
     permission_status().await
 }
 
-#[cfg(not(all(target_os = "macos", feature = "desktop")))]
+#[cfg(all(not(target_os = "macos"), feature = "desktop"))]
 async fn request_permission() -> Result<NotificationPermissionInfo, String> {
     permission_status().await
 }

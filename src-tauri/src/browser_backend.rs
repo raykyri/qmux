@@ -91,6 +91,9 @@ impl BrowserDiscoverySocket {
 impl Drop for BrowserDiscoverySocket {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
+        if let Some(engine) = &self._backend.engine {
+            engine.shutdown();
+        }
         let _ = fs::remove_file(&self.socket_path);
     }
 }

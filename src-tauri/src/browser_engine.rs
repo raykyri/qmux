@@ -13,7 +13,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -49,6 +49,8 @@ pub struct ScreencastFrame {
 }
 
 pub struct BrowserEngine {
+    stop: Arc<AtomicBool>,
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
     commands: mpsc::Sender<EngineCommand>,
     subscribers: Arc<Mutex<HashMap<u64, mpsc::SyncSender<Value>>>>,
     screencast_sink: ScreencastSink,
@@ -60,23 +62,37 @@ impl BrowserEngine {
     pub fn start() -> Result<Self, String> {
         let (commands, command_rx) = mpsc::channel();
         let screencast_sink: ScreencastSink = Arc::new(Mutex::new(None));
-        let runtime = ChromiumRuntime::launch(command_rx, Arc::clone(&screencast_sink))?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let runtime =
+            ChromiumRuntime::launch(command_rx, Arc::clone(&screencast_sink), stop.clone())?;
         let executable = runtime.executable.clone();
         let subscribers = Arc::new(Mutex::new(HashMap::new()));
         let event_subscribers = Arc::clone(&subscribers);
 
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name("qmux-browser-cdp".to_string())
             .spawn(move || run_engine(runtime, event_subscribers))
             .map_err(|err| format!("failed to start chrome-headless-shell controller: {err}"))?;
 
         Ok(Self {
+            stop,
+            worker: Mutex::new(Some(worker)),
             commands,
             subscribers,
             screencast_sink,
             next_subscription_id: AtomicU64::new(1),
             executable,
         })
+    }
+
+    /// Service ownership overrides live browser client references. Cancels CDP
+    /// waits before joining the worker that owns and reaps Chromium.
+    pub fn shutdown(&self) {
+        self.stop.store(true, Ordering::Release);
+        let worker = self.worker.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(worker) = worker {
+            let _ = worker.join();
+        }
     }
 
     pub fn executable(&self) -> &Path {
@@ -115,6 +131,9 @@ impl BrowserEngine {
     }
 
     pub fn call(&self, method: &str, params: Value) -> RpcReply {
+        if self.stop.load(Ordering::Acquire) {
+            return Err("browser runtime is shut down".into());
+        }
         let timeout = params
             .get("timeoutMs")
             .and_then(Value::as_u64)
@@ -135,6 +154,12 @@ impl BrowserEngine {
     }
 }
 
+impl Drop for BrowserEngine {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 enum EngineCommand {
     Call {
         method: String,
@@ -144,6 +169,7 @@ enum EngineCommand {
 }
 
 struct ChromiumRuntime {
+    stop: Arc<AtomicBool>,
     child: Child,
     profile_dir: PathBuf,
     executable: PathBuf,
@@ -177,6 +203,7 @@ impl ChromiumRuntime {
     fn launch(
         commands: mpsc::Receiver<EngineCommand>,
         screencast_sink: ScreencastSink,
+        stop: Arc<AtomicBool>,
     ) -> Result<Self, String> {
         cleanup_stale_profile_dirs();
         let executable = find_headless_shell_executable().ok_or_else(|| {
@@ -263,7 +290,10 @@ impl ChromiumRuntime {
             format!("failed to connect to chrome-headless-shell CDP: {err}")
         })?;
         if let MaybeTlsStream::Plain(stream) = socket.get_mut() {
-            if let Err(err) = stream.set_read_timeout(Some(CDP_READ_POLL)) {
+            if let Err(err) = stream
+                .set_read_timeout(Some(CDP_READ_POLL))
+                .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(2))))
+            {
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = fs::remove_dir_all(&profile_dir);
@@ -274,6 +304,7 @@ impl ChromiumRuntime {
         }
 
         Ok(Self {
+            stop,
             child,
             profile_dir,
             executable,
@@ -699,6 +730,9 @@ impl ChromiumRuntime {
         &mut self,
         subscribers: &Arc<Mutex<HashMap<u64, mpsc::SyncSender<Value>>>>,
     ) -> Result<bool, String> {
+        if self.stop.load(Ordering::Acquire) {
+            return Err("browser runtime is shut down".into());
+        }
         let command = match self.commands.try_recv() {
             Ok(command) => command,
             Err(mpsc::TryRecvError::Empty) => return Ok(false),
@@ -901,6 +935,9 @@ impl ChromiumRuntime {
         &mut self,
         subscribers: &Arc<Mutex<HashMap<u64, mpsc::SyncSender<Value>>>>,
     ) -> Result<Option<Value>, String> {
+        if self.stop.load(Ordering::Acquire) {
+            return Err("browser runtime is shut down".into());
+        }
         let message = match self.socket.read() {
             Ok(Message::Text(text)) => serde_json::from_str::<Value>(text.as_str())
                 .map_err(|err| format!("chrome-headless-shell sent invalid CDP JSON: {err}"))?,

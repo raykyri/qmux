@@ -1933,6 +1933,10 @@ fn spawn_portable_pty(
     };
 
     if let Some(server) = state.terminal_server() {
+        let lifecycle = state.pane_lifecycle_lock(&pane_id);
+        let _lifecycle = lifecycle
+            .lock()
+            .map_err(|_| "pane lifecycle lock poisoned")?;
         let mut envs = base_envs;
         envs.push(("TERM".into(), "xterm-256color".into()));
         envs.extend(spec.envs);
@@ -1956,7 +1960,7 @@ fn spawn_portable_pty(
             let _ = terminal.close();
             return Err(error);
         }
-        watch_persistent_terminal(state.clone(), pane_id, terminal);
+        watch_persistent_terminals(state.clone());
         return Ok(pane);
     }
     let pty_system = native_pty_system();
@@ -4327,6 +4331,13 @@ pub fn pane_activity(state: &AppState, pane_id: String) -> Result<PaneActivity, 
 }
 
 pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
+    let lifecycle = state
+        .persistent_terminal(&pane_id)?
+        .map(|_| state.pane_lifecycle_lock(&pane_id));
+    let _lifecycle = lifecycle
+        .as_ref()
+        .map(|lock| lock.lock().map_err(|_| "pane lifecycle lock poisoned"))
+        .transpose()?;
     let native_surface = state.pane_is_native(&pane_id)? == Some(true);
     let pane_agent_id = state.agent_by_pane(&pane_id)?.map(|agent| agent.id);
     if let Err(err) = state.capture_last_closed_pane(&pane_id) {
@@ -4795,36 +4806,65 @@ fn finish_pane_exit(state: &AppState, pane_id: &str, exit_code: Option<i32>, nat
     state.emit(QmuxEvent::pty_exit(pane_id.to_string(), exit_code));
 }
 
-fn watch_persistent_terminal(
-    state: AppState,
-    pane_id: String,
-    terminal: crate::local_terminal::Terminal,
-) {
+fn persistent_panes(state: &AppState) -> Vec<(String, crate::local_terminal::Terminal)> {
+    state
+        .list_panes()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|pane| {
+            state
+                .persistent_terminal(&pane.id)
+                .ok()
+                .flatten()
+                .map(|terminal| (pane.id, terminal))
+        })
+        .collect()
+}
+
+fn watch_persistent_terminals(state: AppState) {
+    if !state.claim_persistent_watcher() {
+        return;
+    }
     thread::spawn(move || {
-        while state
-            .persistent_terminal(&pane_id)
-            .ok()
-            .flatten()
-            .is_some_and(|current| terminal.same_instance(&current))
-        {
-            match terminal.status() {
-                Ok(status) if status.dead => {
+        loop {
+            let panes = persistent_panes(&state);
+            if panes.is_empty() {
+                state.release_persistent_watcher();
+                // A spawn can race the empty observation and flag release.
+                if !persistent_panes(&state).is_empty() {
+                    watch_persistent_terminals(state.clone());
+                }
+                return;
+            }
+            let Some(server) = state.terminal_server() else {
+                state.release_persistent_watcher();
+                return;
+            };
+            if let Ok(statuses) = server.statuses() {
+                for (pane_id, terminal) in panes {
+                    let lifecycle = state.pane_lifecycle_lock(&pane_id);
+                    let _lifecycle = lifecycle.lock().unwrap_or_else(|e| e.into_inner());
+                    let status = statuses.get(terminal.key());
+                    if status.is_some_and(|status| !status.dead) {
+                        continue;
+                    }
                     if !state
                         .persistent_terminal(&pane_id)
                         .ok()
                         .flatten()
                         .is_some_and(|current| terminal.same_instance(&current))
                     {
-                        break;
+                        continue;
                     }
+                    // A fresh tmux name per incarnation prevents a stale close
+                    // from killing a replacement pane even after this check.
                     let _ = terminal.close();
-                    finish_pane_exit(&state, &pane_id, status.exit_code, false);
-                    break;
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    // A transient query failure is not evidence that the process exited.
-                    eprintln!("qmux: cannot inspect persistent pane {pane_id}: {error}");
+                    finish_pane_exit(
+                        &state,
+                        &pane_id,
+                        status.and_then(|status| status.exit_code),
+                        false,
+                    );
                 }
             }
             thread::sleep(Duration::from_millis(250));

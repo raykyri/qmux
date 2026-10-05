@@ -96,6 +96,7 @@ struct SupervisorShared {
 /// before removing the socket file; otherwise the watchdog can recreate the
 /// path while the process is exiting.
 pub struct ControlSocketRuntime {
+    job_monitor: Mutex<Option<crate::shell_jobs::ShellJobMonitor>>,
     shared: Arc<SupervisorShared>,
     wakeup: Mutex<Option<UnixStream>>,
     thread: Mutex<Option<JoinHandle<()>>>,
@@ -106,6 +107,12 @@ impl ControlSocketRuntime {
     /// Stop the supervisor, join it, then remove the pathname only if this
     /// process still owns the inode currently at the configured path.
     pub fn shutdown(&self) {
+        drop(
+            self.job_monitor
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take(),
+        );
         self.shared.stop.store(true, Ordering::SeqCst);
         if let Ok(guard) = self.wakeup.lock()
             && let Some(wakeup) = guard.as_ref()
@@ -151,8 +158,13 @@ impl Drop for ControlSocketRuntime {
 }
 
 pub fn start_control_socket(state: AppState) -> Result<ControlSocketRuntime, String> {
-    crate::shell_jobs::start_shell_job_monitor(state.clone());
-    start_control_socket_runtime(state, MAX_CONCURRENT_CLIENTS)
+    let runtime = start_control_socket_runtime(state.clone(), MAX_CONCURRENT_CLIENTS)?;
+    *runtime
+        .job_monitor
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) =
+        Some(crate::shell_jobs::start_shell_job_monitor(state));
+    Ok(runtime)
 }
 
 fn start_control_socket_runtime(
@@ -206,6 +218,7 @@ fn start_control_socket_runtime(
         })?;
 
     Ok(ControlSocketRuntime {
+        job_monitor: Mutex::new(None),
         shared,
         wakeup: Mutex::new(Some(wakeup_writer)),
         thread: Mutex::new(Some(handle)),
@@ -736,10 +749,10 @@ fn emit_watch_event(
     ));
 }
 
-fn warn_control_socket(state: &AppState, message: &str) {
+fn warn_control_socket(_state: &AppState, message: &str) {
     eprintln!("qmux: {message}");
     #[cfg(feature = "desktop")]
-    if let Some(app) = state.app_handle() {
+    if let Some(app) = _state.app_handle() {
         use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
         app.dialog()
             .message(message)

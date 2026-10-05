@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
@@ -17,12 +17,20 @@ use std::time::Duration;
 pub struct TerminalServer {
     root: PathBuf,
     binary: PathBuf,
-    input_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    terminals: Arc<Mutex<HashMap<String, TerminalIdentity>>>,
+}
+
+#[derive(Clone)]
+struct TerminalIdentity {
+    name: String,
+    input: Arc<Mutex<()>>,
+    instance: Arc<()>,
 }
 
 #[derive(Clone)]
 pub struct Terminal {
     server: TerminalServer,
+    id: String,
     name: String,
     // A paste and its submit key must never interleave with another submission.
     input: Arc<Mutex<()>>,
@@ -44,25 +52,14 @@ impl TerminalServer {
     }
 
     fn with_binary(root: &Path, binary: PathBuf) -> Result<Self, String> {
-        // create_dir refuses a pre-existing symlink. Existing directories must be
-        // private and owned by this account; never chmod someone else's path.
-        match fs::DirBuilder::new().mode(0o700).create(root) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e.to_string()),
-        }
-        let meta = fs::symlink_metadata(root).map_err(|e| e.to_string())?;
-        if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
-            return Err("runtime terminal directory must be an owner-only directory".into());
-        }
-        let root = root.canonicalize().map_err(|e| e.to_string())?;
+        let root = crate::runtime_paths::private_directory(root)?;
         if root.join("tmux.sock").as_os_str().len() >= 100 {
             return Err("runtime terminal socket path is too long".into());
         }
         let server = Self {
             root,
             binary,
-            input_locks: Arc::new(Mutex::new(HashMap::new())),
+            terminals: Arc::new(Mutex::new(HashMap::new())),
         };
         let output = server.run(["-V"], None)?;
         crate::pty::validate_remote_tmux_version(&String::from_utf8_lossy(&output.stdout))?;
@@ -126,20 +123,62 @@ impl TerminalServer {
     }
 
     pub fn terminal(&self, id: &str) -> Result<Terminal, String> {
-        let name = Self::name(id)?;
-        let input = self
-            .input_locks
+        let prefix = Self::name(id)?;
+        let mut terminals = self
+            .terminals
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(name.clone())
-            .or_default()
-            .clone();
+            .map_err(|_| "terminal registry lock poisoned")?;
+        let identity = if let Some(identity) = terminals.get(id) {
+            identity.clone()
+        } else {
+            let mut nonce = [0u8; 8];
+            getrandom::getrandom(&mut nonce).map_err(|e| e.to_string())?;
+            let suffix: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+            let identity = TerminalIdentity {
+                name: format!("{prefix}-{suffix}"),
+                input: Arc::new(Mutex::new(())),
+                instance: Arc::new(()),
+            };
+            terminals.insert(id.into(), identity.clone());
+            identity
+        };
         Ok(Terminal {
             server: self.clone(),
-            name,
-            input,
-            instance: Arc::new(()),
+            id: id.into(),
+            name: identity.name,
+            input: identity.input,
+            instance: identity.instance,
         })
+    }
+
+    /// One process query for the entire server, independent of pane count.
+    pub(crate) fn statuses(&self) -> Result<HashMap<String, TerminalStatus>, String> {
+        let out = self.run(
+            [
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}\t#{pane_dead}\t#{pane_dead_status}\t#{pane_pid}",
+            ],
+            None,
+        )?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|line| {
+                let fields: Vec<_> = line.split('\t').collect();
+                if fields.len() != 4 {
+                    return Err("invalid terminal status list".into());
+                }
+                Ok((
+                    fields[0].into(),
+                    TerminalStatus {
+                        dead: fields[1] == "1",
+                        exit_code: fields[2].parse().ok(),
+                        pid: fields[3].parse().map_err(|_| "invalid terminal pid")?,
+                    },
+                ))
+            })
+            .collect()
     }
 
     pub fn spawn(
@@ -158,6 +197,19 @@ impl TerminalServer {
             return Err("invalid terminal command".into());
         }
         let terminal = self.terminal(id)?;
+        let input_guard = terminal
+            .input
+            .lock()
+            .map_err(|_| "terminal input lock poisoned")?;
+        if !self
+            .terminals
+            .lock()
+            .map_err(|_| "terminal registry lock poisoned")?
+            .get(id)
+            .is_some_and(|current| current.name == terminal.name)
+        {
+            return Err("terminal identity retired during spawn; retry".into());
+        }
         if self
             .run(["has-session", "-t", &terminal.name], None)
             .is_ok()
@@ -274,6 +326,7 @@ impl TerminalServer {
             )?;
             Ok::<_, String>(())
         })();
+        drop(input_guard);
         if let Err(error) = configured {
             let _ = terminal.close();
             return Err(error);
@@ -310,6 +363,9 @@ fn validate_size(cols: u16, rows: u16) -> Result<(), String> {
 }
 
 impl Terminal {
+    pub(crate) fn key(&self) -> &str {
+        &self.name
+    }
     pub(crate) fn same_instance(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.instance, &other.instance)
     }
@@ -443,6 +499,10 @@ impl Terminal {
         Ok(())
     }
     pub fn close(&self) -> Result<(), String> {
+        let _guard = self
+            .input
+            .lock()
+            .map_err(|_| "terminal input lock poisoned")?;
         if let Ok(status) = self.status() {
             if !status.dead {
                 crate::pty::terminate_descendants(status.pid);
@@ -450,6 +510,17 @@ impl Terminal {
         }
         self.server.run(["kill-session", "-t", &self.name], None)?;
         let _ = fs::remove_file(self.server.root.join(format!("{}.sh", self.name)));
+        let mut terminals = self
+            .server
+            .terminals
+            .lock()
+            .map_err(|_| "terminal registry lock poisoned")?;
+        if terminals
+            .get(&self.id)
+            .is_some_and(|current| current.name == self.name)
+        {
+            terminals.remove(&self.id);
+        }
         Ok(())
     }
 }
@@ -610,5 +681,33 @@ mod tests {
         wait_for(&b, "TOKEN::END");
         assert!(server.terminal("../escape").is_err());
         assert!(a.resize(0, 24).is_err());
+    }
+    #[test]
+    #[ignore = "requires tmux 3.3+; run persistent terminal tests explicitly"]
+    fn stale_handle_cannot_close_a_replacement_with_the_same_pane_id() {
+        let server = server();
+        let _cleanup = Cleanup(server.clone());
+        let spawn = |id| {
+            server
+                .spawn(
+                    id,
+                    "/bin/sleep",
+                    &["30".into()],
+                    Path::new("/tmp"),
+                    &[],
+                    80,
+                    24,
+                )
+                .unwrap()
+        };
+        let _keeper = spawn("keeper");
+        let old = spawn("same-id");
+        old.close().unwrap();
+        let replacement = spawn("same-id");
+        assert_ne!(old.key(), replacement.key());
+        assert!(old.close().is_err());
+        assert!(!replacement.status().unwrap().dead);
+        assert_eq!(server.statuses().unwrap().len(), 2);
+        assert!(replacement.same_instance(&server.terminal("same-id").unwrap()));
     }
 }

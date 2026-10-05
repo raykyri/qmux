@@ -14,7 +14,7 @@ impl SessionOwner {
     pub fn acquire(config: &QmuxConfig) -> Result<Self, String> {
         let directory = config.workspace_root.join(crate::persistence::STATE_DIR);
         fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-        let lock = crate::runtime_rpc::exclusive_lock(&directory.join("session-owner.lock"))?;
+        let lock = crate::runtime_paths::exclusive_lock(&directory.join("session-owner.lock"))?;
         Ok(Self { _lock: lock })
     }
 }
@@ -24,12 +24,13 @@ pub struct RuntimeService {
     rpc: Option<crate::runtime_rpc::RuntimeServer>,
     control: crate::control_socket::ControlSocketRuntime,
     browser: Option<crate::browser_backend::BrowserDiscoverySocket>,
+    file_server: Option<crate::file_server::FileServerInfo>,
     _owner: SessionOwner,
 }
 impl RuntimeService {
     pub fn start(config: QmuxConfig, root: &Path) -> Result<Self, String> {
         let owner = SessionOwner::acquire(&config)?;
-        let root = crate::runtime_rpc::private_directory(root)?;
+        let root = crate::runtime_paths::private_directory(root)?;
         let terminals = crate::local_terminal::TerminalServer::open(&root.join("terminals"))?;
         let state = AppState::with_terminal_server(config, terminals);
         let rpc = crate::runtime_rpc::RuntimeServer::bind_starting(state.clone(), &root)?;
@@ -59,6 +60,7 @@ impl RuntimeService {
             rpc: Some(rpc),
             control,
             browser,
+            file_server: Some(file_server),
             _owner: owner,
         })
     }
@@ -80,6 +82,7 @@ impl Drop for RuntimeService {
         crate::research_runtime::kill_all_sessions();
         crate::pty::kill_all_panes(&self.state);
         drop(self.browser.take());
+        drop(self.file_server.take());
         drop(self.rpc.take());
     }
 }

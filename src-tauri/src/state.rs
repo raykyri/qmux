@@ -339,6 +339,8 @@ pub struct AppState {
 
 struct AppStateInner {
     terminal_server: std::sync::OnceLock<crate::local_terminal::TerminalServer>,
+    persistent_watcher: AtomicBool,
+    pane_lifecycle_locks: Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
     config: QmuxConfig,
     pane_tokens: Mutex<HashMap<String, String>>,
     // Credentials exposed across an SSH reverse-forward. Kept distinct from local
@@ -2010,6 +2012,8 @@ impl AppState {
         Self {
             inner: Arc::new(AppStateInner {
                 terminal_server: std::sync::OnceLock::new(),
+                persistent_watcher: AtomicBool::new(false),
+                pane_lifecycle_locks: Mutex::new(HashMap::new()),
                 config,
                 pane_tokens: Mutex::new(HashMap::new()),
                 remote_tokens: Mutex::new(HashMap::new()),
@@ -2077,6 +2081,30 @@ impl AppState {
             "journal": model.journal, "notificationLog": model.notification_log,
             "artifacts": model.artifacts,
         }))
+    }
+
+    pub(crate) fn pane_lifecycle_lock(&self, pane_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .inner
+            .pane_lifecycle_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(pane_id).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(pane_id.into(), Arc::downgrade(&lock));
+        lock
+    }
+
+    pub(crate) fn claim_persistent_watcher(&self) -> bool {
+        !self.inner.persistent_watcher.swap(true, Ordering::AcqRel)
+    }
+    pub(crate) fn release_persistent_watcher(&self) {
+        self.inner
+            .persistent_watcher
+            .store(false, Ordering::Release);
     }
 
     pub fn terminal_server(&self) -> Option<&crate::local_terminal::TerminalServer> {

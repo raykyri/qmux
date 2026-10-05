@@ -29,9 +29,24 @@ impl ProcessJobSample {
     }
 }
 
-pub fn start_shell_job_monitor(state: AppState) {
-    std::thread::spawn(move || {
-        loop {
+pub struct ShellJobMonitor {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for ShellJobMonitor {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+pub fn start_shell_job_monitor(state: AppState) -> ShellJobMonitor {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopping = stop.clone();
+    let thread = std::thread::spawn(move || {
+        while !stopping.load(std::sync::atomic::Ordering::Acquire) {
             let targets = state.shell_agent_job_targets();
             if !targets.is_empty() {
                 let pids = targets
@@ -67,6 +82,10 @@ pub fn start_shell_job_monitor(state: AppState) {
             std::thread::sleep(SHELL_JOB_POLL_INTERVAL);
         }
     });
+    ShellJobMonitor {
+        stop,
+        thread: Some(thread),
+    }
 }
 
 fn recover_shell_terminal_modes(state: &AppState, info: &ShellAgentJobInfo) {

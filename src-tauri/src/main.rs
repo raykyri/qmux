@@ -40,7 +40,7 @@ use qmux::workspace;
 
 use adapters::{
     MessageAnchor, SpawnAgentRequest, SpawnClaudeRequest, agent_fork as fork_agent_pane,
-    agent_spawn as spawn_agent_pane, fork_agent_source,
+    agent_spawn as spawn_agent_pane,
 };
 use config::{QmuxConfig, RuntimeConfig};
 use control_socket::start_control_socket;
@@ -57,7 +57,7 @@ use native_terminal::{
     native_terminal_update_settings,
 };
 use pty::{
-    InitialPaneSize, PaneActivity, PaneWriteOptions, attach_pane, close_worktree_pane, kill_pane,
+    InitialPaneSize, PaneActivity, PaneWriteOptions, attach_pane, close_worktree_pane,
     pane_activity as inspect_pane_activity, resize_pane, spawn_remote_client_pane,
     spawn_shell_pane, spawn_shell_pane_at, write_pane,
 };
@@ -91,7 +91,7 @@ use turn_queue::{
     unpause_agent,
 };
 use workspace::{
-    AgentInfo, AgentStatus, CreateGroupRequest, GroupInfo, LaunchOrigin, RepositoryInventory,
+    AgentInfo, CreateGroupRequest, GroupInfo, LaunchOrigin, RepositoryInventory,
     ResearchWorkspaceInfo, WorktreeStatus, acknowledge_agent, agent_worktree_status,
     checkout_repository_branch, clear_agent_working_status, create_group,
     create_research_workspace, create_shell_worktree, ensure_default_research_workspace,
@@ -3386,7 +3386,10 @@ fn main() {
                 // Best-effort: if it can't bind, the app still runs (file previews
                 // just won't work until relaunch).
                 match file_server::start_file_server(state.clone()) {
-                    Ok(info) => state.set_file_server(info.port),
+                    Ok(info) => {
+                        state.set_file_server(info.port);
+                        app.manage(info);
+                    }
                     Err(err) => eprintln!("qmux: failed to start file server: {err}"),
                 }
                 app.manage(start_control_socket(state.clone()).map_err(std::io::Error::other)?);

@@ -598,3 +598,61 @@ Current limitations:
 ## License
 
 MIT (C) 2026
+
+## Runtime refactor development
+
+The Rust execution/conversation core builds without Tauri:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib
+```
+
+An **experimental standalone runtime** is available for backend development. It
+uses a private tmux 3.3+ server for local terminal emulation and process ownership,
+while qmux retains its adapters, hooks, structured transcripts, thread graphs,
+turn queues, research execution, and browser automation. It does not use GPUI or
+Herdr. The desktop still uses its existing in-process backend and Ghostty UI;
+it does **not yet attach to this daemon**. The runtime command registry covers
+execution and research development, not the complete desktop command surface.
+
+Build and exercise it in an isolated test workspace:
+
+```sh
+cargo build --manifest-path src-tauri/Cargo.toml --no-default-features --bin qmux-runtime
+python3 scripts/test-runtime.py src-tauri/target/debug/qmux-runtime
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib local_terminal::tests -- --include-ignored
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib persistent_core_drains -- --include-ignored
+```
+
+For manual development, set `QMUX_CONFIG` to a separate qmux configuration and
+run `qmux-runtime serve /absolute/private/runtime-dir` in a long-lived process.
+The directory's parent must exist; the runtime creates the directory with mode
+0700. Keep the path short enough for Unix sockets. `qmux-runtime snapshot DIR`
+reads the live model, `qmux-runtime call DIR METHOD JSON_ARGUMENTS` invokes a
+runtime command, and `qmux-runtime stop DIR` explicitly shuts execution down.
+The desktop and daemon take the same workspace lock and refuse simultaneous
+ownership of one workspace. The runtime binary is not bundled or auto-started
+by the desktop installer.
+
+Client disconnects leave execution running. Clean runtime shutdown saves the
+session before terminating processes; a later clean start uses ordinary qmux
+recovery. After a crash, if the private tmux server still has live terminals,
+startup refuses to adopt them or replay saved prompts with stale credentials.
+Those terminals remain available for inspection through that private tmux
+socket. Crash adoption and live runtime upgrades are not implemented.
+
+The private RPC credential is distinct from pane hook/control credentials and
+is never injected into terminal environments. Requests carry a protocol version
+and daemon boot identity. Mutation receipts prevent replay after a lost response;
+an expired receipt returns an explicit error instead of repeating work. Receipts
+are process-local, so clients must refresh state after a daemon restart. Events
+are bounded invalidation notices: refresh affected state, and replace the full
+snapshot after a retention gap. They are not an ordered stream of model patches.
+The snapshot includes structured transcript turns and queues; terminal captures
+are a separate API and never substitute for the right-pane transcript.
+
+The remaining desktop handover requires full command forwarding, native Ghostty
+attachment lifecycle, authoritative client refresh, UI-local dialogs/notifications,
+and macOS tests for input, resize, shortcuts, and detach/reconnect. Until those
+are complete, the standalone runtime is a development target, not a replacement
+for the current desktop mode.

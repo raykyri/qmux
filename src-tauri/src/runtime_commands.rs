@@ -11,6 +11,25 @@ fn value(value: impl Serialize) -> Result<Value, String> {
     serde_json::to_value(value).map_err(|e| e.to_string())
 }
 
+pub(crate) fn is_read_only(method: &str) -> bool {
+    matches!(
+        method,
+        "list_panes"
+            | "list_groups"
+            | "list_agents"
+            | "list_turns"
+            | "list_thread_graphs"
+            | "get_thread_graph"
+            | "list_agent_turn_queue"
+            | "list_global_drafts"
+            | "agent_delivery_debug"
+            | "pane_activity"
+            | "terminal_attachment"
+            | "terminal_capture"
+            | "get_research_node_content"
+    )
+}
+
 pub fn dispatch(state: &AppState, method: &str, args: Value) -> Result<Value, String> {
     if !args.is_object() {
         return Err("runtime command arguments must be an object".into());

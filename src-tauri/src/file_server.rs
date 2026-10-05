@@ -24,6 +24,10 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::Duration;
 
@@ -124,6 +128,21 @@ const LOCAL_BODY_FONT_RESOURCES: &[LocalBodyFontResource] = &[
 
 pub struct FileServerInfo {
     pub port: u16,
+    stop: Arc<AtomicBool>,
+    thread: Mutex<Option<thread::JoinHandle<()>>>,
+}
+impl Drop for FileServerInfo {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self
+            .thread
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// Starts the loopback file server and returns its port. The caller stores it in
@@ -139,14 +158,27 @@ pub fn start_file_server(state: AppState) -> Result<FileServerInfo, String> {
         .map_err(|err| format!("failed to read file server address: {err}"))?
         .port();
 
-    thread::spawn(move || {
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = stop.clone();
+    let thread = thread::spawn(move || {
         let limiter = ConnectionLimiter::new(MAX_CONCURRENT_CONNECTIONS);
-        for stream in listener.incoming() {
-            let Ok(stream) = stream else {
-                thread::sleep(ACCEPT_ERROR_BACKOFF);
+        while !stopping.load(Ordering::Acquire) {
+            let stream = match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+                Err(_) => {
+                    thread::sleep(ACCEPT_ERROR_BACKOFF);
+                    continue;
+                }
+            };
+            let Some(slot) = limiter.try_acquire() else {
                 continue;
             };
-            let slot = limiter.acquire();
+            let _ = stream.set_nonblocking(false);
             let state = state.clone();
             thread::spawn(move || {
                 let _slot = slot;
@@ -154,8 +186,11 @@ pub fn start_file_server(state: AppState) -> Result<FileServerInfo, String> {
             });
         }
     });
-
-    Ok(FileServerInfo { port })
+    Ok(FileServerInfo {
+        port,
+        stop,
+        thread: Mutex::new(Some(thread)),
+    })
 }
 
 /// Builds the loopback URL for an absolute file path. `abs_path` must be absolute
@@ -2295,5 +2330,16 @@ mod tests {
         assert!(resolve_under_roots(&root.join("../outside/secret.txt"), &roots).is_none());
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+    #[test]
+    fn dropping_server_releases_its_listener() {
+        let state = AppState::new(serde_json::from_value(serde_json::json!({
+            "workspaceRoot": "/tmp/qmux-file-server-lifetime-test", "socketPath": "/tmp/unused.sock"
+        })).unwrap());
+        let server = start_file_server(state).unwrap();
+        let address = (Ipv4Addr::LOCALHOST, server.port);
+        assert!(TcpStream::connect(address).is_ok());
+        drop(server);
+        assert!(TcpStream::connect(address).is_err());
     }
 }
