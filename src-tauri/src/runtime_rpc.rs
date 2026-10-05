@@ -248,6 +248,8 @@ struct Core {
     boot: String,
     events: Arc<Mutex<EventLog>>,
     receipts: Receipts,
+    shutdown_requested: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
 }
 impl Core {
     fn handle(&self, request: Request) -> Response {
@@ -262,6 +264,9 @@ impl Core {
                 && request.boot.as_deref() != Some(&self.boot)
             {
                 return Err("runtime restarted; refresh state before issuing commands".into());
+            }
+            if !self.ready.load(Ordering::Acquire) {
+                return Err("runtime is starting; reconnect when ready".into());
             }
             match request.operation {
                 Operation::Hello => Ok(
@@ -288,6 +293,13 @@ impl Core {
                 } => self
                     .receipts
                     .execute(&client, sequence, &method, &args, || {
+                        if self.shutdown_requested.load(Ordering::Acquire) {
+                            return Err("runtime is shutting down".into());
+                        }
+                        if method == "runtime_shutdown" {
+                            self.shutdown_requested.store(true, Ordering::Release);
+                            return Ok(Value::Null);
+                        }
                         crate::runtime_commands::dispatch(&self.state, &method, args.clone())
                     }),
             }
@@ -312,9 +324,31 @@ pub struct RuntimeServer {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     _lock: File,
+    shutdown_requested: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
 }
 impl RuntimeServer {
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested.load(Ordering::Acquire)
+    }
+
     pub fn bind(state: AppState, root: &Path) -> Result<Self, String> {
+        Self::bind_with_readiness(state, root, true)
+    }
+    pub fn bind_starting(state: AppState, root: &Path) -> Result<Self, String> {
+        Self::bind_with_readiness(state, root, false)
+    }
+    pub fn activate(&self) {
+        self.ready.store(true, Ordering::Release);
+    }
+    pub fn stop_accepting(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+    fn bind_with_readiness(state: AppState, root: &Path, ready: bool) -> Result<Self, String> {
+        let ready = Arc::new(AtomicBool::new(ready));
         let root = private_directory(root)?;
         if root.join("runtime.sock").as_os_str().len() >= 100 {
             return Err("runtime socket path is too long".into());
@@ -361,12 +395,15 @@ impl RuntimeServer {
                 }
             }
         })));
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
         let core = Arc::new(Core {
             state,
             token,
             boot: random_id()?,
             events,
             receipts: Receipts::default(),
+            shutdown_requested: shutdown_requested.clone(),
+            ready: ready.clone(),
         });
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
@@ -414,15 +451,14 @@ impl RuntimeServer {
             stop,
             thread: Some(thread),
             _lock: lock,
+            shutdown_requested,
+            ready,
         })
     }
 }
 impl Drop for RuntimeServer {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.stop_accepting();
         let _ = fs::remove_file(self.root.join("runtime.sock"));
         let _ = fs::remove_file(self.root.join("credential"));
     }
@@ -504,7 +540,7 @@ impl RuntimeClient {
         if let Some(error) = response.error {
             Err(error)
         } else {
-            response.result.ok_or("runtime returned no result".into())
+            Ok(response.result.unwrap_or(Value::Null))
         }
     }
     pub fn snapshot(&self) -> Result<Value, String> {
@@ -719,6 +755,26 @@ mod tests {
             fs::read_to_string(root.join("runtime.sock")).unwrap(),
             "keep me"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn starting_runtime_rejects_clients_and_shutdown_returns_null() {
+        let root = root();
+        let server = RuntimeServer::bind_starting(state(&root), &root).unwrap();
+        assert!(RuntimeClient::connect(&root).is_err());
+        server.activate();
+        let mut client = RuntimeClient::connect(&root).unwrap();
+        assert_eq!(
+            client.call("runtime_shutdown", json!({})).unwrap(),
+            Value::Null
+        );
+        assert!(server.shutdown_requested());
+        assert!(
+            client
+                .call("create_global_draft", json!({"text":"too late"}))
+                .is_err()
+        );
+        drop(server);
         fs::remove_dir_all(root).unwrap();
     }
 }

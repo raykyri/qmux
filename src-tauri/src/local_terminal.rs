@@ -281,6 +281,21 @@ impl TerminalServer {
         Ok(terminal)
     }
 
+    /// A new core cannot silently adopt old terminal credentials or replay its
+    /// inflight turns. Refuse recovery while an earlier server is still alive.
+    pub fn refuse_existing_server(&self) -> Result<(), String> {
+        if !self.socket().exists() {
+            return Ok(());
+        }
+        if std::os::unix::net::UnixStream::connect(self.socket()).is_ok() {
+            return Err(format!(
+                "persistent terminals still exist at {}; inspect or close them before restarting the runtime",
+                self.socket().display()
+            ));
+        }
+        Ok(())
+    }
+
     pub fn shutdown(&self) -> Result<(), String> {
         self.run(["kill-server"], None).map(|_| ())
     }

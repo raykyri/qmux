@@ -16,6 +16,41 @@ pub fn dispatch(state: &AppState, method: &str, args: Value) -> Result<Value, St
         return Err("runtime command arguments must be an object".into());
     }
     match method {
+        "create_research_tree" => value(crate::research_service::create_research_tree(
+            state,
+            arg(&args, "request")?,
+        )?),
+        "create_research_document" => value(crate::research_service::create_research_document(
+            state,
+            arg(&args, "request")?,
+        )?),
+        "export_pane_to_research" => value(crate::research_service::export_pane_to_research(
+            state,
+            arg(&args, "request")?,
+        )?),
+        "update_research_document" => value(crate::research_service::update_research_document(
+            state,
+            arg(&args, "request")?,
+        )?),
+        "get_research_node_content" => value(crate::research_service::get_research_node_content(
+            state,
+            arg(&args, "nodeId")?,
+        )?),
+        "fork_research_node" => value(crate::research_service::fork_research_node(
+            state,
+            arg(&args, "parentNodeId")?,
+            arg(&args, "prompt")?,
+            arg(&args, "publicationProposal")?,
+            arg(&args, "queryAnchor")?,
+            arg(&args, "inline")?,
+        )?),
+        "retry_research_node" => value(crate::research_service::retry_research_node(
+            state,
+            arg(&args, "nodeId")?,
+        )?),
+        "cancel_research_node" => {
+            value(state.cancel_research_node(&arg::<String>(&args, "nodeId")?)?)
+        }
         "list_panes" => value(state.list_panes()?),
         "list_groups" => value(state.list_groups()?),
         "list_agents" => value(state.list_agents()?),

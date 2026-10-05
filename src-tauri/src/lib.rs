@@ -3,6 +3,8 @@
 //! a terminal host while a service can own terminal state without a window.
 
 pub mod adapters;
+pub mod browser_backend;
+pub mod browser_engine;
 pub mod claude_sdk;
 pub mod completion_sound;
 pub mod config;
@@ -32,8 +34,10 @@ pub mod remote_transcript;
 pub mod remote_transport;
 pub mod research;
 pub mod research_runtime;
+pub mod research_service;
 pub mod runtime_commands;
 pub mod runtime_rpc;
+pub mod runtime_service;
 pub mod scrollback;
 pub mod shell_jobs;
 pub mod ssh_config;

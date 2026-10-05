@@ -23,7 +23,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
+#[cfg(feature = "desktop")]
 use tauri::Emitter;
+#[cfg(feature = "desktop")]
+type BrowserState<'a> = tauri::State<'a, BrowserDiscoverySocket>;
+#[cfg(not(feature = "desktop"))]
+type BrowserState<'a> = &'a BrowserDiscoverySocket;
 
 const DISCOVERY_DIR: &str = "/tmp/codex-browser-use";
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
@@ -913,13 +918,13 @@ fn unavailable_snapshot(width: u32, height: u32, error: String) -> BrowserAutoma
     }
 }
 
-#[tauri::command(async)]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
 pub fn browser_automation_snapshot(
     pane_id: String,
     width: u32,
     height: u32,
     scale_factor: f64,
-    browser: tauri::State<'_, BrowserDiscoverySocket>,
+    browser: BrowserState<'_>,
 ) -> BrowserAutomationSnapshot {
     let result = (|| -> Result<BrowserAutomationSnapshot, String> {
         let target = prepare_agent_mirror(
@@ -968,13 +973,13 @@ fn screencast_max_dimensions(viewport: BrowserViewport) -> (u64, u64) {
 /// screencast can only scale a frame down — so the mirror is a two-speed
 /// image: frames carry motion, and `browser_automation_snapshot` supplies the
 /// Retina-scale capture the overlay settles on once the page stops painting.
-#[tauri::command(async)]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
 pub fn browser_automation_start_screencast(
     pane_id: String,
     width: u32,
     height: u32,
     scale_factor: f64,
-    browser: tauri::State<'_, BrowserDiscoverySocket>,
+    browser: BrowserState<'_>,
 ) -> BrowserAutomationSnapshot {
     let result = (|| -> Result<BrowserAutomationSnapshot, String> {
         let _control = lock_or_recover(&browser._backend.screencast_control);
@@ -1034,10 +1039,10 @@ pub fn browser_automation_start_screencast(
     result.unwrap_or_else(|error| unavailable_snapshot(width, height, error))
 }
 
-#[tauri::command(async)]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
 pub fn browser_automation_stop_screencast(
     pane_id: String,
-    browser: tauri::State<'_, BrowserDiscoverySocket>,
+    browser: BrowserState<'_>,
 ) -> Result<(), String> {
     let Some(streaming) = lock_or_recover(&browser._backend.screencast_by_pane)
         .get(&pane_id)
@@ -1108,43 +1113,41 @@ fn emit_screencast_frame(backend: &BrowserBackend, frame: &ScreencastFrame) -> b
     else {
         return false;
     };
-    let Some(app_handle) = backend
-        .app_state
-        .as_ref()
-        .and_then(|state| state.app_handle())
-    else {
+    let Some(state) = backend.app_state.as_ref() else {
         return false;
     };
-    let _ = app_handle.emit(
+    let payload = json!({
+        "paneId": pane_id, "tabId": frame.tab_id, "url": frame.url,
+        "title": frame.title, "width": viewport.width, "height": viewport.height,
+        "imageDataUrl": format!("data:image/jpeg;base64,{}", frame.data),
+    });
+    #[cfg(feature = "desktop")]
+    if let Some(app_handle) = state.app_handle() {
+        let _ = app_handle.emit(SCREENCAST_FRAME_EVENT, payload);
+        return true;
+    }
+    state.emit(crate::events::QmuxEvent::new(
         SCREENCAST_FRAME_EVENT,
-        json!({
-            "paneId": pane_id,
-            "tabId": frame.tab_id,
-            "url": frame.url,
-            "title": frame.title,
-            "width": viewport.width,
-            "height": viewport.height,
-            "imageDataUrl": format!("data:image/jpeg;base64,{}", frame.data),
-        }),
-    );
+        Some(pane_id),
+        None,
+        payload,
+    ));
+
     true
 }
 
-#[tauri::command(async)]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
 pub fn browser_automation_navigate(
     pane_id: String,
     url: String,
-    browser: tauri::State<'_, BrowserDiscoverySocket>,
+    browser: BrowserState<'_>,
 ) -> Result<(), String> {
     browser.execute_for_pane(&pane_id, "Page.navigate", json!({ "url": url }))?;
     Ok(())
 }
 
-#[tauri::command(async)]
-pub fn browser_automation_reload(
-    pane_id: String,
-    browser: tauri::State<'_, BrowserDiscoverySocket>,
-) -> Result<(), String> {
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+pub fn browser_automation_reload(pane_id: String, browser: BrowserState<'_>) -> Result<(), String> {
     browser.execute_for_pane(&pane_id, "Page.reload", json!({}))?;
     Ok(())
 }
@@ -1187,11 +1190,11 @@ fn browser_history_entry_id(history: &Value, direction: &str) -> Result<Option<u
         .and_then(Value::as_u64))
 }
 
-#[tauri::command(async)]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
 pub fn browser_automation_navigate_history(
     pane_id: String,
     direction: String,
-    browser: tauri::State<'_, BrowserDiscoverySocket>,
+    browser: BrowserState<'_>,
 ) -> Result<(), String> {
     let history = browser.execute_for_pane(&pane_id, "Page.getNavigationHistory", json!({}))?;
     if let Some(entry_id) = browser_history_entry_id(&history, &direction)? {
@@ -1204,7 +1207,7 @@ pub fn browser_automation_navigate_history(
     Ok(())
 }
 
-#[tauri::command(async)]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
 pub fn browser_automation_mouse(
     pane_id: String,
     kind: String,
@@ -1215,7 +1218,7 @@ pub fn browser_automation_mouse(
     button: Option<String>,
     buttons: Option<u32>,
     modifiers: Option<u32>,
-    browser: tauri::State<'_, BrowserDiscoverySocket>,
+    browser: BrowserState<'_>,
 ) -> Result<(), String> {
     if !x.is_finite() || !y.is_finite() {
         return Err("browser pointer coordinates must be finite".to_string());
@@ -1307,11 +1310,11 @@ pub fn browser_automation_mouse(
     Ok(())
 }
 
-#[tauri::command(async)]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
 pub fn browser_automation_insert_text(
     pane_id: String,
     text: String,
-    browser: tauri::State<'_, BrowserDiscoverySocket>,
+    browser: BrowserState<'_>,
 ) -> Result<(), String> {
     if text.len() > 1024 * 1024 {
         return Err("browser text input exceeds 1 MiB".to_string());
@@ -1320,14 +1323,14 @@ pub fn browser_automation_insert_text(
     Ok(())
 }
 
-#[tauri::command(async)]
+#[cfg_attr(feature = "desktop", tauri::command(async))]
 pub fn browser_automation_key(
     pane_id: String,
     key: String,
     code: String,
     windows_virtual_key_code: u32,
     modifiers: u32,
-    browser: tauri::State<'_, BrowserDiscoverySocket>,
+    browser: BrowserState<'_>,
 ) -> Result<(), String> {
     if windows_virtual_key_code > 255 {
         return Err("browser virtual key code is out of range".to_string());
