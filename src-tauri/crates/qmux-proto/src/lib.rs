@@ -7,6 +7,8 @@
 //! Unix socket, but nothing here may assume that: a forwarded socket or a
 //! network transport must be able to reuse these types unchanged.
 
+pub mod runtime;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

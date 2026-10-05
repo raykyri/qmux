@@ -32,6 +32,8 @@ pub mod remote_transcript;
 pub mod remote_transport;
 pub mod research;
 pub mod research_runtime;
+pub mod runtime_commands;
+pub mod runtime_rpc;
 pub mod scrollback;
 pub mod shell_jobs;
 pub mod ssh_config;

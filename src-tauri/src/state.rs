@@ -2060,6 +2060,25 @@ impl AppState {
         state
     }
 
+    /// Read-only live snapshot for reconnecting clients. Unlike restore_session,
+    /// this never requeues inflight work or rewrites transcript bindings.
+    pub fn runtime_snapshot(&self) -> Result<serde_json::Value, String> {
+        let model = self.inner.model.lock().map_err(|_| "model lock poisoned")?;
+        Ok(serde_json::json!({
+            "panes": ordered_panes(&model), "groups": model.groups,
+            "groupOrder": ordered_group_ids(&model), "agents": model.agents,
+            "turns": model.turns, "queues": model.agent_turn_queues,
+            "inflight": model.agent_inflight, "drafts": model.agent_drafts,
+            "globalDrafts": model.global_drafts, "paneSplits": model.pane_splits,
+            "activeTabId": model.active_tab_id, "threads": model.threads,
+            "threadFocus": model.thread_focus, "researchTrees": model.research_trees,
+            "researchTreeOrder": ordered_research_tree_ids(&model),
+            "researchNodes": model.research_nodes, "researchFolders": model.research_folders,
+            "journal": model.journal, "notificationLog": model.notification_log,
+            "artifacts": model.artifacts,
+        }))
+    }
+
     pub fn terminal_server(&self) -> Option<&crate::local_terminal::TerminalServer> {
         self.inner.terminal_server.get()
     }
