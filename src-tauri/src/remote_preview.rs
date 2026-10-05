@@ -183,6 +183,30 @@ pub fn cleanup(state: &AppState) {
     }
 }
 
+fn cache_key(identity: &str, cwd: &str, path: &str) -> Result<String, String> {
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&(identity, cwd, path)).map_err(|e| e.to_string())?)
+    ))
+}
+
+pub fn info(
+    state: &AppState,
+    pane: &str,
+    transcript: &str,
+    path: &str,
+) -> Result<serde_json::Value, String> {
+    let (_, cwd, _, identity) = remote_transcript::preview_source(state, pane, transcript)?;
+    let key = cache_key(&identity, &cwd, path)?;
+    let _cache = CACHE_LOCK.lock().unwrap();
+    let entry = cached(state, &key);
+    let resolved = entry
+        .as_ref()
+        .map(|e| e.metadata.path.clone())
+        .unwrap_or_else(|| Path::new(&cwd).join(path).to_string_lossy().into_owned());
+    Ok(serde_json::json!({ "cachedAvailable": entry.is_some(), "path": resolved }))
+}
+
 pub fn start(
     state: &AppState,
     pane: String,
@@ -195,10 +219,7 @@ pub fn start(
     }
     let (host, cwd, roots, identity) =
         remote_transcript::preview_source(state, &pane, &transcript)?;
-    let key = format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&(identity, &cwd, &path)).map_err(|e| e.to_string())?)
-    );
+    let key = cache_key(&identity, &cwd, &path)?;
     cleanup(state);
     let _cache = CACHE_LOCK.lock().unwrap();
     let mut requests = REQUESTS.lock().unwrap();

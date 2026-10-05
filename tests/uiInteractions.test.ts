@@ -228,3 +228,28 @@ test("app-level Escape dispatch keeps priority over the media dialog listener", 
     window.removeEventListener("keydown", dispatch, true);
   }
 });
+
+test("remote link menu skips unavailable cache, copies, and restores focus on Tab", async () => {
+  const trigger = document.createElement("button");
+  document.body.appendChild(trigger);
+  trigger.focus();
+  let copied = false;
+  let closed = false;
+  await act(() => root.render(h(LinkContextMenu, {
+    x: 10, y: 10, canOpenInternal: true,
+    onOpenInternal: () => undefined, onOpenExternal: () => { throw Error("local action must be hidden"); },
+    onClose: () => { closed = true; },
+    remoteActions: { cachedAvailable: false, onCached: () => { throw Error("cache unavailable"); }, onCopy: () => { copied = true; } },
+  })));
+  assert.equal(document.activeElement!.textContent, "Open preview");
+  assert.ok((document.querySelectorAll("[role=menuitem]")[1] as HTMLButtonElement).disabled);
+  assert.doesNotMatch(document.body.textContent!, /Open in browser|Reveal in Finder|default app/u);
+  await key("ArrowDown");
+  assert.equal(document.activeElement!.textContent, "Copy remote path");
+  await click(document.activeElement!);
+  assert.ok(copied); assert.ok(closed); assert.equal(document.activeElement, trigger);
+  closed = false;
+  (document.querySelector("[role=menuitem]") as HTMLElement).focus();
+  await key("Tab");
+  assert.ok(closed); assert.equal(document.activeElement, trigger);
+});

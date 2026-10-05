@@ -17,7 +17,7 @@ import type {
 } from "react";
 import { createPortal } from "react-dom";
 import { Ellipsis, ExternalLink, FileCode2 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components, Options } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -29,6 +29,7 @@ import {
   loopbackHtmlUrl,
   QMUX_FILE_HREF_PREFIX,
   safeHref,
+  safeTranscriptHref,
 } from "../lib/links";
 import { normalizeLatexMathDelimiters } from "../lib/markdownMathDelimiters";
 import DiagramBlock, { diagramLangFromClassName, nodeText } from "./DiagramBlock";
@@ -292,7 +293,7 @@ function MarkdownLink({
 }: ComponentPropsWithoutRef<"a"> & { node?: TranscriptHastNode }) {
   const { openLink, openLinkMenu } = useContext(LinkActionsContext);
   const artifactLinks = useContext(TranscriptArtifactLinksContext);
-  const safe = safeHref(href);
+  const safe = artifactLinks ? safeTranscriptHref(href) : safeHref(href);
   if (!safe) {
     return <span {...props} />;
   }
@@ -814,6 +815,9 @@ export default memo(function TranscriptMarkdown({
     <TranscriptArtifactLinksContext.Provider value={artifactLinks}>
       <div className={`turn-markdown${className ? ` ${className}` : ""}`}>
         <ReactMarkdown
+          urlTransform={(url, key) => artifactLinks && key === "href"
+            ? safeTranscriptHref(url) ?? ""
+            : defaultUrlTransform(url)}
           components={
             inline
               ? imageBehavior === "open"

@@ -131,3 +131,18 @@ test("Select exposes valid fallback and empty combobox states", () => {
   );
   assert.match(empty, /disabled=""/);
 });
+
+test("remote preview status exposes progress, failure recovery, and cached timestamps", async () => {
+  const { default: RemotePreviewStatus } = await import("../src/components/RemotePreviewStatus");
+  const preview = { target: { paneId: "p", transcript: "t", path: "report.pdf", fragment: "" }, cachedOnly: false, bytes: 1024, total: 2048, error: null, cachedAvailable: false, fetchedAt: null, url: null };
+  const props = { onRetry() {}, onCached() {}, onCopy() {}, onClose() {} };
+  const loading = renderToStaticMarkup(createElement(RemotePreviewStatus, { ...props, preview }));
+  assert.match(loading, /aria-label="Remote file download"/u);
+  assert.match(loading, />Cancel</u);
+  const failed = renderToStaticMarkup(createElement(RemotePreviewStatus, { ...props, preview: { ...preview, error: "Disconnected", cachedAvailable: true } }));
+  assert.match(failed, /role="alert"/u);
+  assert.match(failed, />Open cached copy</u);
+  const cached = renderToStaticMarkup(createElement(RemotePreviewStatus, { ...props, preview: { ...preview, cachedOnly: true, fetchedAt: 1234, url: "preview" } }));
+  assert.match(cached, /Cached copy · downloaded/u);
+  assert.match(cached, />Refresh from remote</u);
+});

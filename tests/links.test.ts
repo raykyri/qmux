@@ -285,3 +285,26 @@ test("terminal links reject unknown schemes and malformed targets", () => {
   assert.equal(terminalLinkTarget(" report.html"), undefined);
   assert.equal(terminalLinkTarget("report\n.html"), undefined);
 });
+
+test("transcript file links separate relative paths and document fragments", async () => {
+  const { safeTranscriptHref, transcriptFileTarget } = await import("../src/lib/links");
+  for (const path of ["out/report.html", "report.pdf", "../notes.md", "/home/dev/report.html"]) {
+    const href = safeTranscriptHref(`${path}#results`)!;
+    assert.deepEqual(transcriptFileTarget(href), { path, fragment: "#results" });
+  }
+  assert.deepEqual(transcriptFileTarget(safeTranscriptHref("out/my%20report.pdf#page=2")!), { path: "out/my report.pdf", fragment: "#page=2" });
+  for (const value of ["javascript:alert(1)", "https://example.com/report.html", "//example.com/report.html", "#heading", "data:text/html,hi"]) {
+    assert.equal(transcriptFileTarget(value), undefined);
+  }
+  assert.equal(safeTranscriptHref("https://example.com/report.html"), "https://example.com/report.html");
+});
+
+test("transcript href round trips encoded filenames without treating them as fragments", async () => {
+  const { safeTranscriptHref, transcriptFileTarget } = await import("../src/lib/links");
+  for (const [href, path] of [
+    ["/home/dev/my%20report.pdf#page=2", "/home/dev/my report.pdf"],
+    ["out/report%23draft.html#page=2", "out/report#draft.html"],
+    ["file:///home/dev/100%25.pdf#page=2", "/home/dev/100%.pdf"],
+  ]) assert.deepEqual(transcriptFileTarget(safeTranscriptHref(href)!), { path, fragment: "#page=2" });
+  assert.equal(transcriptFileTarget("out/a%00.html"), undefined);
+});

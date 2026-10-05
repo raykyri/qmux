@@ -1,3 +1,5 @@
+import RemotePreviewStatus from "../RemotePreviewStatus";
+import LinkContextMenu from "../LinkContextMenu";
 import { useState } from "react";
 import {
   Button,
@@ -25,6 +27,7 @@ const sectionStyle = {
 
 export default function ComponentCatalog() {
   const [selectValue, setSelectValue] = useState("current");
+  const [remoteMenu, setRemoteMenu] = useState<{x: number; y: number} | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [mediaOpen, setMediaOpen] = useState(false);
   const [segment, setSegment] = useState<"ssh" | "sftp" | "rsync">("ssh");
@@ -121,6 +124,21 @@ export default function ComponentCatalog() {
             <MenuItem tone="danger">Delete</MenuItem>
             <MenuItem disabled>Disabled</MenuItem>
           </Menu>
+        </section>
+        <section style={sectionStyle}>
+          <h2 style={{ margin: 0 }}>Remote file previews</h2>
+          {["loading", "error", "cached"].map((state) => <RemotePreviewStatus key={state}
+            preview={{ target: { paneId: "preview", transcript: "session", path: "/remote/report.html", fragment: "" },
+              cachedOnly: state === "cached", bytes: 2048, total: 4096,
+              error: state === "error" ? "Remote host is unavailable" : null,
+              cachedAvailable: state !== "loading", fetchedAt: state === "cached" ? 1700000000 : null,
+              url: state === "cached" ? "about:blank" : null,
+            }}
+            onRetry={() => undefined} onCached={() => undefined} onCopy={() => undefined} onClose={() => undefined} />)}
+          <Button onClick={(event) => setRemoteMenu({ x: event.clientX, y: event.clientY })}>Remote link menu</Button>
+          {remoteMenu ? <LinkContextMenu {...remoteMenu} canOpenInternal onOpenInternal={() => undefined}
+            onOpenExternal={() => undefined} onClose={() => setRemoteMenu(null)}
+            remoteActions={{ cachedAvailable: false, onCached: () => undefined, onCopy: () => undefined }} /> : null}
         </section>
         <section style={sectionStyle}>
           <h2 style={{ margin: 0 }}>Dialog</h2>

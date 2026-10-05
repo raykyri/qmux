@@ -12,6 +12,7 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   CSSProperties,
+  ReactNode,
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
@@ -99,6 +100,8 @@ function cssPixelValue(value: string, fallback: number) {
 // close control stays on the left while browser-engine selection stays on the right.
 interface BrowserOverlayProps {
   paneId: string;
+  sourceLabel?: string;
+  previewStatus?: ReactNode;
   url: string | null;
   // Bumped when a URL must be replayed. Human-browser Refresh uses the native
   // reload command directly so a just-changed page URL cannot be overwritten.
@@ -143,6 +146,8 @@ interface BrowserOverlayProps {
 
 export default function BrowserOverlay({
   paneId,
+  sourceLabel,
+  previewStatus,
   url,
   reloadNonce,
   sandbox,
@@ -217,6 +222,10 @@ export default function BrowserOverlay({
   onLocationChangeRef.current = onLocationChange;
   onNavigateRef.current = onNavigate;
   onPreviewScrollRef.current = onPreviewScroll;
+
+  useLayoutEffect(() => {
+    if (sourceLabel) overlayRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+  }, [sourceLabel]);
 
   useEffect(() => {
     frameScrollRef.current =
@@ -903,7 +912,14 @@ export default function BrowserOverlay({
       className={`browser-overlay${url ? "" : " is-empty"}${fullWidth ? " is-full-width" : ""}${resizing ? " is-resizing" : ""}`}
       style={overlayStyle}
       role="region"
-      aria-label="Browser overlay"
+      aria-label={sourceLabel ? "Remote file preview" : "Browser overlay"}
+      onKeyDown={(event) => {
+        if (sourceLabel && event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          onClose();
+        }
+      }}
     >
       <div className="browser-overlay-nav">
         <button
@@ -949,7 +965,7 @@ export default function BrowserOverlay({
           className="browser-overlay-nav-form"
           onSubmit={(event) => {
             event.preventDefault();
-            onNavigate(draft);
+            if (!sourceLabel) onNavigate(draft);
             event.currentTarget.querySelector("input")?.blur();
           }}
         >
@@ -957,7 +973,9 @@ export default function BrowserOverlay({
             ref={addressInputRef}
             type="text"
             className="browser-overlay-url"
-            value={draft}
+            value={sourceLabel ?? draft}
+            readOnly={sourceLabel !== undefined}
+            aria-label={sourceLabel ? "Remote file path" : "Address"}
             onChange={(event) => setDraft(event.currentTarget.value)}
             onBlur={() => setDraft(displayedUrl ?? "")}
             onKeyDown={(event) => {
@@ -970,7 +988,6 @@ export default function BrowserOverlay({
             spellCheck={false}
             autoComplete="off"
             autoCapitalize="off"
-            aria-label="Address"
           />
         </form>
         <div className="browser-overlay-nav-controls">
@@ -991,8 +1008,8 @@ export default function BrowserOverlay({
           <button
             type="button"
             className="icon-button browser-overlay-button"
-            title="Refresh browser"
-            aria-label="Refresh browser"
+            title={sourceLabel ? "Refresh from remote" : "Refresh browser"}
+            aria-label={sourceLabel ? "Refresh from remote" : "Refresh browser"}
             onClick={() => {
               if (automated) {
                 ignoreBrowserCommand(reloadBrowserAutomation(paneId));
@@ -1009,7 +1026,7 @@ export default function BrowserOverlay({
             title={sandbox ? "Open source file externally" : "Open in external browser"}
             aria-label={sandbox ? "Open source file externally" : "Open in external browser"}
             onClick={() => onOpenExternal(displayedUrl ?? undefined)}
-            disabled={!displayedUrl}
+            disabled={!displayedUrl || sourceLabel !== undefined}
           >
             <ExternalLink size={14} aria-hidden="true" />
           </button>
@@ -1042,6 +1059,7 @@ export default function BrowserOverlay({
           </div>
         </div>
       </div>
+      {previewStatus}
       <div ref={bodyRef} className="browser-overlay-body">
         {automated && mirrorImage ? (
           <img
@@ -1186,7 +1204,7 @@ export default function BrowserOverlay({
               }
             }}
           />
-        ) : (
+        ) : sourceLabel ? null : (
           <div className="browser-overlay-empty">
             <p>
               Nothing loaded yet. Run <code>qmux open &lt;file&gt;</code> (or enter a

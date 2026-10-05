@@ -1,3 +1,7 @@
+import RemoteLinkContextMenu from "./components/RemoteLinkContextMenu";
+import { useRemoteFilePreviews } from "./hooks/useRemoteFilePreviews";
+import RemotePreviewStatus from "./components/RemotePreviewStatus";
+import type { RemotePreviewTarget } from "./lib/remotePreview";
 import type {
   WorktreeCreateAction,
   WorktreeCreateDialogState,
@@ -424,6 +428,7 @@ import {
   isFileServerUrl,
   pathFromQmuxFileHref,
   resolveLocalLinkPath,
+  transcriptFileTarget,
   terminalLinkTarget,
 } from "./lib/links";
 import {
@@ -3230,12 +3235,15 @@ function MainApp() {
   );
   // Right-click chooser for a link: web URLs choose internal vs external;
   // local paths choose protected preview, reveal, or an explicit OS open.
+  const { previews: remotePreviews, requests: remotePreviewRequests } = useRemoteFilePreviews();
+  const remotePreviewTriggersRef = useRef(new Map<string, HTMLElement>());
   const [linkMenu, setLinkMenu] = useState<{
     url: string;
     x: number;
     y: number;
     paneId: string | null;
     trigger?: HTMLElement;
+    transcript?: string | null;
   } | null>(null);
   const [fileMatchMenu, setFileMatchMenu] = useState<{
     paneId: string;
@@ -5002,6 +5010,8 @@ function MainApp() {
   // opaque origin (see BrowserOverlay); plain http(s) URLs are not sandboxed.
   const openBrowserOverlay = useCallback(
     (paneId: string, url: string, sandbox = false, artifactId: string | null = null) => {
+      remotePreviewRequests.close(paneId);
+      remotePreviewTriggersRef.current.delete(paneId);
       // Force the sandbox on for any token-bearing file-server URL regardless of the
       // caller's flag: only the backend browser.open event passes sandbox=true, so typed
       // navigation and link opens would otherwise load a file-server URL as a trusted
@@ -5023,10 +5033,16 @@ function MainApp() {
         },
       }));
     },
-    [],
+    [remotePreviewRequests],
   );
 
   function focusTerminalAfterBrowserClose(ownerId: string | null | undefined) {
+    const trigger = ownerId ? remotePreviewTriggersRef.current.get(ownerId) : undefined;
+    if (ownerId) remotePreviewTriggersRef.current.delete(ownerId);
+    if (trigger?.isConnected) {
+      requestAnimationFrame(() => trigger.focus());
+      return;
+    }
     const paneId = browserOverlayTerminalFocusTarget(
       browserOverlayByPaneRef.current,
       ownerId,
@@ -5043,13 +5059,57 @@ function MainApp() {
   }
 
   function closeBrowserOverlayForPane(paneId: string) {
+    remotePreviewRequests.close(paneId);
     setBrowserOverlayByPane((current) => closeBrowserOverlayState(current, paneId));
     focusTerminalAfterBrowserClose(paneId);
   }
 
+  function startRemotePreview(target: RemotePreviewTarget, cachedOnly = false, trigger?: HTMLElement) {
+    if (trigger?.isConnected) remotePreviewTriggersRef.current.set(target.paneId, trigger);
+    setBrowserOverlayByPane((current) => ({
+      ...current,
+      [target.paneId]: {
+        url: null,
+        open: true,
+        artifactId: null,
+        reloadNonce: (current[target.paneId]?.reloadNonce ?? 0) + 1,
+        sandbox: true,
+        mode: "webkit",
+        size: current[target.paneId]?.size ?? null,
+        fullWidth: current[target.paneId]?.fullWidth ?? false,
+      },
+    }));
+    remotePreviewRequests.open(target, cachedOnly);
+  }
+
+  useEffect(() => {
+    for (const [paneId, preview] of Object.entries(remotePreviews)) {
+      const agent = agents.find((a) => a.paneId === paneId);
+      if (
+        !panes.some((p) => p.id === paneId) ||
+        !browserOverlayByPane[paneId]?.open ||
+        agent?.transcriptPath !== preview.target.transcript
+      ) {
+        remotePreviewRequests.close(paneId);
+        remotePreviewTriggersRef.current.delete(paneId);
+        setBrowserOverlayByPane((current) => closeBrowserOverlayState(current, paneId));
+      }
+    }
+  }, [remotePreviews, remotePreviewRequests, agents, panes, browserOverlayByPane]);
+
   const openLinkForPane = useCallback(
     (paneId: string | null | undefined, url: string, trigger?: HTMLElement) => {
-      const localPath = pathFromQmuxFileHref(url);
+      const fileTarget = transcriptFileTarget(url);
+      const localPath = fileTarget?.path ?? pathFromQmuxFileHref(url);
+      if (localPath && paneId && panesRef.current.find((pane) => pane.id === paneId)?.remoteSession) {
+        const transcript = agentsRef.current.find((agent) => agent.paneId === paneId)?.transcriptPath;
+        if (!transcript) {
+          setError("This remote transcript has no saved file context yet");
+          return;
+        }
+        startRemotePreview({ paneId, transcript, path: localPath, fragment: fileTarget?.fragment ?? "" }, false, trigger);
+        return;
+      }
       const fileServerPort = configRef.current?.fileServerPort ?? null;
       if (localPath) {
         if (!paneId) {
@@ -5186,6 +5246,7 @@ function MainApp() {
   }
 
   function closeAllBrowserOverlays(ownerId = activeBrowserOwnerIdRef.current) {
+    remotePreviewRequests.dispose();
     setBrowserOverlayByPane((current) => closeAllBrowserOverlaysState(current));
     void hideEveryHumanBrowser();
     focusTerminalAfterBrowserClose(ownerId);
@@ -5454,6 +5515,11 @@ function MainApp() {
     if (!activeBrowserOwnerId) {
       return;
     }
+    const remotePreview = remotePreviews[activeBrowserOwnerId];
+    if (remotePreview) {
+      startRemotePreview(remotePreview.target);
+      return;
+    }
     const overlay = browserOverlayByPaneRef.current[activeBrowserOwnerId];
     if (overlay?.open && overlay.mode === "webkit" && !overlay.sandbox) {
       void reloadHumanBrowser(activeBrowserOwnerId).catch((err) => {
@@ -5541,7 +5607,10 @@ function MainApp() {
         openLink: (url, trigger) => {
           openLinkForPaneRef.current(paneId, url, trigger);
         },
-        openLinkMenu: (url, x, y, trigger) => setLinkMenu({ url, x, y, paneId, trigger }),
+        openLinkMenu: (url, x, y, trigger) => setLinkMenu({
+          url, x, y, paneId, trigger,
+          transcript: agentsRef.current.find((a) => a.paneId === paneId)?.transcriptPath,
+        }),
         openCodexInlineVisualization: (file) => {
           void browserOpenCodexInlineVisualization(paneId, file).catch((err) => {
             setError(err instanceof Error ? err.message : String(err));
@@ -15635,8 +15704,24 @@ function MainApp() {
   const renamingGroup = renameGroupId ? groupById.get(renameGroupId) : undefined;
   const renamingResearchFolder =
     renamingGroup?.scope === "research" ? renamingGroup : undefined;
-  const linkMenuLocalPath = linkMenu ? pathFromQmuxFileHref(linkMenu.url) : undefined;
+  const activeRemotePreview = activeBrowserOwnerId ? remotePreviews[activeBrowserOwnerId] : undefined;
+  const activePreviewUrl = activeRemotePreview
+    ? activeRemotePreview.url && activeRemotePreview.url + activeRemotePreview.target.fragment
+    : activeBrowserOverlay?.url ?? null;
+  const linkMenuLocalPath = linkMenu
+    ? transcriptFileTarget(linkMenu.url)?.path ?? pathFromQmuxFileHref(linkMenu.url)
+    : undefined;
   const linkMenuPaneId = linkMenu?.paneId ?? null;
+  const remoteMenuTarget: RemotePreviewTarget | null =
+    linkMenu && linkMenuLocalPath && linkMenuPaneId &&
+    panes.find((p) => p.id === linkMenuPaneId)?.remoteSession
+      ? {
+          paneId: linkMenuPaneId,
+          transcript: linkMenu.transcript ?? "",
+          path: linkMenuLocalPath,
+          fragment: transcriptFileTarget(linkMenu.url)?.fragment ?? "",
+        }
+      : null;
 
   return (
     <main
@@ -18782,7 +18867,15 @@ function MainApp() {
         <BrowserOverlay
           key={activeBrowserOwnerId}
           paneId={activeBrowserOwnerId}
-          url={activeBrowserOverlay.url}
+          url={activePreviewUrl}
+          sourceLabel={activeRemotePreview?.target.path}
+          previewStatus={activeRemotePreview ? <RemotePreviewStatus
+            preview={activeRemotePreview}
+            onRetry={() => startRemotePreview(activeRemotePreview.target)}
+            onCached={() => startRemotePreview(activeRemotePreview.target, true)}
+            onCopy={() => { void writeClipboardText(activeRemotePreview.target.path).catch(reportHumanBrowserError); }}
+            onClose={() => closeActiveBrowserOverlay(activeBrowserOwnerId)}
+          /> : undefined}
           reloadNonce={activeBrowserOverlay.reloadNonce}
           sandbox={activeBrowserOverlay.sandbox}
           mode={activeBrowserOverlay.mode}
@@ -18831,7 +18924,13 @@ function MainApp() {
           }
         />
       ) : null}
-      {linkMenu ? (
+      {linkMenu && remoteMenuTarget ? (
+        <RemoteLinkContextMenu key={`${remoteMenuTarget.paneId}:${remoteMenuTarget.transcript}:${linkMenu.url}`}
+          target={remoteMenuTarget} x={linkMenu.x} y={linkMenu.y}
+          onOpen={(cached) => startRemotePreview(remoteMenuTarget, cached, linkMenu.trigger)}
+          onClose={() => setLinkMenu(null)} onError={reportHumanBrowserError}
+        />
+      ) : linkMenu ? (
         <LinkContextMenu
           x={linkMenu.x}
           y={linkMenu.y}

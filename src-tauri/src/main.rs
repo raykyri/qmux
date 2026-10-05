@@ -993,6 +993,15 @@ fn resolve_local_link_target(
 }
 
 #[tauri::command(async)]
+fn remote_preview_info(
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+    transcript: String,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    remote_preview::info(&state, &pane_id, &transcript, &path)
+}
+#[tauri::command(async)]
 fn remote_preview_start(
     state: tauri::State<'_, AppState>,
     pane_id: String,
@@ -4094,6 +4103,7 @@ fn main() {
             human_browser::human_browser_navigate_history,
             open_external_url,
             browser_open_preview_external,
+            remote_preview_info,
             remote_preview_start,
             remote_preview_status,
             remote_preview_close,

@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { Menu, MenuItem, useAnchoredPopover } from "./ui";
-import { ExternalLink, FolderOpen, Globe } from "lucide-react";
+import { Copy, ExternalLink, FolderOpen, Globe, RotateCw } from "lucide-react";
 
 // Right-click chooser for a link. Web links choose between the internal and OS
 // browsers; local links can preview, reveal, or deliberately use the default app.
@@ -15,6 +15,12 @@ interface LinkContextMenuProps {
   onOpenExternal: () => void;
   onOpenWithDefaultApp?: (() => void) | null;
   onClose: () => void;
+  remoteActions?: {
+    cachedAvailable: boolean;
+    onCached: () => void;
+    onCopy: () => void;
+    onRefresh?: () => void;
+  };
 }
 
 export default function LinkContextMenu({
@@ -27,6 +33,7 @@ export default function LinkContextMenu({
   onOpenExternal,
   onOpenWithDefaultApp = null,
   onClose,
+  remoteActions,
 }: LinkContextMenuProps) {
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -65,23 +72,50 @@ export default function LinkContextMenu({
           onClick={() => choose(onOpenInternal)}
         >
           <Globe size={14} aria-hidden="true" />
-          <span>Open</span>
+          <span>{remoteActions ? "Open preview" : "Open"}</span>
         </MenuItem>
       ) : null}
-      <MenuItem
-        type="button"
-        role="menuitem"
-        className="link-context-menu-item"
-        onClick={() => choose(onOpenExternal)}
-      >
-        {externalKind === "reveal" ? (
-          <FolderOpen size={14} aria-hidden="true" />
-        ) : (
-          <ExternalLink size={14} aria-hidden="true" />
-        )}
-        <span>{externalLabel}</span>
-      </MenuItem>
-      {onOpenWithDefaultApp ? (
+      {remoteActions ? (
+        <>
+          <MenuItem
+            type="button" role="menuitem" className="link-context-menu-item"
+            disabled={!remoteActions.cachedAvailable}
+            onClick={() => choose(remoteActions.onCached)}
+          >
+            <Globe size={14} aria-hidden="true" />
+            <span>Open cached copy</span>
+          </MenuItem>
+          {remoteActions.onRefresh ? (
+            <MenuItem
+              type="button" role="menuitem" className="link-context-menu-item"
+              onClick={() => choose(remoteActions.onRefresh!)}
+            >
+              <RotateCw size={14} aria-hidden="true" />
+              <span>Refresh from remote</span>
+            </MenuItem>
+          ) : null}
+          <MenuItem
+            type="button" role="menuitem" className="link-context-menu-item"
+            onClick={() => choose(remoteActions.onCopy)}
+          >
+            <Copy size={14} aria-hidden="true" />
+            <span>Copy remote path</span>
+          </MenuItem>
+        </>
+      ) : (
+        <MenuItem
+          type="button" role="menuitem" className="link-context-menu-item"
+          onClick={() => choose(onOpenExternal)}
+        >
+          {externalKind === "reveal" ? (
+            <FolderOpen size={14} aria-hidden="true" />
+          ) : (
+            <ExternalLink size={14} aria-hidden="true" />
+          )}
+          <span>{externalLabel}</span>
+        </MenuItem>
+      )}
+      {!remoteActions && onOpenWithDefaultApp ? (
         <MenuItem
           type="button"
           role="menuitem"

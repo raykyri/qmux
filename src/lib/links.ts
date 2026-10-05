@@ -96,6 +96,42 @@ export function safeHref(href: unknown): string | undefined {
     : undefined;
 }
 
+/** File href parsing for pane-backed transcripts only. Keep the fragment out of
+ * the remote filesystem request; it belongs to the rendered document URL. */
+export function transcriptFileTarget(href: string): { path: string; fragment: string } | undefined {
+  if (href !== href.trim() || /[\u0000-\u001f\u007f]/u.test(href)) return undefined;
+  const hash = href.indexOf("#");
+  const raw = hash < 0 ? href : href.slice(0, hash);
+  const fragment = hash < 0 ? "" : href.slice(hash);
+  const sentinel = raw.startsWith(QMUX_FILE_HREF_PREFIX);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(sentinel ? raw.slice(QMUX_FILE_HREF_PREFIX.length) : raw);
+  } catch {
+    return undefined;
+  }
+  if (/[\u0000-\u001f\u007f]/u.test(decoded)) return undefined;
+  // file: decoding is already handled by absoluteLocalFilePath; don't decode twice.
+  let path = raw.startsWith("file:") ? absoluteLocalFilePath(raw)
+    : absoluteLocalFilePath(sentinel ? `${QMUX_FILE_HREF_PREFIX}${decoded}` : decoded);
+  if (!path && !/^[a-z][a-z0-9+.-]*:/iu.test(decoded) &&
+      !decoded.startsWith("/") && !decoded.includes("\\") &&
+      !raw.includes("?") && canPreviewLocalFilePath(decoded)) {
+    path = decoded;
+  }
+  return path ? { path, fragment } : undefined;
+}
+
+export function safeTranscriptHref(href: unknown): string | undefined {
+  if (typeof href !== "string") return undefined;
+  const target = transcriptFileTarget(href);
+  if (!target) return safeHref(href);
+  // Encode the path separately so literal #, %, and ? in filenames cannot turn
+  // into document fragments or be decoded twice on activation.
+  const path = encodeURI(target.path).replace(/#/gu, "%23").replace(/\?/gu, "%3F");
+  return `${QMUX_FILE_HREF_PREFIX}${path}${target.fragment}`;
+}
+
 // Portable path characters plus `/`. Spaces, URL punctuation, backslashes,
 // Windows drive letters, and percent-encoding are all excluded so inline code
 // like `const x = 1` or `https://example.com/a.html` never becomes a file link.

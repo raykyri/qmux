@@ -293,3 +293,16 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+
+/* Remote preview controls use shared Button chrome; this is only their layout. */
+.remote-preview-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  flex: 0 0 auto;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-base);
+}
+.remote-preview-status progress { width: 100%; }
+.remote-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; }

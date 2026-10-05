@@ -215,3 +215,16 @@ test("artifact controls stay scoped to transcript renderers that opt in", () => 
     0,
   );
 });
+
+test("pane transcripts expose relative Markdown artifact links with fragments", () => {
+  const html = render("[Report](out/report.html#results) [PDF](report.pdf)");
+  assert.match(html, /href="qmux-file:out\/report.html#results"/u);
+  assert.match(html, /href="qmux-file:report.pdf"/u);
+  assert.doesNotMatch(render("[Report](out/report.html)", false), /href="qmux-file:out/u);
+});
+
+test("file URLs survive Markdown sanitization only as guarded transcript links", () => {
+  assert.match(render("[Report](file:///home/dev/my%20report.pdf#page=2)"), /href="qmux-file:\/home\/dev\/my%20report.pdf#page=2"/u);
+  assert.doesNotMatch(render("[Bad](javascript:alert%281%29)"), /href=/u);
+  assert.doesNotMatch(render("![Bad](file:///home/dev/secret.png)"), /src="file:/u);
+});
