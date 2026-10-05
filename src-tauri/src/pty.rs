@@ -513,14 +513,14 @@ pub struct PaneWriteFailure {
 }
 
 impl PaneWriteFailure {
-    fn before_data(error: String) -> Self {
+    pub(crate) fn before_data(error: String) -> Self {
         Self {
             error,
             data_delivered: false,
         }
     }
 
-    fn after_data(error: String) -> Self {
+    pub(crate) fn after_data(error: String) -> Self {
         Self {
             error,
             data_delivered: true,
@@ -1899,6 +1899,66 @@ fn spawn_portable_pty(
     materialize_support_files_or_fallback(&mut spec)?;
     let pane_id = spec.pane_id.unwrap_or_else(|| state.next_id("pane"));
     let initial_size = resolved_initial_size(spec.initial_size);
+    let pane = PaneInfo {
+        id: pane_id.clone(),
+        title: spec.title,
+        last_osc_title: spec.last_osc_title,
+        kind: spec.kind,
+        agent_id: spec.agent_id,
+        group_id: spec.group_id,
+        cwd: spec.cwd.display().to_string(),
+        // Shell tabs get their worktree badge from a git probe at spawn;
+        // recovered shells fall back to the persisted observation if that
+        // probe cannot run. Agent tabs rely on transcript tailing.
+        active_workspace: match spec.kind {
+            PaneKind::Shell => {
+                let cwd = spec.cwd.to_str().unwrap_or_default();
+                crate::workspace::resolve_pane_workspace(cwd).or(spec.fallback_workspace)
+            }
+            PaneKind::Agent => None,
+        },
+        remote_session: None,
+        remote_connection: None,
+        cols: initial_size.cols,
+        rows: initial_size.rows,
+        status: PaneStatus::Running,
+        // A freshly spawned pane is immediately the group's most-recent, so the next
+        // spawn into the group inherits its cwd even before the frontend's activation
+        // stamp round-trips. Every real pane (shell and agent) flows through here.
+        last_active_at: crate::state::now_millis(),
+        recovered: spec.recovered,
+        remote_client: spec.remote_client.clone(),
+        // Deprecated compatibility field; flat tab layouts always use zero.
+        depth: 0,
+    };
+
+    if let Some(server) = state.terminal_server() {
+        let mut envs = base_envs;
+        envs.push(("TERM".into(), "xterm-256color".into()));
+        envs.extend(spec.envs);
+        let terminal = server.spawn(
+            &pane_id,
+            &spec.program,
+            &spec.args,
+            &spec.cwd,
+            &envs,
+            initial_size.cols,
+            initial_size.rows,
+        )?;
+        if let Err(error) = state.insert_pane(PaneRuntime {
+            info: pane.clone(),
+            backend: PaneBackend::Persistent(
+                terminal.clone(),
+                Arc::new(Mutex::new(Default::default())),
+            ),
+            cwd_observation_seq: 0,
+        }) {
+            let _ = terminal.close();
+            return Err(error);
+        }
+        watch_persistent_terminal(state.clone(), pane_id, terminal);
+        return Ok(pane);
+    }
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -1946,39 +2006,6 @@ fn spawn_portable_pty(
     let master = Arc::new(Mutex::new(pair.master));
     let writer = Arc::new(Mutex::new(writer));
     let backlog: SharedBacklog = Arc::new(Mutex::new(Default::default()));
-
-    let pane = PaneInfo {
-        id: pane_id.clone(),
-        title: spec.title,
-        last_osc_title: spec.last_osc_title,
-        kind: spec.kind,
-        agent_id: spec.agent_id,
-        group_id: spec.group_id,
-        cwd: spec.cwd.display().to_string(),
-        // Shell tabs get their worktree badge from a git probe at spawn;
-        // recovered shells fall back to the persisted observation if that
-        // probe cannot run. Agent tabs rely on transcript tailing.
-        active_workspace: match spec.kind {
-            PaneKind::Shell => {
-                let cwd = spec.cwd.to_str().unwrap_or_default();
-                crate::workspace::resolve_pane_workspace(cwd).or(spec.fallback_workspace)
-            }
-            PaneKind::Agent => None,
-        },
-        remote_session: None,
-        remote_connection: None,
-        cols: initial_size.cols,
-        rows: initial_size.rows,
-        status: PaneStatus::Running,
-        // A freshly spawned pane is immediately the group's most-recent, so the next
-        // spawn into the group inherits its cwd even before the frontend's activation
-        // stamp round-trips. Every real pane (shell and agent) flows through here.
-        last_active_at: crate::state::now_millis(),
-        recovered: spec.recovered,
-        remote_client: spec.remote_client.clone(),
-        // Deprecated compatibility field; flat tab layouts always use zero.
-        depth: 0,
-    };
 
     let runtime = PaneRuntime {
         info: pane.clone(),
@@ -3561,6 +3588,12 @@ pub fn write_pane_detailed(
             "research terminals are read-only; create a follow-up branch instead".to_string(),
         ));
     }
+    if let Some(terminal) = state
+        .persistent_terminal(&options.pane_id)
+        .map_err(PaneWriteFailure::before_data)?
+    {
+        return terminal.send(&options.data, options.paste, options.submit);
+    }
     if state
         .pane_is_native(&options.pane_id)
         .map_err(PaneWriteFailure::before_data)?
@@ -3917,6 +3950,10 @@ fn write_pane_input<W: Write + ?Sized>(
 }
 
 pub fn resize_pane(state: &AppState, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
+    if let Some(terminal) = state.persistent_terminal(&pane_id)? {
+        terminal.resize(cols, rows)?;
+        return state.update_pane_size(&pane_id, cols, rows);
+    }
     // Some agent TUIs nested under agent-exec do not reliably wake from the
     // SIGWINCH that TIOCSWINSZ is documented to generate. Resolve whether an
     // agent owns this pane before taking the master lock so this path never
@@ -4244,23 +4281,33 @@ pub fn pane_activity(state: &AppState, pane_id: String) -> Result<PaneActivity, 
         };
     }
 
-    let child = state
-        .pane_child(&pane_id)?
-        .ok_or_else(|| format!("pane {pane_id} was not found"))?;
-    let root_pid = {
-        let mut child = child
-            .lock()
-            .map_err(|_| format!("pane {pane_id} child lock poisoned"))?;
-
-        if child
-            .try_wait()
-            .map_err(|err| format!("failed to inspect pane {pane_id}: {err}"))?
-            .is_some()
-        {
+    let root_pid = if let Some(terminal) = state.persistent_terminal(&pane_id)? {
+        let status = terminal.status()?;
+        if status.dead {
             return Ok(PaneActivity::idle());
         }
+        Some(status.pid)
+    } else {
+        let child = state
+            .pane_child(&pane_id)?
+            .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+        let root_pid = {
+            let mut child = child
+                .lock()
+                .map_err(|_| format!("pane {pane_id} child lock poisoned"))?;
 
-        child.process_id()
+            if child
+                .try_wait()
+                .map_err(|err| format!("failed to inspect pane {pane_id}: {err}"))?
+                .is_some()
+            {
+                return Ok(PaneActivity::idle());
+            }
+
+            child.process_id()
+        };
+
+        root_pid
     };
 
     let Some(root_pid) = root_pid else {
@@ -4339,6 +4386,14 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
         }
         return Ok(());
     }
+    if let Some(terminal) = state.persistent_terminal(&pane_id)? {
+        if let Err(error) = terminal.close() {
+            state.clear_last_closed_pane_for_pane(&pane_id);
+            return Err(error);
+        }
+        finish_pane_exit(state, &pane_id, None, false);
+        return Ok(());
+    }
     let child = state
         .pane_child(&pane_id)?
         .ok_or_else(|| format!("pane {pane_id} was not found"))?;
@@ -4415,6 +4470,14 @@ pub fn native_pane_did_close(state: &AppState, pane_id: &str, process_alive: boo
 /// the process is about to exit anyway. It cannot help a hard SIGKILL/force-quit,
 /// which no in-process handler can intercept.
 pub fn kill_all_panes(state: &AppState) {
+    // Service shutdown is explicit; dropping a renderer never reaches this path.
+    for pane in state.list_panes().unwrap_or_default() {
+        if let Ok(Some(terminal)) = state.persistent_terminal(&pane.id) {
+            if let Err(error) = terminal.close() {
+                eprintln!("qmux: failed to close persistent pane {}: {error}", pane.id);
+            }
+        }
+    }
     let mut pending = Vec::new();
     for pane in state.list_panes().unwrap_or_default() {
         if let Ok(Some((controller, _, _))) = state.pane_remote_control(&pane.id) {
@@ -4684,47 +4747,88 @@ fn start_reader_thread(
         } else {
             reap_pane_child(&state, &pane_id)
         };
-        let pane_agent_id = state
-            .agent_by_pane(&pane_id)
+        finish_pane_exit(&state, &pane_id, exit_code, native_surface);
+    });
+}
+
+fn finish_pane_exit(state: &AppState, pane_id: &str, exit_code: Option<i32>, native_surface: bool) {
+    let pane_agent_id = state
+        .agent_by_pane(&pane_id)
+        .ok()
+        .flatten()
+        .map(|agent| agent.id);
+    if let Some(agent_id) = pane_agent_id.as_deref()
+        && let Err(err) = abort_fork_barrier_for_child(
+            &state,
+            agent_id,
+            "Forked terminal exited before its initial prompt was accepted",
+        )
+    {
+        eprintln!("qmux: failed to release fork barrier for exited agent {agent_id}: {err}");
+    }
+    // A natural exit normally leaves no undo snapshot (unlike `kill_pane`), but if this
+    // is the group's last pane and the group still has queued turns, removing it would
+    // prune that pending work with no way back. Capture a close snapshot first so it
+    // can be reopened, matching the explicit-close path.
+    if state
+        .closing_pane_would_strand_queued_work(&pane_id)
+        .unwrap_or(false)
+        && let Err(err) = state.capture_last_closed_pane(&pane_id)
+    {
+        eprintln!("qmux: failed to capture exited pane {pane_id}: {err}");
+    }
+    if let Err(err) = state.remove_pane(&pane_id) {
+        // A failure here (e.g. a poisoned model lock) leaves a dead pane in
+        // state; log it so the stale entry has a trace rather than vanishing.
+        eprintln!("qmux: failed to remove exited pane {pane_id}: {err}");
+    }
+    if native_surface {
+        let _ = crate::native_terminal::remove(&pane_id);
+        remove_native_input_writer(&pane_id);
+    }
+    if let Some(agent_id) = pane_agent_id
+        && let Err(err) = release_waiters_for_agent(&state, &agent_id)
+    {
+        eprintln!("qmux: failed to release waiters for exited agent {agent_id}: {err}");
+    }
+    remove_shell_integration_dir(&pane_id);
+    state.emit(QmuxEvent::pty_exit(pane_id.to_string(), exit_code));
+}
+
+fn watch_persistent_terminal(
+    state: AppState,
+    pane_id: String,
+    terminal: crate::local_terminal::Terminal,
+) {
+    thread::spawn(move || {
+        while state
+            .persistent_terminal(&pane_id)
             .ok()
             .flatten()
-            .map(|agent| agent.id);
-        if let Some(agent_id) = pane_agent_id.as_deref()
-            && let Err(err) = abort_fork_barrier_for_child(
-                &state,
-                agent_id,
-                "Forked terminal exited before its initial prompt was accepted",
-            )
+            .is_some_and(|current| terminal.same_instance(&current))
         {
-            eprintln!("qmux: failed to release fork barrier for exited agent {agent_id}: {err}");
+            match terminal.status() {
+                Ok(status) if status.dead => {
+                    if !state
+                        .persistent_terminal(&pane_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|current| terminal.same_instance(&current))
+                    {
+                        break;
+                    }
+                    let _ = terminal.close();
+                    finish_pane_exit(&state, &pane_id, status.exit_code, false);
+                    break;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    // A transient query failure is not evidence that the process exited.
+                    eprintln!("qmux: cannot inspect persistent pane {pane_id}: {error}");
+                }
+            }
+            thread::sleep(Duration::from_millis(250));
         }
-        // A natural exit normally leaves no undo snapshot (unlike `kill_pane`), but if this
-        // is the group's last pane and the group still has queued turns, removing it would
-        // prune that pending work with no way back. Capture a close snapshot first so it
-        // can be reopened, matching the explicit-close path.
-        if state
-            .closing_pane_would_strand_queued_work(&pane_id)
-            .unwrap_or(false)
-            && let Err(err) = state.capture_last_closed_pane(&pane_id)
-        {
-            eprintln!("qmux: failed to capture exited pane {pane_id}: {err}");
-        }
-        if let Err(err) = state.remove_pane(&pane_id) {
-            // A failure here (e.g. a poisoned model lock) leaves a dead pane in
-            // state; log it so the stale entry has a trace rather than vanishing.
-            eprintln!("qmux: failed to remove exited pane {pane_id}: {err}");
-        }
-        if native_surface {
-            let _ = crate::native_terminal::remove(&pane_id);
-            remove_native_input_writer(&pane_id);
-        }
-        if let Some(agent_id) = pane_agent_id
-            && let Err(err) = release_waiters_for_agent(&state, &agent_id)
-        {
-            eprintln!("qmux: failed to release waiters for exited agent {agent_id}: {err}");
-        }
-        remove_shell_integration_dir(&pane_id);
-        state.emit(QmuxEvent::pty_exit(pane_id, exit_code));
     });
 }
 
@@ -4898,7 +5002,7 @@ fn kill_child(pane_id: &str, child: SharedChild) -> Result<(), String> {
     }
 }
 
-fn terminate_descendants(pid: u32) {
+pub(crate) fn terminate_descendants(pid: u32) {
     // Reversing the pre-order walk signals every process before its parent
     // (deepest first), preserving the old recursive kill order without a
     // subprocess per descendant.

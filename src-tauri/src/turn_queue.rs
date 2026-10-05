@@ -2112,6 +2112,80 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires tmux 3.3+; run persistent terminal tests explicitly"]
+    fn persistent_core_drains_queue_without_a_renderer_and_preserves_transcript() {
+        use crate::pty::{PtySpawnSpec, spawn_pty};
+        let config = test_state().config().clone();
+        let root = config.workspace_root.join("terminals");
+        let server = crate::local_terminal::TerminalServer::open(&root).unwrap();
+        struct Cleanup(crate::local_terminal::TerminalServer, PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.0.shutdown();
+                let _ = std::fs::remove_dir_all(&self.1);
+            }
+        }
+        let _cleanup = Cleanup(server.clone(), config.workspace_root.clone());
+        let state = AppState::with_terminal_server(config, server);
+        let mut agent = sample_agent(AgentStatus::Running);
+        agent.pane_id = Some("detached-pane".into());
+        agent.worktree_dir = state.config().workspace_root.display().to_string();
+        state.insert_agent(agent).unwrap();
+        let pane = spawn_pty(&state, PtySpawnSpec {
+            pane_id: Some("detached-pane".into()), agent_id: Some("agent-1".into()),
+            group_id: "group-1".into(), kind: crate::state::PaneKind::Agent,
+            title: "Detached test".into(), last_osc_title: None,
+            program: "/bin/sh".into(), args: vec!["-c".into(),
+                "printf 'READY\\n'; while IFS= read -r line; do printf 'ACCEPTED:%s\\n' \"$line\"; done".into()],
+            cwd: state.config().workspace_root.clone(), envs: vec![], support_files: vec![],
+            support_file_fallback: None, initial_size: None, recovered: false,
+            remote_client: None, remote: None, fallback_workspace: None,
+        }).unwrap();
+        let terminal = state.persistent_terminal(&pane.id).unwrap().unwrap();
+        let pid = terminal.status().unwrap().pid;
+        let result = submit_agent_turn(
+            &state,
+            SubmitAgentTurnRequest {
+                agent_id: "agent-1".into(),
+                data: "queued-followup".into(),
+                mode: None,
+            },
+        )
+        .unwrap();
+        assert!(result.queued);
+        // The same settlement path used by adapter hooks drains the queue. No
+        // TerminalHost or AppHandle has ever been installed in this process.
+        advance_after_idle(&state, "agent-1").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !terminal
+            .capture(true)
+            .unwrap()
+            .contains("ACCEPTED:queued-followup")
+        {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let turn: crate::transcript::Turn = serde_json::from_value(serde_json::json!({
+            "id": "structured-turn", "agentId": "agent-1", "sessionId": "session-1",
+            "role": "assistant", "blocks": [{"type": "text", "text": "Structured answer"}],
+            "sourceIndex": 0
+        }))
+        .unwrap();
+        state.append_turn(turn.clone()).unwrap();
+        assert_eq!(state.list_turns(Some("agent-1")).unwrap(), vec![turn]);
+        assert!(state.list_agent_turn_queue("agent-1").unwrap().is_empty());
+        assert_eq!(terminal.status().unwrap().pid, pid);
+        assert!(
+            !terminal
+                .capture(true)
+                .unwrap()
+                .contains("Structured answer")
+        );
+        crate::pty::kill_pane(&state, pane.id.clone()).unwrap();
+        assert!(!state.pane_exists(&pane.id).unwrap());
+    }
+
+    #[test]
     fn ready_agent_statuses_send_immediately() {
         let policy = claude_policy();
         assert!(!policy.should_queue(AgentStatus::AwaitingInput));

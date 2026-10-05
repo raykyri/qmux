@@ -86,6 +86,7 @@ impl RemoteTmuxBackend {
 }
 
 pub enum PaneBackend {
+    Persistent(crate::local_terminal::Terminal, SharedBacklog),
     #[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
     HostPty(HostPtyBackend),
     RemoteTmux(RemoteTmuxBackend),
@@ -94,6 +95,7 @@ pub enum PaneBackend {
 impl PaneBackend {
     fn writer(&self) -> Option<SharedWriter> {
         match self {
+            Self::Persistent(..) => None,
             Self::HostPty(backend) => Some(backend.writer.clone()),
             Self::RemoteTmux(backend) => Some(backend.writer.clone()),
         }
@@ -101,6 +103,7 @@ impl PaneBackend {
 
     fn host_master(&self) -> Option<SharedMaster> {
         match self {
+            Self::Persistent(..) => None,
             Self::HostPty(backend) => Some(backend.master.clone()),
             Self::RemoteTmux(backend) => backend.controller.current_master(),
         }
@@ -109,12 +112,13 @@ impl PaneBackend {
     fn host_child(&self) -> Option<SharedChild> {
         match self {
             Self::HostPty(backend) => Some(backend.child.clone()),
-            Self::RemoteTmux(_) => None,
+            Self::RemoteTmux(_) | Self::Persistent(..) => None,
         }
     }
 
     fn backlog(&self) -> SharedBacklog {
         match self {
+            Self::Persistent(_, backlog) => backlog.clone(),
             Self::HostPty(backend) => backend.backlog.clone(),
             Self::RemoteTmux(backend) => backend.backlog.clone(),
         }
@@ -122,6 +126,7 @@ impl PaneBackend {
 
     fn uses_native_surface(&self) -> bool {
         match self {
+            Self::Persistent(..) => false,
             Self::HostPty(backend) => backend.native_surface,
             Self::RemoteTmux(backend) => backend.native_surface,
         }
@@ -139,7 +144,7 @@ impl PaneBackend {
         RemoteTmuxCommands,
     )> {
         match self {
-            Self::HostPty(_) => None,
+            Self::HostPty(_) | Self::Persistent(..) => None,
             Self::RemoteTmux(backend) => Some((
                 backend.controller.clone(),
                 backend.history.clone(),
@@ -333,6 +338,7 @@ pub struct AppState {
 }
 
 struct AppStateInner {
+    terminal_server: std::sync::OnceLock<crate::local_terminal::TerminalServer>,
     config: QmuxConfig,
     pane_tokens: Mutex<HashMap<String, String>>,
     // Credentials exposed across an SSH reverse-forward. Kept distinct from local
@@ -2003,6 +2009,7 @@ impl AppState {
     pub fn new(config: QmuxConfig) -> Self {
         Self {
             inner: Arc::new(AppStateInner {
+                terminal_server: std::sync::OnceLock::new(),
                 config,
                 pane_tokens: Mutex::new(HashMap::new()),
                 remote_tokens: Mutex::new(HashMap::new()),
@@ -2041,6 +2048,34 @@ impl AppState {
                 interface_drafts: Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    /// Configure execution ownership before restoring or launching any panes.
+    pub fn with_terminal_server(
+        config: QmuxConfig,
+        server: crate::local_terminal::TerminalServer,
+    ) -> Self {
+        let state = Self::new(config);
+        let _ = state.inner.terminal_server.set(server);
+        state
+    }
+
+    pub fn terminal_server(&self) -> Option<&crate::local_terminal::TerminalServer> {
+        self.inner.terminal_server.get()
+    }
+
+    pub fn persistent_terminal(
+        &self,
+        pane_id: &str,
+    ) -> Result<Option<crate::local_terminal::Terminal>, String> {
+        let model = self.inner.model.lock().map_err(|_| "model lock poisoned")?;
+        Ok(model
+            .panes
+            .get(pane_id)
+            .and_then(|pane| match &pane.backend {
+                PaneBackend::Persistent(terminal, _) => Some(terminal.clone()),
+                _ => None,
+            }))
     }
 
     pub fn register_shell_agent_job(

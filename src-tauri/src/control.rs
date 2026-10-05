@@ -421,13 +421,24 @@ fn pane_read(state: &AppState, context: &ControlContext, arguments: Value) -> Co
     let lines = args.lines.unwrap_or(100).clamp(1, 1000);
     let output = match source {
         "terminal" => {
-            let raw =
+            let raw = if let Some(terminal) =
+                state.persistent_terminal(&args.id).map_err(internal)?
+            {
+                terminal.capture(true).map_err(internal)?.into_bytes()
+            } else {
                 crate::scrollback::read_pane_scrollback(&state.config().workspace_root, &args.id)
-                    .map_err(internal)?;
+                    .map_err(internal)?
+            };
             crate::mcp::terminal_text_tail(&raw, lines)
         }
-        "viewport" => crate::native_terminal::native_terminal_read_viewport_text(args.id.clone())
-            .map_err(internal)?,
+        "viewport" => {
+            if let Some(terminal) = state.persistent_terminal(&args.id).map_err(internal)? {
+                terminal.capture(false).map_err(internal)?
+            } else {
+                crate::native_terminal::native_terminal_read_viewport_text(args.id.clone())
+                    .map_err(internal)?
+            }
+        }
         _ => {
             return Err(ControlFailure::new(
                 "invalid_argument",

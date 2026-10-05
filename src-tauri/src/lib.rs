@@ -17,6 +17,7 @@ pub mod host;
 pub mod image_files;
 pub mod journal;
 pub mod launch_path;
+pub mod local_terminal;
 pub mod mcp;
 pub mod persistence;
 pub mod prompt_library;
