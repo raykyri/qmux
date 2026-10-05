@@ -76,6 +76,11 @@ present, the same way the Codex shim does. Other files in
 `~/.grok/hooks/` are left alone. For exact hooks,
 see src-tauri/src/adapters/grok.rs:24.
 
+qmux sets `GROK_CLAUDE_HOOKS_ENABLED=0` for Grok launches, including
+shell launches, research runs, and title generation. This disables Grok's
+import of Claude settings hooks, whose inline shell variables can fail
+Grok's environment expansion, while keeping qmux's native Grok hooks active.
+
 For Muse (Meta's Muse Code), hooks are neither a settings file nor a
 hooks directory — they are capabilities of a *plugin*. qmux generates
 one and installs it:

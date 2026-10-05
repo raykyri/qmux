@@ -74,6 +74,7 @@ impl JsonlProcess {
     pub fn spawn(
         binary: &str,
         args: &[String],
+        envs: &[(&str, &str)],
         cwd: &Path,
         stderr_log: &Path,
         label: &str,
@@ -106,6 +107,7 @@ impl JsonlProcess {
 
         let mut child = Command::new(binary)
             .args(args)
+            .envs(envs.iter().copied())
             .current_dir(cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -302,18 +304,25 @@ mod tests {
         let script = dir.join("fake-jsonl");
         fs::write(
             &script,
-            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"ok\"}'\nprintf '%s\\n' warning >&2\n",
+            "#!/bin/sh\nprintf '{\"type\":\"ok\",\"hook_compat\":\"%s\"}\\n' \"$GROK_CLAUDE_HOOKS_ENABLED\"\nprintf '%s\\n' warning >&2\n",
         )
         .unwrap();
         let mut permissions = fs::metadata(&script).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&script, permissions).unwrap();
         let log = dir.join("stderr.log");
-        let mut process =
-            JsonlProcess::spawn(script.to_str().unwrap(), &[], &dir, &log, "test").unwrap();
+        let mut process = JsonlProcess::spawn(
+            script.to_str().unwrap(),
+            &[],
+            &[("GROK_CLAUDE_HOOKS_ENABLED", "0")],
+            &dir,
+            &log,
+            "test",
+        )
+        .unwrap();
         assert!(matches!(
             process.recv_timeout(Duration::from_secs(1)).unwrap(),
-            JsonlReceive::Value(value) if value["type"] == "ok"
+            JsonlReceive::Value(value) if value["type"] == "ok" && value["hook_compat"] == "0"
         ));
         loop {
             if matches!(
@@ -361,7 +370,7 @@ mod tests {
         fs::set_permissions(&script, permissions).unwrap();
         let log = dir.join("stderr.log");
         let mut process =
-            JsonlProcess::spawn(script.to_str().unwrap(), &[], &dir, &log, "test").unwrap();
+            JsonlProcess::spawn(script.to_str().unwrap(), &[], &[], &dir, &log, "test").unwrap();
         thread::sleep(Duration::from_millis(100));
 
         let started = Instant::now();

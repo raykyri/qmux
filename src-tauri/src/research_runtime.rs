@@ -2,7 +2,7 @@
 
 use crate::adapters::claude::ClaudeAdapter;
 use crate::adapters::codex::CodexAdapter;
-use crate::adapters::grok::{GrokAdapter, research_session_transcript_path};
+use crate::adapters::grok::{GROK_LAUNCH_ENVS, GrokAdapter, research_session_transcript_path};
 use crate::adapters::new_uuid_v4;
 use crate::claude_sdk::{
     self, ClaudeSdkSession, ClaudeSdkSpawnSpec, SdkMessage, assistant_message_is_end_turn,
@@ -532,14 +532,19 @@ fn run_jsonl_session(
     mut session_id: Option<String>,
     interrupt_rx: std::sync::mpsc::Receiver<()>,
 ) {
-    let mut process = match JsonlProcess::spawn(&binary, &args, &cwd, &stderr_log, flavor.label()) {
-        Ok(process) => process,
-        Err(err) => {
-            finish_jsonl_failed(&state, &node_id, &agent_id, flavor, err, &stderr_log);
-            unregister(&node_id);
-            return;
-        }
+    let envs = match flavor {
+        JsonlFlavor::Codex => &[][..],
+        JsonlFlavor::Grok => GROK_LAUNCH_ENVS,
     };
+    let mut process =
+        match JsonlProcess::spawn(&binary, &args, envs, &cwd, &stderr_log, flavor.label()) {
+            Ok(process) => process,
+            Err(err) => {
+                finish_jsonl_failed(&state, &node_id, &agent_id, flavor, err, &stderr_log);
+                unregister(&node_id);
+                return;
+            }
+        };
     set_pid(&node_id, Some(process.pid()));
     let transcript_path = session_id.as_deref().and_then(|id| {
         (flavor == JsonlFlavor::Grok)

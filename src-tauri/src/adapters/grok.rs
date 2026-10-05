@@ -50,6 +50,24 @@ const GROK_HOOK_EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
+/// Claude hooks can contain shell-local variables that Grok rejects during its
+/// environment expansion. Keep qmux's native Grok hooks without importing them.
+pub(crate) const GROK_LAUNCH_ENVS: &[(&str, &str)] = &[("GROK_CLAUDE_HOOKS_ENABLED", "0")];
+
+fn grok_pane_envs(
+    state: &AppState,
+    pane_id: &str,
+    agent_id: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let mut envs = agent_pane_envs(state, pane_id, agent_id)?;
+    envs.extend(
+        GROK_LAUNCH_ENVS
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string())),
+    );
+    Ok(envs)
+}
+
 /// Adapter for the xAI Grok Build CLI. Grok ships a Claude-compatible hook system
 /// (shell commands run at lifecycle events, event JSON on stdin), so qMux integrates
 /// it like its Claude and Codex adapters rather than like OpenCode: a qMux-managed
@@ -277,7 +295,7 @@ impl GrokAdapter {
         let args = build_grok_args(&cwd, request.model.as_deref(), &request.prompt);
 
         let pane_id = state.next_id("pane");
-        let envs = agent_pane_envs(state, &pane_id, &agent.id)?;
+        let envs = grok_pane_envs(state, &pane_id, &agent.id)?;
 
         // SessionStart may fire immediately after exec. Reserve the pane binding
         // before spawn so the control socket's pane/agent scope check accepts that
@@ -336,7 +354,7 @@ impl GrokAdapter {
         let (args, resumed) =
             build_grok_resume_args(&cwd, agent.model.as_deref(), agent.session_id.as_deref());
 
-        let envs = agent_pane_envs(state, &pane.id, &agent.id)?;
+        let envs = grok_pane_envs(state, &pane.id, &agent.id)?;
 
         let spec = plan_to_spec(
             state,
@@ -458,7 +476,7 @@ impl GrokAdapter {
         );
 
         let pane_id = state.next_id("pane");
-        let envs = agent_pane_envs(state, &pane_id, &agent.id)?;
+        let envs = grok_pane_envs(state, &pane_id, &agent.id)?;
 
         // Reserve the binding before spawn so a fast SessionStart hook passes the
         // authenticated pane/agent scope check. Roll it back if process creation fails.
@@ -577,7 +595,7 @@ impl GrokAdapter {
         )?;
 
         let args = build_grok_args_from_shell(&shell_cwd, &request.args);
-        let envs = agent_pane_envs(state, &request.pane_id, &agent.id)?;
+        let envs = grok_pane_envs(state, &request.pane_id, &agent.id)?;
         let agent_id = agent.id.clone();
         let launch_cwd = shell_cwd.display().to_string();
 
@@ -2299,6 +2317,20 @@ mod tests {
             .map(|command| (command.command_name, command.adapter_id))
             .collect();
         assert_eq!(commands, vec![("grok", "grok"), ("agent", "grok")]);
+    }
+
+    #[test]
+    fn pane_envs_disable_claude_hooks_and_preserve_qmux_wiring() {
+        let state = test_state();
+        let base = agent_pane_envs(&state, "pane-grok", "agent-grok").unwrap();
+        let envs = grok_pane_envs(&state, "pane-grok", "agent-grok").unwrap();
+        assert_eq!(envs[..base.len()], base);
+        assert_eq!(
+            envs.iter()
+                .find(|(key, _)| key == "GROK_CLAUDE_HOOKS_ENABLED")
+                .map(|(_, value)| value.as_str()),
+            Some("0")
+        );
     }
 
     #[test]

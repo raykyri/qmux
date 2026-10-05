@@ -1,6 +1,6 @@
 use crate::adapters::claude::ClaudeAdapter;
 use crate::adapters::codex::CodexAdapter;
-use crate::adapters::grok::GrokAdapter;
+use crate::adapters::grok::{GROK_LAUNCH_ENVS, GrokAdapter};
 use crate::adapters::new_uuid_v4;
 use crate::config::QmuxConfig;
 use crate::headless_process::{JsonlProcess, JsonlReceive};
@@ -253,7 +253,11 @@ fn run_research_title_process(
     stderr_log: &Path,
     flavor: ResearchTitleFlavor,
 ) -> Result<String, String> {
-    let mut process = JsonlProcess::spawn(binary, args, cwd, stderr_log, flavor.label())?;
+    let envs = match flavor {
+        ResearchTitleFlavor::Grok => GROK_LAUNCH_ENVS,
+        ResearchTitleFlavor::Claude | ResearchTitleFlavor::Codex => &[],
+    };
+    let mut process = JsonlProcess::spawn(binary, args, envs, cwd, stderr_log, flavor.label())?;
     let deadline = Instant::now() + RESEARCH_TITLE_TIMEOUT;
     let mut candidate = None;
     loop {
