@@ -9,10 +9,10 @@ export function parseRemoteConnection(raw: unknown): RemoteConnectionInfo | null
   if (["checking", "healthy", "authenticationFailed", "unavailable"].includes(value.hookHealth as string)) {
     connection.hookHealth = value.hookHealth as RemoteConnectionInfo["hookHealth"];
   }
-  for (const key of ["message", "stage", "reason", "recoveryAction"] as const) {
+  for (const key of ["message", "stage", "reason", "recoveryAction", "hookError"] as const) {
     connection[key] = typeof value[key] === "string" ? value[key] : null;
   }
-  for (const key of ["attempt", "nextRetryAt", "disconnectedAt", "lastConnectedAt", "lastVerifiedAt", "recoveryDurationMs", "startupStartedAt"] as const) {
+  for (const key of ["hookLastDeliveredAt", "attempt", "nextRetryAt", "disconnectedAt", "lastConnectedAt", "lastVerifiedAt", "recoveryDurationMs", "startupStartedAt"] as const) {
     const number = value[key];
     if (typeof number === "number" && Number.isFinite(number) && number >= 0) connection[key] = number;
   }
@@ -182,6 +182,8 @@ function connectedDetails(connection: RemoteConnectionInfo): string[] {
   if (connection.hookHealth === "healthy") details.push("Agent hook authentication verified.");
   if (connection.hookHealth === "authenticationFailed") details.push("Agent hook authentication failed (invalid QMUX_TOKEN). The terminal remains usable, but agent tracking may not update.");
   if (connection.hookHealth === "unavailable") details.push("Agent hooks could not be verified. The terminal remains usable, but agent tracking may not update.");
+  if (connection.hookError) details.push(`Hook delivery: ${connection.hookError}.`);
+  if (connection.hookLastDeliveredAt != null) details.push(`Last hook delivered: ${new Date(connection.hookLastDeliveredAt).toLocaleString()}.`);
   if (connection.reason === "systemWake") details.push(connection.recoveryAction === "reattached"
     ? "Reattached to the existing session after sleep."
     : "Connection verified after sleep; no reattachment needed.");

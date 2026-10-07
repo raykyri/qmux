@@ -189,7 +189,15 @@ case "$cli" in QMUX_CLI=?*) ;; *) exit 1 ;; esac
 QMUX_TOKEN=${{token#QMUX_TOKEN=}}
 QMUX_SOCK=${{sock#QMUX_SOCK=}}
 export QMUX_TOKEN QMUX_SOCK
-exec "${{cli#QMUX_CLI=}}" ping
+if test "$("${{cli#QMUX_CLI=}}" --hook-delivery-version 2>/dev/null || true)" != 1; then
+    exec "${{cli#QMUX_CLI=}}" ping
+fi
+pane=$({read_env} QMUX_PANE_ID)
+case "$pane" in QMUX_PANE_ID=?*) ;; *) exit 1 ;; esac
+QMUX_PANE_ID=${{pane#QMUX_PANE_ID=}}
+export QMUX_PANE_ID
+"${{cli#QMUX_CLI=}}" hook-delivery-resume >/dev/null 2>&1 || true
+exec "${{cli#QMUX_CLI=}}" hook-delivery-health --probe
 "#
         );
         Ok(self
@@ -1080,6 +1088,7 @@ case "$key" in
 QMUX_TOKEN) printf 'QMUX_TOKEN=%s\n' "$TEST_TOKEN" ;;
 QMUX_SOCK) printf 'QMUX_SOCK=%s\n' "$TEST_SOCK" ;;
 QMUX_CLI) printf 'QMUX_CLI=%s\n' "$TEST_CLI" ;;
+QMUX_PANE_ID) test "$TEST_LEGACY" = 1 && exit 1; printf 'QMUX_PANE_ID=hook-probe\n' ;;
 *) exit 1 ;;
 esac
 "#,
@@ -1088,7 +1097,15 @@ esac
         std::fs::write(
             &cli,
             r#"#!/bin/sh
-test "$1" = ping && test "$QMUX_TOKEN" = "$TEST_TOKEN" && test "$QMUX_SOCK" = "$TEST_SOCK" || exit 1
+if test "$TEST_LEGACY" = 1; then
+    test "$1" = ping || exit 1
+    test "$QMUX_TOKEN" = "$TEST_TOKEN" && test "$QMUX_SOCK" = "$TEST_SOCK" || exit 1
+    printf '{"ok":true,"data":{"status":"ok"}}\n'
+    exit 0
+fi
+test "$1" = --hook-delivery-version && printf '1\n' && exit 0
+test "$1" = hook-delivery-resume && exit 0
+test "$1" = hook-delivery-health && test "$2" = --probe && test "$QMUX_PANE_ID" = hook-probe && test "$QMUX_TOKEN" = "$TEST_TOKEN" && test "$QMUX_SOCK" = "$TEST_SOCK" || exit 1
 printf '{"ok":true,"data":{"status":"ok"}}\n'
 "#,
         )
@@ -1099,27 +1116,30 @@ printf '{"ok":true,"data":{"status":"ok"}}\n'
         let argv = remote_host()
             .tmux_hook_health_argv(&remote_identity())
             .unwrap();
-        let output = Command::new("/bin/sh")
-            .args(["-c", argv.last().unwrap()])
-            .env("PATH", format!("{}:/bin", dir.display()))
-            .env("TEST_TOKEN", "literal '$(exit 99)' token")
-            .env("TEST_SOCK", "/remote/socket with spaces")
-            .env("TEST_CLI", &cli)
-            .env("QMUX_TOKEN", "wrong inherited token")
-            .env("QMUX_SOCK", "/wrong/socket")
-            .output()
-            .unwrap();
+        for legacy in ["0", "1"] {
+            let output = Command::new("/bin/sh")
+                .args(["-c", argv.last().unwrap()])
+                .env("PATH", format!("{}:/bin", dir.display()))
+                .env("TEST_TOKEN", "literal '$(exit 99)' token")
+                .env("TEST_SOCK", "/remote/socket with spaces")
+                .env("TEST_CLI", &cli)
+                .env("TEST_LEGACY", legacy)
+                .env("QMUX_TOKEN", "wrong inherited token")
+                .env("QMUX_SOCK", "/wrong/socket")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["ok"],
+                true
+            );
+            assert!(output.stderr.is_empty());
+        }
         std::fs::remove_dir_all(dir).unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["ok"],
-            true
-        );
-        assert!(output.stderr.is_empty());
     }
 
     #[test]

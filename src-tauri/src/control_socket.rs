@@ -1139,6 +1139,28 @@ fn handle_request_with_peer(
                 "envs": prepared.envs,
             }))
         }
+        "hook.delivery-lease" => {
+            if credential != ControlCredential::RemotePane {
+                return Err("hook delivery leases require a remote pane credential".into());
+            }
+            crate::remote_hook_delivery::lease(state, &authed_pane)
+        }
+        "hook.deliver" => {
+            if credential != ControlCredential::RemotePane {
+                return Err("hook.deliver requires a remote pane credential".into());
+            }
+            crate::remote_hook_delivery::deliver(state, &authed_pane, request.payload, |payload| {
+                handle_request_with_peer(
+                    state,
+                    ControlRequest {
+                        token: request.token,
+                        command: "hook.notify".into(),
+                        payload,
+                    },
+                    same_user_peer,
+                )
+            })
+        }
         "hook.notify" => {
             let mut notification = serde_json::from_value::<AdapterNotification>(request.payload)
                 .map_err(|err| format!("invalid hook.notify payload: {err}"))?;
@@ -1433,7 +1455,7 @@ fn ensure_remote_command_allowed(
         | "agent.prepare_shell_launch"
         | "claude.prepare_shell_launch" => is_shell && !has_agent,
         // SessionStart itself is allowed to recover a lost shell-agent binding.
-        "hook.notify" => true,
+        "hook.notify" | "hook.deliver" | "hook.delivery-lease" => true,
         // A remote shell or agent may stage one bounded preview file. The remaining
         // agent capabilities retain their existing pane/workspace/lineage checks.
         "browser.open_file" => true,
@@ -2203,6 +2225,255 @@ mod tests {
             err.contains("not authorized for that agent"),
             "unexpected error: {err}"
         );
+    }
+
+    fn delivered_hook(id: &str, event: &str, replay: bool, latest: bool) -> Value {
+        json!({
+            "id": id, "replay": replay, "latest": latest,
+            "notification": { "event": event, "agentId": "agent-1", "adapterId": "claude", "payload": {} }
+        })
+    }
+
+    #[test]
+    fn remote_hook_delivery_deduplicates_lost_acknowledgments() {
+        let state = test_state();
+        insert_remote_shell(&state, "pane-1");
+        state.insert_agent(agent_bound_to("pane-1")).unwrap();
+        let token = state.pane_remote_token("pane-1").unwrap();
+        let mut first = delivered_hook("event-1", "PreToolUse", false, true);
+        first["lease"] = handle_line(
+            &state,
+            &request_line(&token, "hook.delivery-lease", json!({})),
+        )
+        .unwrap()["lease"]
+            .clone();
+        let ack = handle_line(&state, &request_line(&token, "hook.deliver", first)).unwrap();
+        assert_eq!(ack["replay"], false);
+        state
+            .set_agent_status("agent-1", AgentStatus::AwaitingInput)
+            .unwrap();
+        let retry = delivered_hook("event-1", "PreToolUse", true, true);
+        let ack = handle_line(&state, &request_line(&token, "hook.deliver", retry)).unwrap();
+        assert_eq!(ack["id"], "event-1");
+        assert_eq!(ack["duplicate"], true);
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::AwaitingInput
+        );
+    }
+
+    #[test]
+    fn remote_hook_replay_reconciles_without_draining_queued_work() {
+        let state = test_state();
+        insert_remote_shell(&state, "pane-1");
+        state.insert_agent(agent_bound_to("pane-1")).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "do not send from historical Stop".into())
+            .unwrap();
+        let token = state.pane_remote_token("pane-1").unwrap();
+        let old_stop = delivered_hook("event-1", "Stop", true, false);
+        handle_line(&state, &request_line(&token, "hook.deliver", old_stop)).unwrap();
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        );
+        let last_stop = delivered_hook("event-2", "Stop", true, true);
+        handle_line(&state, &request_line(&token, "hook.deliver", last_stop)).unwrap();
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Done
+        );
+        assert_eq!(state.agent_queued_turns("agent-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remote_hook_without_current_lease_cannot_drain_and_codex_stop_cannot_settle() {
+        let state = test_state();
+        insert_remote_shell(&state, "pane-1");
+        state.insert_agent(agent_bound_to("pane-1")).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "hold queued work".into())
+            .unwrap();
+        let token = state.pane_remote_token("pane-1").unwrap();
+        let payload = delivered_hook("buffered-event", "Stop", false, true);
+        let ack = handle_line(&state, &request_line(&token, "hook.deliver", payload)).unwrap();
+        assert_eq!(ack["replay"], true);
+        assert_eq!(state.agent_queued_turns("agent-1").unwrap().len(), 1);
+        let mut agent = agent_bound_to("pane-1");
+        agent.adapter = "codex".into();
+        state.insert_agent(agent).unwrap();
+        let mut payload = delivered_hook("codex-stop", "Stop", true, true);
+        payload["notification"]["adapterId"] = json!("codex");
+        handle_line(&state, &request_line(&token, "hook.deliver", payload)).unwrap();
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        );
+    }
+
+    #[test]
+    fn remote_hook_replay_uses_snapshot_and_rejects_cross_agent_snapshot() {
+        let state = test_state();
+        insert_remote_shell(&state, "pane-1");
+        state.insert_agent(agent_bound_to("pane-1")).unwrap();
+        let token = state.pane_remote_token("pane-1").unwrap();
+        let mut payload = delivered_hook("event-1", "Notification", true, true);
+        payload["snapshot"] = delivered_hook("unused", "Stop", true, true)["notification"].clone();
+        handle_line(
+            &state,
+            &request_line(&token, "hook.deliver", payload.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Done
+        );
+        payload["id"] = json!("event-2");
+        payload["snapshot"]["agentId"] = json!("another-agent");
+        let error =
+            handle_line(&state, &request_line(&token, "hook.deliver", payload)).unwrap_err();
+        assert!(error.contains("snapshot belongs to another agent"));
+    }
+
+    #[test]
+    fn remote_hook_replay_cannot_target_another_pane_or_replacement_process() {
+        let state = test_state();
+        insert_remote_shell(&state, "pane-1");
+        state.insert_agent(agent_bound_to("pane-2")).unwrap();
+        let token = state.pane_remote_token("pane-1").unwrap();
+        let payload = delivered_hook("event-1", "Stop", true, true);
+        let error =
+            handle_line(&state, &request_line(&token, "hook.deliver", payload)).unwrap_err();
+        assert!(error.contains("not authorized for that agent"));
+        state.insert_agent(agent_bound_to("pane-1")).unwrap();
+        let mut payload = delivered_hook("event-2", "Stop", true, true);
+        payload["notification"]["agentId"] = json!("retired-agent");
+        handle_line(&state, &request_line(&token, "hook.deliver", payload)).unwrap();
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        );
+        let local_token = state.pane_token("pane-1").unwrap();
+        assert!(
+            handle_line(
+                &state,
+                &request_line(
+                    &local_token,
+                    "hook.deliver",
+                    delivered_hook("event-3", "Stop", true, true)
+                )
+            )
+            .unwrap_err()
+            .contains("remote pane credential")
+        );
+    }
+
+    #[test]
+    fn remote_hook_live_old_generation_cannot_affect_replacement() {
+        let state = test_state();
+        insert_remote_shell(&state, "pane-1");
+        state.insert_agent(agent_bound_to("pane-1")).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "hold replacement work".into())
+            .unwrap();
+        let token = state.pane_remote_token("pane-1").unwrap();
+        let mut payload = delivered_hook("old-process-stop", "Stop", false, true);
+        payload["notification"]["agentId"] = json!("retired-agent");
+        payload["lease"] = handle_line(
+            &state,
+            &request_line(&token, "hook.delivery-lease", json!({})),
+        )
+        .unwrap()["lease"]
+            .clone();
+        let ack = handle_line(&state, &request_line(&token, "hook.deliver", payload)).unwrap();
+        assert_eq!(ack["discarded"], true);
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        );
+        assert_eq!(state.agent_queued_turns("agent-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remote_hook_replay_subagent_metadata_cannot_replace_parent_session() {
+        let state = test_state();
+        insert_remote_shell(&state, "pane-1");
+        let mut agent = agent_bound_to("pane-1");
+        agent.session_id = Some("parent-session".into());
+        state.insert_agent(agent).unwrap();
+        let token = state.pane_remote_token("pane-1").unwrap();
+        let mut payload = delivered_hook("child-stop", "SubagentStop", true, true);
+        payload["notification"]["payload"] =
+            json!({"session_id":"child-session", "agent_id":"child"});
+        handle_line(&state, &request_line(&token, "hook.deliver", payload)).unwrap();
+        assert_eq!(
+            state
+                .agent("agent-1")
+                .unwrap()
+                .unwrap()
+                .session_id
+                .as_deref(),
+            Some("parent-session")
+        );
+    }
+
+    #[test]
+    fn remote_hook_replay_reconciles_background_registry_without_sending() {
+        let state = test_state();
+        insert_remote_shell(&state, "pane-1");
+        state.insert_agent(agent_bound_to("pane-1")).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "hold queued work".into())
+            .unwrap();
+        state
+            .agent_subagent_started("agent-1", Some("child"))
+            .unwrap();
+        let token = state.pane_remote_token("pane-1").unwrap();
+        let mut payload = delivered_hook("active-background", "Stop", true, true);
+        payload["notification"]["payload"] = json!({"background_tasks":[{"status":"running"}]});
+        handle_line(
+            &state,
+            &request_line(&token, "hook.deliver", payload.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        );
+        payload["id"] = json!("finished-background");
+        payload["notification"]["payload"] = json!({"background_tasks":[{"status":"completed"}]});
+        handle_line(&state, &request_line(&token, "hook.deliver", payload)).unwrap();
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Done
+        );
+        assert!(!state.agent_has_active_subagents("agent-1").unwrap());
+        assert_eq!(state.agent_queued_turns("agent-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remote_hook_replay_recovers_session_but_rejects_fork_source_identity() {
+        let state = test_state();
+        insert_remote_shell(&state, "pane-1");
+        let mut agent = agent_bound_to("pane-1");
+        agent.fork_point = Some("parent-session".into());
+        state.insert_agent(agent).unwrap();
+        let token = state.pane_remote_token("pane-1").unwrap();
+        let mut payload = delivered_hook("event-1", "Stop", true, true);
+        payload["notification"]["payload"] = json!({"session_id": "parent-session"});
+        handle_line(
+            &state,
+            &request_line(&token, "hook.deliver", payload.clone()),
+        )
+        .unwrap();
+        assert_eq!(state.agent("agent-1").unwrap().unwrap().session_id, None);
+        payload["id"] = json!("event-2");
+        payload["notification"]["payload"] =
+            json!({"session_id": "child-session", "transcript_path": "/etc/passwd"});
+        handle_line(&state, &request_line(&token, "hook.deliver", payload)).unwrap();
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(agent.session_id.as_deref(), Some("child-session"));
+        assert_eq!(agent.transcript_path, None);
     }
 
     #[test]

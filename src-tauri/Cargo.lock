@@ -3089,6 +3089,7 @@ dependencies = [
  "qmux-proto",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

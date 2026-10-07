@@ -157,6 +157,7 @@ pub fn ensure_cli(host: &Host) -> Result<EnsureCliResult, String> {
         && remote_file_fetch_supported(host, &expanded)
         && remote_open_file_supported(host, &expanded)
         && remote_workspace_observation_supported(host, &expanded)
+        && remote_hook_delivery_supported(host, &expanded)
     {
         return Ok(EnsureCliResult {
             path: expanded,
@@ -211,6 +212,12 @@ pub fn ensure_cli(host: &Host) -> Result<EnsureCliResult, String> {
                 .into(),
         );
     }
+    if !remote_hook_delivery_supported(host, &expanded) {
+        return Err(
+            "bundled qmux-cli is missing durable hook delivery; rebuild remote-cli artifacts"
+                .into(),
+        );
+    }
     if version != VERSION {
         return Err(format!(
             "installed qmux-cli at {expanded} reported {version}, expected {VERSION}"
@@ -242,6 +249,11 @@ fn remote_open_file_supported(host: &Host, path: &str) -> bool {
 fn remote_workspace_observation_supported(host: &Host, path: &str) -> bool {
     remote_stdout(host, path, vec!["--workspace-observation-version".into()])
         .is_ok_and(|output| output.trim() == "2")
+}
+
+fn remote_hook_delivery_supported(host: &Host, path: &str) -> bool {
+    remote_stdout(host, path, vec!["--hook-delivery-version".into()])
+        .is_ok_and(|output| output.trim() == "1")
 }
 
 fn remote_cli_version(host: &Host, path: &str) -> Option<String> {

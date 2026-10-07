@@ -2842,7 +2842,62 @@ fn remote_hook_health(output: Result<Output, String>) -> RemoteHookHealth {
     }
 }
 
-fn check_remote_hook_health(state: &AppState, pane_id: &str) -> RemoteHookHealth {
+struct RemoteHookReport {
+    health: RemoteHookHealth,
+    error: Option<String>,
+    last_delivered_at: Option<u128>,
+}
+
+fn remote_hook_report(output: Result<Output, String>) -> RemoteHookReport {
+    let response = output
+        .as_ref()
+        .ok()
+        .and_then(|output| serde_json::from_slice::<serde_json::Value>(&output.stdout).ok());
+    let mut health = remote_hook_health(output);
+    let mut error = match health {
+        RemoteHookHealth::AuthenticationFailed => Some("Authentication failed".into()),
+        RemoteHookHealth::Unavailable => {
+            Some("Hook transport unavailable; queued notifications will retry".into())
+        }
+        _ => None,
+    };
+    let mut last_delivered_at = None;
+    if health == RemoteHookHealth::Healthy {
+        if let Some(delivery) = response.as_ref().map(|value| &value["data"]["delivery"]) {
+            last_delivered_at = delivery["lastSuccess"]
+                .as_u64()
+                .map(|time| time as u128 * 1000);
+            // Only fixed messages cross into pane metadata. Remote stderr and
+            // unrecognized status strings can contain secrets.
+            match delivery["status"].as_str() {
+                Some("full") => {
+                    health = RemoteHookHealth::Unavailable;
+                    error = Some("Hook notification queue is full".into());
+                }
+                Some("expired") => {
+                    health = RemoteHookHealth::Unavailable;
+                    error = Some("Queued hook notifications expired".into());
+                }
+                Some("authentication failed") => {
+                    health = RemoteHookHealth::AuthenticationFailed;
+                    error = Some("Hook delivery authentication failed".into());
+                }
+                Some("delivery unavailable") if delivery["pending"].as_u64().unwrap_or(0) > 0 => {
+                    health = RemoteHookHealth::Unavailable;
+                    error = Some("Queued hook notifications are waiting for delivery".into());
+                }
+                _ => {}
+            }
+        }
+    }
+    RemoteHookReport {
+        health,
+        error,
+        last_delivered_at,
+    }
+}
+
+fn check_remote_hook_health(state: &AppState, pane_id: &str) -> RemoteHookReport {
     let output = (|| {
         let pane = state
             .list_panes()?
@@ -2857,7 +2912,7 @@ fn check_remote_hook_health(state: &AppState, pane_id: &str) -> RemoteHookHealth
             crate::host::for_group(group.remote.as_ref()).tmux_hook_health_argv(&identity)?;
         remote_health_output(&argv, "check remote hooks")
     })();
-    remote_hook_health(output)
+    remote_hook_report(output)
 }
 
 fn remote_failure_needs_attention(error: &str) -> bool {
@@ -3120,18 +3175,32 @@ fn schedule_remote_reconnect(
                     // The terminal is already live. Probe on this background
                     // worker without holding the host queue or making hook
                     // failures enter the transport teardown/retry path.
+                    // Keep checking independently of terminal recovery: a live
+                    // TTY does not imply that the reverse hook socket is usable.
                     let attachment = controller.client_identity();
-                    let cancellation = RemoteRecoveryScope::enter(&controller, revision);
-                    let health = check_remote_hook_health(&state, &pane_id);
-                    drop(cancellation);
-                    let same_attachment = attachment.is_some()
+                    while attachment.is_some()
+                        && controller.recovery_is_current(revision)
                         && controller.client_identity() == attachment
                         && state
                             .pane_remote_control(&pane_id)
                             .ok()
                             .flatten()
-                            .is_some_and(|(current, _, _)| Arc::ptr_eq(&current, &controller));
-                    if same_attachment {
+                            .is_some_and(|(current, _, _)| Arc::ptr_eq(&current, &controller))
+                    {
+                        let cancellation = RemoteRecoveryScope::enter(&controller, revision);
+                        let mut health = check_remote_hook_health(&state, &pane_id);
+                        if health.health == RemoteHookHealth::Unavailable
+                            && crate::remote_transport::repair_missing_forward(&commands, || {
+                                !controller.recovery_is_current(revision)
+                            })
+                            .unwrap_or(false)
+                        {
+                            health = check_remote_hook_health(&state, &pane_id);
+                        }
+                        drop(cancellation);
+                        if controller.client_identity() != attachment {
+                            break;
+                        }
                         report_remote_recovery(
                             &state,
                             &pane_id,
@@ -3139,13 +3208,15 @@ fn schedule_remote_reconnect(
                             revision,
                             |connection| {
                                 if connection.state == RemoteConnectionState::Connected {
-                                    connection.hook_health = Some(health);
+                                    connection.hook_health = Some(health.health);
+                                    connection.hook_error = health.error;
+                                    connection.hook_last_delivered_at = connection
+                                        .hook_last_delivered_at
+                                        .max(health.last_delivered_at);
                                 }
                             },
                         );
-                    }
-                    if controller.finish_recovery(revision) {
-                        return;
+                        controller.wait_for_recovery(revision, Duration::from_secs(30));
                     }
                 }
                 result => {
@@ -6395,6 +6466,34 @@ mod tests {
         assert_eq!(output.status.code(), Some(73));
         assert!(!root.join("created").exists());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remote_hook_report_preserves_queue_failure_after_successful_ping() {
+        use std::os::unix::process::ExitStatusExt;
+        let report = remote_hook_report(Ok(Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: br#"{"ok":true,"data":{"status":"ok","delivery":{"status":"expired","pending":0,"lastSuccess":1234}}}"#.to_vec(),
+            stderr: b"secret token should never be surfaced".to_vec(),
+        }));
+        assert_eq!(report.health, RemoteHookHealth::Unavailable);
+        assert_eq!(
+            report.error.as_deref(),
+            Some("Queued hook notifications expired")
+        );
+        assert_eq!(report.last_delivered_at, Some(1234000));
+        let full = remote_hook_report(Ok(Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout:
+                br#"{"ok":true,"data":{"status":"ok","delivery":{"status":"full","pending":2048}}}"#
+                    .to_vec(),
+            stderr: Vec::new(),
+        }));
+        assert_eq!(full.health, RemoteHookHealth::Unavailable);
+        assert_eq!(
+            full.error.as_deref(),
+            Some("Hook notification queue is full")
+        );
     }
 
     #[test]

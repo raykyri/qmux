@@ -7,6 +7,9 @@
 //! Unix socket, but nothing here may assume that: a forwarded socket or a
 //! network transport must be able to reuse these types unchanged.
 
+mod hook_observation;
+pub use hook_observation::{HookObservation, hook_observation, hook_payload_is_subagent};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
