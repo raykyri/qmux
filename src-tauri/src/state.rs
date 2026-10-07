@@ -352,6 +352,7 @@ struct AppStateInner {
     // would expose unrelated panes and sessions to a leaked preview token.
     file_preview_grants: Mutex<HashMap<String, HashSet<std::path::PathBuf>>>,
     model: Mutex<Model>,
+    hook_delivery_receipts: Mutex<crate::remote_hook_delivery::Receipts>,
     // Coordinates the two short model mutations around an out-of-lock shell
     // workspace probe. Reports take this lock to reserve a revision and again
     // to commit/emit it, so a superseded probe can never publish stale cwd
@@ -1554,6 +1555,10 @@ pub struct RemoteConnectionInfo {
     #[serde(default)]
     pub hook_health: Option<RemoteHookHealth>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_last_delivered_at: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     #[serde(default)]
     pub stage: Option<String>,
@@ -2007,6 +2012,7 @@ impl AppState {
                 exact_file_tokens: Mutex::new(HashMap::new()),
                 file_preview_grants: Mutex::new(HashMap::new()),
                 model: Mutex::new(Model::default()),
+                hook_delivery_receipts: Mutex::new(Default::default()),
                 pane_cwd_commit_lock: Mutex::new(()),
                 transcript_tails: Mutex::new(HashMap::new()),
                 next_transcript_tail: AtomicU64::new(1),
@@ -4786,6 +4792,50 @@ impl AppState {
             self.persist();
         }
         Ok(updated)
+    }
+
+    pub(crate) fn hook_delivery_receipts(&self) -> &Mutex<crate::remote_hook_delivery::Receipts> {
+        &self.inner.hook_delivery_receipts
+    }
+
+    /// Recovered hooks are observations, never new lifecycle transitions. In
+    /// particular, do not synchronize research completion or release queued work.
+    pub(crate) fn reconcile_remote_hook(
+        &self,
+        pane_id: &str,
+        agent_id: &str,
+        session: Option<&str>,
+        status: Option<AgentStatus>,
+    ) -> Result<Option<AgentInfo>, String> {
+        let updated = {
+            let mut model = self.inner.model.lock().map_err(|_| "model lock poisoned")?;
+            let Some(agent) = model.agents.get_mut(agent_id) else {
+                return Ok(None);
+            };
+            if agent.pane_id.as_deref() != Some(pane_id) {
+                return Ok(None);
+            }
+            if let Some(session) = session {
+                if agent.fork_point.as_deref() == Some(session) {
+                    return Ok(None);
+                }
+                if agent.session_id.as_deref() != Some(session) {
+                    agent.session_id = Some(session.to_string());
+                    // A remote-reported path is never a local transcript binding.
+                    agent.transcript_path = None;
+                }
+            }
+            if let Some(status) = status {
+                agent.status = status;
+            }
+            let updated = agent.clone();
+            bump_agent_activity_locked(&mut model, agent_id);
+            bump_agent_status_activity_locked(&mut model, agent_id);
+            updated
+        };
+        self.upsert_recent_session_for_agent(&updated, now_millis(), true);
+        self.persist();
+        Ok(Some(updated))
     }
 
     /// Records a background subagent starting under `agent_id`. The lifecycle

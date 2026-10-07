@@ -6,6 +6,7 @@
 //! reporting, and forks once a transport exists.
 
 mod cursor;
+mod hook_delivery;
 mod mcp;
 mod muse;
 mod public_cli;
@@ -87,6 +88,16 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
     let mut args = remaining.into_iter();
 
     match command.as_str() {
+        "--hook-delivery-version" => { println!("1"); Ok(true) }
+        "hook-delivery-resume" | "hook-delivery-health" => {
+            hook_delivery::resume_or_health(command == "hook-delivery-health", args.next().as_deref() == Some("--probe"))?;
+            Ok(true)
+        }
+        "hook-delivery-worker" => {
+            let queue = args.next().ok_or("missing hook outbox path")?;
+            hook_delivery::run(PathBuf::from(queue))?;
+            Ok(true)
+        }
         "file-fetch" => { file_fetch::run(args.collect())?; Ok(true) }
         "--file-fetch-version" => { println!("1"); Ok(true) }
         "transcript-stream" => {
@@ -830,7 +841,12 @@ fn exit_code_for_status(status: std::process::ExitStatus) -> i32 {
 }
 
 pub(crate) fn request_silent(command: &str, payload: Value) -> Result<(), String> {
-    request(command, payload).map(|_| ())
+    if command == "hook.notify" && env::var("QMUX_REMOTE").as_deref() == Ok("1") {
+        let socket = env::var("QMUX_SOCK").map_err(|_| "QMUX_SOCK is not set")?;
+        let token = env::var("QMUX_TOKEN").map_err(|_| "QMUX_TOKEN is not set")?;
+        return hook_delivery::enqueue(&socket, &token, payload);
+    }
+    validate_ack(&request(command, payload)?)
 }
 
 /// As [`request_silent`], but with the socket and token supplied by the caller
@@ -843,7 +859,15 @@ pub(crate) fn request_silent_with(
     command: &str,
     payload: Value,
 ) -> Result<(), String> {
-    send_request(socket_path, token, command, payload).map(|_| ())
+    validate_ack(&send_request(socket_path, token, command, payload)?)
+}
+
+fn validate_ack(raw: &str) -> Result<(), String> {
+    let response: ControlResponse = serde_json::from_str(raw)
+        .map_err(|error| format!("invalid qmux acknowledgment: {error}"))?;
+    if response.ok { Ok(()) } else {
+        Err(response.error.unwrap_or_else(|| "qmux request failed".to_string()))
+    }
 }
 
 fn request_and_print(command: &str, payload: Value) -> Result<(), String> {
@@ -983,6 +1007,9 @@ fn send_request_with_timeout(
     BufReader::new(stream)
         .read_line(&mut response)
         .map_err(|err| format!("failed to read response: {err}"))?;
+    if response.is_empty() {
+        return Err("qmux connection closed without an acknowledgment".to_string());
+    }
     Ok(response.trim_end().to_string())
 }
 

@@ -195,6 +195,45 @@ impl HostPool {
         base
     }
 
+    /// Only invalidate a same-master lease when the remote host positively
+    /// confirms its socket is absent. A slow ping alone must not tear down a
+    /// live forward (or the terminal sharing its master).
+    fn repair_missing_forward(
+        &mut self,
+        commands: &RemoteTmuxCommands,
+        runner: &mut Runner<'_>,
+    ) -> Result<bool, String> {
+        let forward = commands
+            .hook_forward
+            .as_ref()
+            .ok_or("missing hook forward")?;
+        if let Some(lease) = self.forwards.get(&forward.remote_path).cloned() {
+            if lease.forward != *forward {
+                return Err("remote hook socket is already owned by another local endpoint".into());
+            }
+            let base = self.base_for(lease.slot);
+            if lease.master_pid.is_some() && master_pid(&base, runner)? == lease.master_pid {
+                let mut probe = base;
+                probe.push(format!(
+                    "if test -S {}; then exit 0; else exit 3; fi",
+                    crate::adapters::shell_quote_arg(&forward.remote_path)
+                ));
+                let output = runner(&probe, "check remote hook socket", CONNECT_TIMEOUT)?;
+                match output.status.code() {
+                    Some(0) => return Ok(false),
+                    Some(3) => {
+                        self.forwards
+                            .get_mut(&forward.remote_path)
+                            .unwrap()
+                            .master_pid = None
+                    }
+                    _ => return Err("could not check remote hook socket".into()),
+                }
+            }
+        }
+        self.prepare(commands, runner).map(|_| true)
+    }
+
     fn prepare(
         &mut self,
         commands: &RemoteTmuxCommands,
@@ -356,6 +395,19 @@ pub(crate) fn prepare_attachment(
     };
     let mut host = lock_pool(&pool, &cancelled)?;
     host.prepare(commands, &mut |argv, action, timeout| {
+        run(argv, action, timeout, &cancelled)
+    })
+}
+
+pub(crate) fn repair_missing_forward(
+    commands: &RemoteTmuxCommands,
+    cancelled: impl Fn() -> bool,
+) -> Result<bool, String> {
+    let Some(pool) = pool(commands)? else {
+        return Ok(false);
+    };
+    let mut host = lock_pool(&pool, &cancelled)?;
+    host.repair_missing_forward(commands, &mut |argv, action, timeout| {
         run(argv, action, timeout, &cancelled)
     })
 }
@@ -529,6 +581,14 @@ mod tests {
                     self.masters.insert(path, self.next_pid);
                     Ok(output(true, ""))
                 }
+                None if action == "check remote hook socket" => {
+                    let remote = argv.last().unwrap().split('\'').nth(1).unwrap();
+                    let mut result = output(true, "");
+                    if !self.sockets.contains(remote) {
+                        result.status = std::process::ExitStatus::from_raw(3 << 8);
+                    }
+                    Ok(result)
+                }
                 None => {
                     // Cleanup commands quote the exact managed socket as the last token.
                     let remote = argv.last().unwrap().split('\'').rev().nth(1).unwrap();
@@ -548,6 +608,38 @@ mod tests {
         host.prepare(commands, &mut |argv, action, timeout| {
             ssh.run(argv, action, timeout)
         })
+    }
+
+    #[test]
+    fn repair_preserves_live_forward_and_rebuilds_only_missing_socket() {
+        let commands = commands("repair");
+        let mut host = host(&commands);
+        let mut ssh = Ssh::default();
+        prepare(&mut host, &commands, &mut ssh).unwrap();
+        ssh.calls.clear();
+        host.repair_missing_forward(&commands, &mut |a, b, c| ssh.run(a, b, c))
+            .unwrap();
+        assert!(
+            !ssh.calls
+                .iter()
+                .any(|call| call == "cancel stale hook forward")
+        );
+        let masters = ssh.masters.clone();
+        ssh.sockets
+            .remove(&commands.hook_forward.as_ref().unwrap().remote_path);
+        ssh.calls.clear();
+        host.repair_missing_forward(&commands, &mut |a, b, c| ssh.run(a, b, c))
+            .unwrap();
+        assert!(
+            ssh.calls
+                .iter()
+                .any(|call| call == "register remote hook forward")
+        );
+        assert_eq!(ssh.masters, masters);
+        assert!(
+            ssh.sockets
+                .contains(&commands.hook_forward.as_ref().unwrap().remote_path)
+        );
     }
 
     #[test]

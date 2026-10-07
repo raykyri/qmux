@@ -27,6 +27,7 @@ mod publishing;
 mod recovery;
 mod remote_cli;
 mod remote_files;
+mod remote_hook_delivery;
 mod remote_preview;
 mod remote_process;
 mod remote_terminal;

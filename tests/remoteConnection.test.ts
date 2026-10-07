@@ -177,3 +177,14 @@ test("credential titles, combined retry countdowns, and final states have explic
   assert.equal(failed.refreshEveryMs, null);
   assert.equal(remoteConnectionPresentation({ state: "checking", reason: "__proto__", stage: "constructor" }).title, "Checking connection");
 });
+
+
+test("hook delivery diagnostics retain last acknowledgment and reject invalid timestamps", () => {
+  const connection = parseRemoteConnection({ state: "connected", hookHealth: "unavailable",
+    hookLastDeliveredAt: 1720000000000, hookError: "Delivery unavailable" })!;
+  assert.equal(connection.hookLastDeliveredAt, 1720000000000);
+  assert.match(remoteConnectionDetails(connection), /Last hook delivered:/);
+  assert.match(remoteConnectionDetails(connection), /Hook delivery: Delivery unavailable/);
+  assert.equal(parseRemoteConnection({ state: "connected", hookLastDeliveredAt: -1 })?.hookLastDeliveredAt, undefined);
+  assert.equal(parseRemoteConnection({ state: "connected", hookLastDeliveredAt: Infinity })?.hookLastDeliveredAt, undefined);
+});

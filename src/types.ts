@@ -120,6 +120,8 @@ export interface RemoteConnectionInfo {
   state: RemoteConnectionState;
   startupStartedAt?: number | null;
   startupTimings?: Record<string, number>;
+  hookLastDeliveredAt?: number | null;
+  hookError?: string | null;
   hookHealth?: "checking" | "healthy" | "authenticationFailed" | "unavailable" | null;
   message?: string | null;
   stage?: string | null;
