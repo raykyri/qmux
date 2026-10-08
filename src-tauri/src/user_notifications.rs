@@ -262,7 +262,7 @@ fn main_window_is_focused(state: &AppState) -> bool {
     let Some(app) = state.app_handle() else {
         return false;
     };
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = app.get_window("main") else {
         return false;
     };
     window.is_visible().unwrap_or(false)
@@ -363,7 +363,7 @@ fn show_native(
                     .list_panes()
                     .is_ok_and(|panes| panes.iter().any(|pane| pane.id == pane_id))
             {
-                if let Some(window) = app.get_webview_window("main") {
+                if let Some(window) = app.get_window("main") {
                     let _ = window.show();
                     let _ = window.unminimize();
                     let _ = window.set_focus();

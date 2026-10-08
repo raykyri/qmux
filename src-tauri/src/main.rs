@@ -899,7 +899,7 @@ fn pick_folder_dialog(app: &tauri::AppHandle, title: &str) -> Result<Option<Stri
     use tauri_plugin_dialog::DialogExt;
 
     let mut dialog = app.dialog().file().set_title(title);
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         dialog = dialog.set_parent(&window);
     }
     match dialog.blocking_pick_folder() {
@@ -3685,7 +3685,9 @@ pub(crate) fn request_unhealthy_interface_reload(
     let app_handle_on_main = app_handle.clone();
     let state_for_retry = state.clone();
     let _ = app_handle.run_on_main_thread(move || {
-        let Some(window) = app_handle_on_main.get_webview_window("main") else {
+        // Child browsers make this a multi-webview window. Window eligibility
+        // must not depend on Tauri considering it a WebviewWindow.
+        let Some(window) = app_handle_on_main.get_window("main") else {
             return;
         };
         let eligible = window.is_visible().unwrap_or(false)
@@ -3734,7 +3736,7 @@ fn app_window_ready(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -3757,11 +3759,11 @@ fn prepare_main_webview_reload(app: Option<&tauri::AppHandle>) {
 #[cfg(desktop)]
 fn reload_main_webview(app: &tauri::AppHandle) {
     prepare_main_webview_reload(Some(app));
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(webview) = app.get_webview("main") else {
         eprintln!("qmux: cannot reload interface because the main webview is missing");
         return;
     };
-    if let Err(err) = window.reload() {
+    if let Err(err) = webview.reload() {
         eprintln!("qmux: failed to reload interface: {err}");
     }
 }
@@ -3916,7 +3918,7 @@ fn main() {
                     .into());
                 }
                 #[cfg(target_os = "macos")]
-                if let Some(window) = app.get_webview_window("main") {
+                if let Some(window) = app.get_window("main") {
                     native_terminal::initialize(window.ns_view()?, state.clone())
                         .map_err(std::io::Error::other)?;
                 }
@@ -3938,7 +3940,7 @@ fn main() {
                 #[cfg(target_os = "macos")]
                 {
                     use window_vibrancy::{NSVisualEffectMaterial, apply_vibrancy};
-                    if let Some(window) = app.get_webview_window("main")
+                    if let Some(window) = app.get_window("main")
                         && let Err(err) =
                             apply_vibrancy(&window, NSVisualEffectMaterial::Sidebar, None, None)
                     {
