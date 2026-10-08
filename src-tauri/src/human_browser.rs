@@ -8,7 +8,7 @@
 use crate::native_terminal;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
@@ -76,11 +76,14 @@ struct HumanBrowserView {
     requested_url: String,
     navigation_revision: u64,
     history_state: Arc<AtomicU8>,
+    bounds: Rect,
 }
 
 struct HumanBrowserInner {
     views: HashMap<String, HumanBrowserView>,
     active_owner: Option<String>,
+    retiring: HashMap<String, Webview>,
+    creating: HashSet<String>,
     /// Frontend surface revisions are app-global, not per owner. That makes a
     /// delayed show from the previously active pane unable to cover the pane
     /// the user switched to while the first command was crossing the bridge.
@@ -97,6 +100,8 @@ impl Default for HumanBrowserInner {
         Self {
             views: HashMap::new(),
             active_owner: None,
+            retiring: HashMap::new(),
+            creating: HashSet::new(),
             latest_surface_revision: 0,
             owner_revisions: HashMap::new(),
             generation: 1,
@@ -139,14 +144,22 @@ impl HumanBrowserInner {
         self.owner_revisions.clear();
         self.generation = self.generation.wrapping_add(1).max(1);
     }
+
+    fn accept_hide_all(&mut self, generation: u64, revision: u64) -> bool {
+        if !self.accept_surface_request(HIDE_ALL_OWNER, generation, revision) {
+            return false;
+        }
+        self.active_owner = None;
+        true
+    }
 }
 
 #[derive(Default)]
 pub struct HumanBrowserManager {
     inner: Mutex<HumanBrowserInner>,
-    /// Native child-view transitions must never overlap. In particular,
-    /// `add_child` temporarily yields to AppKit/WebKit while the state mutex is
-    /// intentionally unlocked, so the mutex alone cannot serialize creation.
+    /// Serialize ordinary sync/creation. Cleanup bypasses this permit and
+    /// revokes older revisions; the main-thread commit checks those revisions
+    /// after `add_child` returns, before revealing any new surface.
     lifecycle_busy: AtomicBool,
 }
 
@@ -245,23 +258,6 @@ fn validated_bounds(request: &HumanBrowserSyncRequest) -> Result<Rect, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn set_native_browser_active(webview: &Webview, active: bool) -> Result<(), String> {
-    webview
-        .with_webview(move |platform| {
-            if let Err(error) = native_terminal::set_human_browser_webview(platform.inner(), active)
-            {
-                eprintln!("qmux: failed to update human-browser shortcut routing: {error}");
-            }
-        })
-        .map_err(|error| format!("failed to access the native human browser: {error}"))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn set_native_browser_active(_webview: &Webview, _active: bool) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
 fn set_native_browser_loading_background(webview: &Webview, active: bool) -> Result<(), String> {
     webview
         .with_webview(move |platform| {
@@ -329,31 +325,193 @@ fn refresh_human_browser_history_state(webview: &Webview, history_state: Arc<Ato
     );
 }
 
-fn deactivate_view(view: &HumanBrowserView) {
-    let _ = set_native_browser_active(&view.webview, false);
-    // A child WKWebView sits above the main document's compositor, so a hide
-    // that is delayed or dropped by AppKit can leave its last page layer as a
-    // rectangular afterimage. Collapse the native child first; the next visible
-    // sync always publishes real bounds again before showing it.
+/// All native transitions run in one main-thread turn. The response is sent
+/// only after the operation completes, independently of document JS callbacks.
+async fn on_main<T: Send + 'static>(
+    app: &AppHandle,
+    operation: impl FnOnce(&AppHandle) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (tx, mut rx) = tauri::async_runtime::channel(1);
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.try_send(operation(&handle));
+    })
+    .map_err(|error| error.to_string())?;
+    rx.recv()
+        .await
+        .ok_or_else(|| "browser transition was not acknowledged".to_string())?
+}
+
+/// Main-thread only. On macOS the native bridge changes frame, visibility and
+/// responder routing together and verifies hidden/attached state before ack.
+fn apply_surface(webview: &Webview, bounds: Option<Rect>, retire: bool) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    let _ = view.webview.set_bounds(Rect {
-        position: LogicalPosition::new(0.0, 0.0).into(),
-        size: LogicalSize::new(0.0, 0.0).into(),
-    });
-    let _ = view.webview.hide();
+    {
+        let visible = bounds.is_some();
+        let values = bounds
+            .map(|rect| {
+                let position = rect.position.to_logical::<f64>(1.0);
+                let size = rect.size.to_logical::<f64>(1.0);
+                [position.x, position.y, size.width, size.height]
+            })
+            .unwrap_or([0.0; 4]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        webview
+            .with_webview(move |platform| {
+                let _ = tx.send(native_terminal::apply_browser_surface(
+                    platform.inner(),
+                    values,
+                    visible,
+                    retire,
+                ));
+            })
+            .map_err(|error| error.to_string())?;
+        // with_webview executes inline on the main thread. Never block the UI
+        // waiting for a callback if that contract changes.
+        rx.try_recv()
+            .map_err(|_| "browser transition must run on the main thread".to_string())??;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(bounds) = bounds {
+            webview
+                .set_bounds(bounds)
+                .map_err(|error| error.to_string())?;
+            webview.show().map_err(|error| error.to_string())?;
+        } else {
+            webview.hide().map_err(|error| error.to_string())?;
+        }
+        let _ = retire;
+    }
+    Ok(())
+}
+
+/// Reconcile both registries, including orphaned Tauri children and retirements
+/// whose previous close failed. Never discard the retry obligation on failure.
+fn reconcile_surfaces(app: &AppHandle) -> Result<(), String> {
+    let manager = app.state::<HumanBrowserManager>();
+    let (active, retained, creating, retiring, generation, revision) = {
+        let inner = manager
+            .inner
+            .lock()
+            .map_err(|_| "human browser state lock poisoned")?;
+        let active = inner
+            .active_owner
+            .as_ref()
+            .and_then(|owner| inner.views.get(owner))
+            .map(|view| (view.webview.label().to_string(), view.bounds));
+        (
+            active,
+            inner
+                .views
+                .values()
+                .map(|view| view.webview.label().to_string())
+                .collect::<HashSet<_>>(),
+            inner.creating.clone(),
+            inner.retiring.clone(),
+            inner.generation,
+            inner.latest_surface_revision,
+        )
+    };
+    let mut children = app
+        .get_window(MAIN_WEBVIEW_LABEL)
+        .map(|window| window.webviews())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|view| view.label().starts_with("human-browser-"))
+        .map(|view| (view.label().to_string(), view))
+        .collect::<HashMap<_, _>>();
+    children.extend(retiring.clone());
+    let mut errors = Vec::new();
+    for (label, webview) in children {
+        let retire = retiring.contains_key(&label)
+            || (!retained.contains(&label) && !creating.contains(&label));
+        if retire {
+            manager
+                .inner
+                .lock()
+                .map_err(|_| "human browser state lock poisoned")?
+                .retiring
+                .insert(label.clone(), webview.clone());
+        }
+        let bounds = active
+            .as_ref()
+            .filter(|(active, _)| active == &label && !retire)
+            .map(|(_, bounds)| *bounds);
+        if std::env::var_os("QMUX_BROWSER_TRACE").is_some() {
+            eprintln!(
+                "qmux: browser reconcile label={label} generation={generation} revision={revision} visible={} retire={retire} bounds={bounds:?}",
+                bounds.is_some()
+            );
+        }
+        let result = (|| {
+            // A prior close may have succeeded despite a lost acknowledgement.
+            if app.get_webview(&label).is_some() {
+                apply_surface(&webview, bounds, retire)?;
+                if retire {
+                    webview.close().map_err(|error| error.to_string())?;
+                    if app.get_webview(&label).is_some() {
+                        return Err("browser remains registered after close".to_string());
+                    }
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!(
+                "qmux: browser transition label={label} generation={generation} revision={revision} visible={} retire={retire}: {error}",
+                bounds.is_some()
+            );
+            errors.push(error);
+        } else if retire {
+            manager
+                .inner
+                .lock()
+                .map_err(|_| "human browser state lock poisoned")?
+                .retiring
+                .remove(&label);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+/// React need not be responsive for activation to retry native cleanup.
+pub fn reconcile_on_activation(app: &AppHandle) {
+    if app.try_state::<HumanBrowserManager>().is_some()
+        && let Err(error) = reconcile_surfaces(app)
+    {
+        eprintln!("qmux: browser activation reconciliation failed: {error}");
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HumanBrowserSyncResult {
+    applied: bool,
+    snapshot: Option<HumanBrowserSnapshot>,
+}
+
+impl HumanBrowserSyncResult {
+    fn stale() -> Self {
+        Self {
+            applied: false,
+            snapshot: None,
+        }
+    }
 }
 
 fn create_webview(
     app: &AppHandle,
     state: &AppState,
     owner_id: &str,
+    label: &str,
     initial_url: Url,
     bounds: Rect,
 ) -> Result<(Webview, Arc<AtomicU8>), String> {
-    let label = format!(
-        "human-browser-{}",
-        NEXT_WEBVIEW_LABEL.fetch_add(1, Ordering::Relaxed)
-    );
     let navigation_app = app.clone();
     let navigation_state = state.clone();
     let page_app = app.clone();
@@ -368,7 +526,7 @@ fn create_webview(
     let history_state = Arc::new(AtomicU8::new(0));
     let page_history_state = history_state.clone();
 
-    let builder = WebviewBuilder::new(&label, WebviewUrl::External(initial_url))
+    let builder = WebviewBuilder::new(label, WebviewUrl::External(initial_url))
         .on_navigation(move |url| {
             validated_human_url(&navigation_app, &navigation_state, url.as_str()).is_ok()
         })
@@ -434,12 +592,9 @@ fn create_webview(
     let webview = window
         .add_child(builder, bounds.position, initial_size)
         .map_err(|error| format!("failed to create the human browser: {error}"))?;
-    // add_child creates a visible native view. Hide it before installing the
-    // themed canvas; human_browser_sync positions and reveals it afterwards.
-    if let Err(error) = webview.hide() {
-        let _ = webview.close();
-        return Err(format!("failed to hide the new human browser: {error}"));
-    }
+    // In particular, suppress the initial non-macOS child before committing
+    // its desired visibility. If this fails, the orphan sweep owns cleanup.
+    webview.hide().map_err(|error| error.to_string())?;
     let _ = set_native_browser_loading_background_from_state(&webview, loading_background_active);
     Ok((webview, history_state))
 }
@@ -465,140 +620,169 @@ pub async fn human_browser_sync(
     app: AppHandle,
     state: State<'_, AppState>,
     manager: State<'_, HumanBrowserManager>,
-) -> Result<Option<HumanBrowserSnapshot>, String> {
+) -> Result<HumanBrowserSyncResult, String> {
     validate_owner_id(&request.owner_id)?;
     let bounds = validated_bounds(&request)?;
-    let url = validated_human_url(&app, &state, &request.url)?;
-    let _lifecycle = manager.try_begin_lifecycle()?;
-    // Tauri requires an async command when WebView2 may create a child webview;
-    // a synchronous IPC handler can deadlock while add_child dispatches to the
-    // Windows UI thread. The mutex is used only to prepare/commit state; no
-    // Tauri dispatcher call occurs while it is held, so reset_all remains safe
-    // while this command is in flight on the async runtime.
-    let (accepted, previous, current) = {
-        let mut inner = manager
-            .inner
-            .lock()
-            .map_err(|_| "human browser state lock poisoned".to_string())?;
-        if !inner.accept_surface_request(&request.owner_id, request.generation, request.revision) {
-            (false, None, inner.views.get(&request.owner_id).cloned())
-        } else if !request.visible {
-            if inner.active_owner.as_deref() == Some(request.owner_id.as_str()) {
+    // An unmount must be able to hide its child even if another command is
+    // waiting for WebKit creation or a dispatcher response.
+    if !request.visible {
+        return on_main(&app, move |app| {
+            let manager = app.state::<HumanBrowserManager>();
+            let mut inner = manager
+                .inner
+                .lock()
+                .map_err(|_| "human browser state lock poisoned")?;
+            if !inner.accept_destroy_request(
+                &request.owner_id,
+                request.generation,
+                request.revision,
+            ) {
+                return Ok(HumanBrowserSyncResult::stale());
+            }
+            if inner.active_owner.as_deref() == Some(&request.owner_id) {
                 inner.active_owner = None;
             }
-            (true, None, inner.views.get(&request.owner_id).cloned())
-        } else {
-            let previous = if inner.active_owner.as_deref() == Some(request.owner_id.as_str()) {
-                None
-            } else {
-                inner
-                    .active_owner
-                    .take()
-                    .and_then(|owner| inner.views.get(&owner).cloned())
-            };
-            (true, previous, inner.views.get(&request.owner_id).cloned())
-        }
-    };
-
-    if !accepted {
-        return Ok(current
-            .as_ref()
-            .map(|view| current_snapshot(&request.owner_id, view)));
+            drop(inner);
+            reconcile_surfaces(app)?;
+            Ok(HumanBrowserSyncResult {
+                applied: true,
+                snapshot: None,
+            })
+        })
+        .await;
     }
-    if !request.visible {
-        // Visibility is a property of the requested native child, not of the
-        // bookkeeping pointer. Always collapse it even if an interrupted load
-        // or owner switch already cleared active_owner.
-        if let Some(view) = current.as_ref() {
-            deactivate_view(view);
-        }
-        return Ok(current
-            .as_ref()
-            .map(|view| current_snapshot(&request.owner_id, view)));
-    }
-
-    if let Some(previous) = previous.as_ref() {
-        deactivate_view(previous);
-    }
-
-    let mut view = if let Some(current) = current {
-        current
-    } else {
-        let (webview, history_state) =
-            create_webview(&app, &state, &request.owner_id, url.clone(), bounds)?;
-        let created = HumanBrowserView {
-            webview,
-            requested_url: url.to_string(),
-            navigation_revision: request.navigation_revision,
-            history_state,
-        };
+    // Creation stays off the UI thread (required by WebView2). Cleanup can
+    // revoke this request while add_child is pending; the commit checks again
+    // on the main thread before any nonzero frame can be shown.
+    let _lifecycle = manager.try_begin_lifecycle()?;
+    let url = validated_human_url(&app, &state, &request.url)?;
+    let prepare = request.clone();
+    let (accepted, current) = on_main(&app, move |app| {
+        let manager = app.state::<HumanBrowserManager>();
         let mut inner = manager
             .inner
             .lock()
-            .map_err(|_| "human browser state lock poisoned".to_string())?;
+            .map_err(|_| "human browser state lock poisoned")?;
+        if !inner.accept_surface_request(&prepare.owner_id, prepare.generation, prepare.revision) {
+            return Ok((false, None));
+        }
+        if inner.active_owner.as_deref() != Some(&prepare.owner_id) {
+            inner.active_owner = None;
+        }
+        let view = inner.views.get(&prepare.owner_id).cloned();
+        drop(inner);
+        reconcile_surfaces(app)?;
+        Ok((true, view))
+    })
+    .await?;
+    if !accepted {
+        return Ok(HumanBrowserSyncResult::stale());
+    }
+    let created = current.is_none();
+    let mut view = if let Some(view) = current {
+        view
+    } else {
+        let label = format!(
+            "human-browser-{}",
+            NEXT_WEBVIEW_LABEL.fetch_add(1, Ordering::Relaxed)
+        );
+        manager
+            .inner
+            .lock()
+            .map_err(|_| "human browser state lock poisoned")?
+            .creating
+            .insert(label.clone());
+        match create_webview(&app, &state, &request.owner_id, &label, url.clone(), bounds) {
+            Ok((webview, history_state)) => HumanBrowserView {
+                webview,
+                history_state,
+                bounds,
+                requested_url: url.to_string(),
+                navigation_revision: request.navigation_revision,
+            },
+            Err(error) => {
+                manager
+                    .inner
+                    .lock()
+                    .map_err(|_| "human browser state lock poisoned")?
+                    .creating
+                    .remove(&label);
+                let _ = on_main(&app, reconcile_surfaces).await;
+                return Err(error);
+            }
+        }
+    };
+    on_main(&app, move |app| {
+        let manager = app.state::<HumanBrowserManager>();
+        let mut inner = manager
+            .inner
+            .lock()
+            .map_err(|_| "human browser state lock poisoned")?;
+        inner.creating.remove(view.webview.label());
         if !inner.surface_request_is_current(
             &request.owner_id,
             request.generation,
             request.revision,
         ) {
+            if created {
+                inner
+                    .retiring
+                    .insert(view.webview.label().to_string(), view.webview.clone());
+            }
             drop(inner);
-            let _ = created.webview.hide();
-            let _ = created.webview.close();
-            return Ok(None);
+            reconcile_surfaces(app)?;
+            return Ok(HumanBrowserSyncResult::stale());
         }
-        inner
-            .views
-            .insert(request.owner_id.clone(), created.clone());
-        created
-    };
-
-    let update_result = (|| {
-        view.webview
-            .set_bounds(bounds)
-            .map_err(|error| format!("failed to position the human browser: {error}"))?;
-
+        // Retain ownership even when a native transition fails.
+        inner.views.insert(request.owner_id.clone(), view.clone());
+        drop(inner);
         if request.navigation_revision > view.navigation_revision {
             let _ = set_native_browser_loading_background(&view.webview, true);
-            let current_url = view.webview.url().ok();
-            if current_url.as_ref().is_some_and(|current| current == &url) {
-                view.webview
-                    .reload()
-                    .map_err(|error| format!("failed to reload the human browser: {error}"))?;
+            if view.webview.url().ok().as_ref() == Some(&url) {
+                view.webview.reload().map_err(|error| error.to_string())?;
             } else {
                 view.webview
                     .navigate(url.clone())
-                    .map_err(|error| format!("failed to navigate the human browser: {error}"))?;
+                    .map_err(|error| error.to_string())?;
             }
             view.requested_url = url.to_string();
             view.navigation_revision = request.navigation_revision;
         }
-
-        set_native_browser_active(&view.webview, true)?;
-        view.webview
-            .show()
-            .map_err(|error| format!("failed to show the human browser: {error}"))
-    })();
-    if let Err(error) = update_result {
-        deactivate_view(&view);
-        return Err(error);
-    }
-
-    let snapshot = current_snapshot(&request.owner_id, &view);
-    let mut inner = manager
-        .inner
-        .lock()
-        .map_err(|_| "human browser state lock poisoned".to_string())?;
-    if !inner.surface_request_is_current(&request.owner_id, request.generation, request.revision) {
-        drop(inner);
-        deactivate_view(&view);
-        return Ok(None);
-    }
-    if let Some(managed) = inner.views.get_mut(&request.owner_id) {
-        managed.requested_url = view.requested_url;
-        managed.navigation_revision = view.navigation_revision;
-    }
-    inner.active_owner = Some(request.owner_id.clone());
-    Ok(Some(snapshot))
+        view.bounds = bounds;
+        {
+            let mut inner = manager
+                .inner
+                .lock()
+                .map_err(|_| "human browser state lock poisoned")?;
+            // Native navigation can call back into the app. A reset/revocation
+            // during that callback must not be overwritten by this commit.
+            if !inner.surface_request_is_current(
+                &request.owner_id,
+                request.generation,
+                request.revision,
+            ) {
+                drop(inner);
+                reconcile_surfaces(app)?;
+                return Ok(HumanBrowserSyncResult::stale());
+            }
+            inner.views.insert(request.owner_id.clone(), view.clone());
+            inner.active_owner = Some(request.owner_id.clone());
+        }
+        if let Err(error) = reconcile_surfaces(app) {
+            manager
+                .inner
+                .lock()
+                .map_err(|_| "human browser state lock poisoned")?
+                .active_owner = None;
+            let _ = reconcile_surfaces(app);
+            return Err(error);
+        }
+        Ok(HumanBrowserSyncResult {
+            applied: true,
+            snapshot: Some(current_snapshot(&request.owner_id, &view)),
+        })
+    })
+    .await
 }
 
 const HIDE_ALL_OWNER: &str = "__qmux_hide_all__";
@@ -610,59 +794,65 @@ pub struct HumanBrowserHideAllRequest {
     revision: u64,
 }
 
-/// Collapse every native child. Used when React already thinks the overlay is
-/// closed but an AppKit hide was dropped, leaving a white WKWebView square
-/// over the terminal. Views stay in the map so a still-open owner can show
-/// again; destroy retires them when the overlay is actually closed.
+/// Revokes older shows without waiting for creation/navigation to complete.
+/// Acknowledges only after the native visibility transition and orphan sweep.
 #[tauri::command]
-pub fn human_browser_hide_all(
+pub async fn human_browser_hide_all(
     request: HumanBrowserHideAllRequest,
-    manager: State<'_, HumanBrowserManager>,
-) -> Result<u32, String> {
-    let _lifecycle = manager.try_begin_lifecycle()?;
-    let views = {
+    app: AppHandle,
+) -> Result<bool, String> {
+    on_main(&app, move |app| {
+        let manager = app.state::<HumanBrowserManager>();
         let mut inner = manager
             .inner
             .lock()
-            .map_err(|_| "human browser state lock poisoned".to_string())?;
-        if request.generation == inner.generation {
-            let _ =
-                inner.accept_surface_request(HIDE_ALL_OWNER, request.generation, request.revision);
+            .map_err(|_| "human browser state lock poisoned")?;
+        if !inner.accept_hide_all(request.generation, request.revision) {
+            return Ok(false);
         }
-        inner.active_owner = None;
-        inner.views.values().cloned().collect::<Vec<_>>()
-    };
-    for view in &views {
-        deactivate_view(view);
-    }
-    Ok(views.len() as u32)
+        drop(inner);
+        reconcile_surfaces(app)?;
+        Ok(true)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn human_browser_destroy(
+pub async fn human_browser_destroy(
     request: HumanBrowserDestroyRequest,
-    manager: State<'_, HumanBrowserManager>,
+    app: AppHandle,
 ) -> Result<(), String> {
     validate_owner_id(&request.owner_id)?;
-    let _lifecycle = manager.try_begin_lifecycle()?;
-    let mut inner = manager
-        .inner
-        .lock()
-        .map_err(|_| "human browser state lock poisoned".to_string())?;
-    if !inner.accept_destroy_request(&request.owner_id, request.generation, request.revision) {
-        return Ok(());
-    }
-    let was_active = inner.active_owner.as_deref() == Some(request.owner_id.as_str());
-    if was_active {
-        inner.active_owner = None;
-    }
-    let view = inner.views.remove(&request.owner_id);
-    drop(inner);
-    if let Some(view) = view {
-        deactivate_view(&view);
-        let _ = view.webview.close();
-    }
-    Ok(())
+    on_main(&app, move |app| {
+        let manager = app.state::<HumanBrowserManager>();
+        let mut inner = manager
+            .inner
+            .lock()
+            .map_err(|_| "human browser state lock poisoned")?;
+        // Equality is a retry of the same retirement, not a newer intent.
+        let retry = request.generation == inner.generation
+            && inner.owner_revisions.get(&request.owner_id) == Some(&request.revision);
+        if !retry
+            && !inner.accept_destroy_request(
+                &request.owner_id,
+                request.generation,
+                request.revision,
+            )
+        {
+            return Ok(());
+        }
+        if inner.active_owner.as_deref() == Some(&request.owner_id) {
+            inner.active_owner = None;
+        }
+        if let Some(view) = inner.views.remove(&request.owner_id) {
+            inner
+                .retiring
+                .insert(view.webview.label().to_string(), view.webview);
+        }
+        drop(inner);
+        reconcile_surfaces(app)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -764,13 +954,15 @@ pub fn reset_all(app: &AppHandle) {
     let views = inner
         .views
         .drain()
-        .map(|(_, view)| view)
+        .map(|(_, view)| view.webview)
         .collect::<Vec<_>>();
+    for view in views {
+        inner.retiring.insert(view.label().to_string(), view);
+    }
     inner.advance_generation();
     drop(inner);
-    for view in views {
-        deactivate_view(&view);
-        let _ = view.webview.close();
+    if let Err(error) = reconcile_surfaces(app) {
+        eprintln!("qmux: browser reset cleanup pending: {error}");
     }
 }
 
@@ -864,5 +1056,45 @@ mod tests {
         assert!(inner.accept_surface_request(HIDE_ALL_OWNER, 1, 2));
         assert!(!inner.surface_request_is_current("pane-a", 1, 1));
         assert!(!inner.accept_surface_request("pane-a", 1, 1));
+    }
+
+    #[test]
+    fn stale_hide_all_cannot_hide_a_newer_owner_or_document() {
+        let mut inner = HumanBrowserInner::default();
+        assert!(inner.accept_surface_request("a", 1, 10));
+        inner.active_owner = Some("a".into());
+        assert!(!inner.accept_hide_all(1, 9));
+        assert!(!inner.accept_hide_all(0, 20));
+        assert_eq!(inner.active_owner.as_deref(), Some("a"));
+        assert!(inner.accept_hide_all(1, 11));
+        assert_eq!(inner.active_owner, None);
+    }
+
+    #[test]
+    fn cleanup_revokes_creation_even_while_the_creation_permit_is_held() {
+        let manager = HumanBrowserManager::default();
+        let _creating = manager.try_begin_lifecycle().unwrap();
+        let mut inner = manager.inner.lock().unwrap();
+        assert!(inner.accept_surface_request("a", 1, 1));
+        assert!(inner.accept_hide_all(1, 2));
+        assert!(!inner.surface_request_is_current("a", 1, 1));
+        // A late completion must retire its newly created view, not show it.
+        assert!(inner.accept_surface_request("a", 1, 3));
+        assert!(inner.accept_destroy_request("a", 1, 4));
+        assert!(!inner.surface_request_is_current("a", 1, 3));
+    }
+
+    #[test]
+    fn owner_cleanup_does_not_cancel_another_owners_show_or_hide_all() {
+        let mut inner = HumanBrowserInner::default();
+        assert!(inner.accept_surface_request("b", 1, 2));
+        assert!(inner.accept_destroy_request("a", 1, 3));
+        assert!(inner.surface_request_is_current("b", 1, 2));
+        assert!(inner.accept_hide_all(1, 4));
+        assert!(inner.accept_destroy_request("b", 1, 6));
+        assert_eq!(inner.latest_surface_revision, 4);
+        assert!(!inner.accept_surface_request("b", 1, 5));
+        assert!(inner.accept_surface_request("b", 1, 7));
+        assert!(!inner.accept_destroy_request("b", 1, 6));
     }
 }

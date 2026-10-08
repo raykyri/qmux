@@ -305,7 +305,7 @@ export default function BrowserOverlay({
       }
       lastSyncedUrl = currentUrl;
       try {
-        const snapshot = await syncHumanBrowser({
+        const result = await syncHumanBrowser({
           ownerId: paneId,
           url: currentUrl,
           x: rect.left,
@@ -316,10 +316,10 @@ export default function BrowserOverlay({
             !humanBrowserOccludedRef.current && rect.width >= 1 && rect.height >= 1,
           navigationRevision: humanBrowserNavigationRevisionRef.current,
         });
-        if (!cancelled && sequence === syncSequence) {
+        if (!cancelled && sequence === syncSequence && result.applied) {
           setHumanBrowserError(null);
-          if (snapshot) {
-            setHumanBrowserSnapshot(snapshot);
+          if (result.snapshot) {
+            setHumanBrowserSnapshot(result.snapshot);
           }
         }
       } catch (error) {

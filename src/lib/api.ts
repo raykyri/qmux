@@ -8,6 +8,7 @@ import type { WorktreeLocation } from "./settings";
 import type { CompletionSoundId } from "./completionSounds";
 import {
   HumanBrowserLifecycleQueue,
+  HumanBrowserRetirements,
   retryHumanBrowserLifecycle,
 } from "./humanBrowserLifecycleQueue";
 import type {
@@ -1131,56 +1132,51 @@ export type HumanBrowserSync = {
   navigationRevision: number;
 };
 
-// Visibility belongs to one app-global native surface, so sync revisions order
-// all geometry/show requests. The backend additionally tracks lifecycle order
-// per owner so another pane's update cannot accidentally suppress a destroy.
+// Revisions are allocated at intent time, not when a queued operation finally
+// executes. Cleanup bypasses the queue and fences any older native show.
 let humanBrowserSurfaceRevision = 0;
 let humanBrowserGeneration: Promise<number> | null = null;
 const humanBrowserLifecycleQueue = new HumanBrowserLifecycleQueue();
+const humanBrowserRetirements = new HumanBrowserRetirements();
+export type HumanBrowserSyncResult = { applied: boolean; snapshot: HumanBrowserSnapshot | null };
+const staleHumanBrowserSync = (): HumanBrowserSyncResult => ({ applied: false, snapshot: null });
 
 function getHumanBrowserGeneration() {
-  humanBrowserGeneration ??= invoke<number>("human_browser_generation");
+  humanBrowserGeneration ??= invoke<number>("human_browser_generation").catch((error) => {
+    humanBrowserGeneration = null;
+    throw error;
+  });
   return humanBrowserGeneration;
 }
 
 export function syncHumanBrowser(request: HumanBrowserSync) {
-  return humanBrowserLifecycleQueue.enqueue(() =>
-    retryHumanBrowserLifecycle(async () => {
-      humanBrowserSurfaceRevision += 1;
-      const revision = humanBrowserSurfaceRevision;
-      const generation = await getHumanBrowserGeneration();
-      return invoke<HumanBrowserSnapshot | null>("human_browser_sync", {
-        request: { ...request, generation, revision },
-      });
-    }),
-  );
+  const revision = ++humanBrowserSurfaceRevision;
+  const operation = () => retryHumanBrowserLifecycle(async () => {
+    return invoke<HumanBrowserSyncResult>("human_browser_sync", {
+      request: { ...request, generation: await getHumanBrowserGeneration(), revision },
+    });
+  });
+  if (!request.visible) return operation();
+  humanBrowserRetirements.cancel(request.ownerId);
+  return humanBrowserLifecycleQueue.enqueue(operation, staleHumanBrowserSync);
 }
 
 export function destroyHumanBrowser(ownerId: string) {
-  return humanBrowserLifecycleQueue.enqueue(() =>
-    retryHumanBrowserLifecycle(async () => {
-      humanBrowserSurfaceRevision += 1;
-      const revision = humanBrowserSurfaceRevision;
-      const generation = await getHumanBrowserGeneration();
-      return invoke<void>("human_browser_destroy", {
-        request: { ownerId, generation, revision },
-      });
-    }),
-  );
+  const revision = ++humanBrowserSurfaceRevision;
+  // Do not capture a rejected generation promise across retries.
+  return humanBrowserRetirements.retire(ownerId, async () => {
+    const generation = await getHumanBrowserGeneration();
+    await invoke<void>("human_browser_destroy", { request: { ownerId, generation, revision } });
+  });
 }
 
-/** Collapse every native child. Returns how many views were hidden. */
-export function hideAllHumanBrowsers() {
-  return humanBrowserLifecycleQueue.enqueue(() =>
-    retryHumanBrowserLifecycle(async () => {
-      humanBrowserSurfaceRevision += 1;
-      const revision = humanBrowserSurfaceRevision;
-      const generation = await getHumanBrowserGeneration();
-      return invoke<number>("human_browser_hide_all", {
-        request: { generation, revision },
-      });
-    }),
-  );
+/** Resolves after native cleanup, independently of a pending sync/navigation.
+ * False means a newer intent already superseded this hide. */
+export async function hideAllHumanBrowsers() {
+  const revision = ++humanBrowserSurfaceRevision;
+  humanBrowserLifecycleQueue.interrupt();
+  const generation = await getHumanBrowserGeneration();
+  return invoke<boolean>("human_browser_hide_all", { request: { generation, revision } });
 }
 
 export async function getHumanBrowserSnapshot(ownerId: string) {
@@ -1193,20 +1189,15 @@ export async function getHumanBrowserSnapshot(ownerId: string) {
 export function reloadHumanBrowser(ownerId: string) {
   return humanBrowserLifecycleQueue.enqueue(async () => {
     const generation = await getHumanBrowserGeneration();
-    return invoke<void>("human_browser_reload", {
-      request: { ownerId, generation },
-    });
-  });
+    return invoke<void>("human_browser_reload", { request: { ownerId, generation } });
+  }, () => undefined);
 }
 
 export function navigateHumanBrowserHistory(ownerId: string, direction: "back" | "forward") {
   return humanBrowserLifecycleQueue.enqueue(async () => {
     const generation = await getHumanBrowserGeneration();
-    return invoke<void>("human_browser_navigate_history", {
-      request: { ownerId, generation },
-      direction,
-    });
-  });
+    return invoke<void>("human_browser_navigate_history", { request: { ownerId, generation }, direction });
+  }, () => undefined);
 }
 
 export function listenToHumanBrowserEvents(

@@ -320,6 +320,7 @@ import {
 } from "./lib/appShortcuts";
 import { requestComposerInsert } from "./lib/promptLibrary";
 import { nativeHumanBrowserOwnerIds } from "./lib/humanBrowserState";
+import { openAfterBrowserHide } from "./lib/humanBrowserLifecycleQueue";
 import {
   anyBrowserOverlayOpen,
   browserPreviewScrollFor,
@@ -4749,11 +4750,9 @@ function MainApp() {
     if (retired.length === 0) {
       return;
     }
-    // No remaining React-owned child should be on screen. Sweep first so a
-    // dropped per-owner destroy cannot leave the last WKWebView painted.
-    if (nextOwnerIds.size === 0) {
-      void hideEveryHumanBrowser();
-    }
+    // Each acknowledged retirement also sweeps orphaned native children.
+    // Do not publish another global hide here: it can supersede an external
+    // handoff's hide or a newly mounted owner's show.
     for (const ownerId of retired) {
       void destroyHumanBrowser(ownerId).catch((err) => {
         setError(err instanceof Error ? err.message : String(err));
@@ -5229,13 +5228,11 @@ function MainApp() {
     setError(error instanceof Error ? error.message : String(error));
   }
 
-  // Collapse every native child. A dropped AppKit hide can leave a white
-  // WKWebView square over the terminal after React already thinks the overlay
-  // is closed; this is the recovery path for that leftover.
+  // Reconcile native children even when React already considers them closed.
   function hideEveryHumanBrowser() {
     return hideAllHumanBrowsers().catch((error) => {
       reportHumanBrowserError(error);
-      return 0;
+      return false;
     });
   }
 
@@ -5257,16 +5254,11 @@ function MainApp() {
       closeAllBrowserOverlays();
       return;
     }
-    void hideEveryHumanBrowser().then((hidden) => {
-      if (hidden > 0) {
-        focusActiveTerminalAfterHiddenBrowserClose();
-        return;
-      }
-      const ownerId = activeBrowserOwnerIdRef.current;
-      if (ownerId) {
-        toggleBrowserOverlay(ownerId);
-      }
-    });
+    // Recovery is independent of the requested toggle. Cached hidden children
+    // must never consume the user's request to open the overlay.
+    void hideEveryHumanBrowser();
+    const ownerId = activeBrowserOwnerIdRef.current;
+    if (ownerId) toggleBrowserOverlay(ownerId);
   }
 
   function closeActiveBrowserOverlay(ownerId = activeBrowserOwnerIdRef.current) {
@@ -5274,11 +5266,24 @@ function MainApp() {
       closeAllBrowserOverlays(ownerId);
       return;
     }
-    void hideEveryHumanBrowser().then((hidden) => {
-      if (hidden > 0) {
-        focusActiveTerminalAfterHiddenBrowserClose();
-      }
-    });
+    void hideEveryHumanBrowser().then(() => focusActiveTerminalAfterHiddenBrowserClose());
+  }
+
+  async function openBrowserOverlayExternally(ownerId: string, currentUrl: string) {
+    const previous = browserOverlayByPaneRef.current[ownerId];
+    if (!previous?.open) return;
+    const closed = { ...previous, open: false };
+    const next = { ...browserOverlayByPaneRef.current, [ownerId]: closed };
+    browserOverlayByPaneRef.current = next;
+    setBrowserOverlayByPane(next);
+    await openAfterBrowserHide({
+      hide: hideAllHumanBrowsers,
+      isCurrent: () => browserOverlayByPaneRef.current[ownerId] === closed,
+      open: () => isFileServerUrl(currentUrl, configRef.current?.fileServerPort ?? null)
+        ? browserOpenPreviewExternal(currentUrl) : openExternalUrl(currentUrl),
+      restore: () => setBrowserOverlayByPane((current) => current[ownerId] === closed
+        ? { ...current, [ownerId]: previous } : current),
+    }).catch(reportHumanBrowserError);
   }
 
   function setBrowserOverlaySize(paneId: string, size: BrowserOverlaySize) {
@@ -14019,25 +14024,13 @@ function MainApp() {
             closeAllBrowserOverlays();
             return;
           }
-          void hideEveryHumanBrowser().then((hidden) => {
-            if (hidden > 0) {
-              focusActiveTerminalAfterHiddenBrowserClose();
-              return;
-            }
-            if (action.type === "toggle-transcript") {
-              toggleActiveTranscriptExpandedRef.current();
-              return;
-            }
-            const browserOwnerId =
-              activeSurfaceRef.current === "research"
-                ? activeResearchTreeIdRef.current
-                  ? researchBrowserOwnerId(activeResearchTreeIdRef.current)
-                  : null
-                : (activePaneRef.current?.id ?? null);
-            if (browserOwnerId) {
-              toggleBrowserOverlay(browserOwnerId);
-            }
-          });
+          void hideEveryHumanBrowser();
+          if (action.type === "toggle-transcript") {
+            toggleActiveTranscriptExpandedRef.current();
+            return;
+          }
+          const browserOwnerId = activeBrowserOwnerIdRef.current;
+          if (browserOwnerId) toggleBrowserOverlay(browserOwnerId);
           return;
         }
         case "splitPaneBelow": {
@@ -18912,15 +18905,7 @@ function MainApp() {
             if (!currentUrl) {
               return;
             }
-            const opening = isFileServerUrl(
-              currentUrl,
-              configRef.current?.fileServerPort ?? null,
-            )
-              ? browserOpenPreviewExternal(currentUrl)
-              : openExternalUrl(currentUrl);
-            void opening
-              .then(() => closeActiveBrowserOverlay(activeBrowserOwnerId))
-              .catch(reportHumanBrowserError);
+            void openBrowserOverlayExternally(activeBrowserOwnerId, currentUrl);
           }}
           onClose={() => closeActiveBrowserOverlay(activeBrowserOwnerId)}
           onModeChange={(mode, currentUrl) =>

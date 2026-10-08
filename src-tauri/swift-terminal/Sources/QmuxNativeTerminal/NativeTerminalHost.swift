@@ -575,6 +575,26 @@ final class NativeTerminalHost {
         return true
     }
 
+    func applyBrowserSurface(_ webView: WKWebView, rect: CGRect, visible: Bool, retire: Bool) -> Bool {
+        // Release the responder before hiding/detaching its view. Activation
+        // only registers shortcut routing; it must not steal keyboard focus.
+        let routed = setHumanBrowserWebView(webView, active: visible)
+        let applied = applyHumanBrowserSurface(webView, rect: rect, visible: visible, retire: retire)
+        if ProcessInfo.processInfo.environment["QMUX_BROWSER_TRACE"] != nil {
+            NSLog("qmux: browser native view=%@ hidden=%d frame=%@ attached=%d retire=%d",
+                  String(describing: Unmanaged.passUnretained(webView).toOpaque()),
+                  webView.isHidden ? 1 : 0, NSStringFromRect(webView.frame),
+                  webView.superview != nil ? 1 : 0, retire ? 1 : 0)
+        }
+        if !applied || (visible && !routed) {
+            NSLog("qmux: browser surface rejected visible=%d retire=%d hidden=%d frame=%@ attached=%d",
+                  visible ? 1 : 0, retire ? 1 : 0, webView.isHidden ? 1 : 0,
+                  NSStringFromRect(webView.frame), webView.superview != nil ? 1 : 0)
+            return false
+        }
+        return true
+    }
+
     /// Drops routing state owned by the current DOM document before WKWebView
     /// reloads. Terminal panes and their Ghostty surfaces deliberately survive;
     /// the new document will republish layout, pointer policy, and keyboard

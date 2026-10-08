@@ -480,6 +480,15 @@ mod imp {
             active: i32,
         ) -> i32;
         fn qmux_native_terminal_human_browser_history_state(native_view: *mut c_void) -> i32;
+        fn qmux_native_terminal_apply_browser_surface(
+            native_view: *mut c_void,
+            x: f64,
+            y: f64,
+            width: f64,
+            height: f64,
+            visible: i32,
+            retire: i32,
+        ) -> i32;
         fn qmux_native_terminal_prepare_for_webview_reload() -> i32;
         fn qmux_native_terminal_focus(pane_id: *const c_char) -> i32;
         fn qmux_native_terminal_send_text(pane_id: *const c_char, text: *const c_char) -> i32;
@@ -919,6 +928,32 @@ mod imp {
         unsafe { qmux_native_terminal_human_browser_history_state(native_view) }.clamp(0, 3) as u8
     }
 
+    pub fn apply_browser_surface(
+        native_view: *mut c_void,
+        bounds: [f64; 4],
+        visible: bool,
+        retire: bool,
+    ) -> Result<(), String> {
+        // SAFETY: called synchronously on Tauri's main thread while the
+        // platform webview is borrowed. Swift verifies the resulting state.
+        let applied = unsafe {
+            qmux_native_terminal_apply_browser_surface(
+                native_view,
+                bounds[0],
+                bounds[1],
+                bounds[2],
+                bounds[3],
+                i32::from(visible),
+                i32::from(retire),
+            )
+        };
+        if applied == 1 {
+            Ok(())
+        } else {
+            Err("native browser surface transition failed".into())
+        }
+    }
+
     pub fn prepare_for_webview_reload() -> Result<(), String> {
         // SAFETY: the reset is synchronous main-actor state bookkeeping. It
         // preserves every pane and Ghostty surface.
@@ -1276,6 +1311,15 @@ mod imp {
         0
     }
 
+    pub fn apply_browser_surface(
+        _native_view: *mut c_void,
+        _bounds: [f64; 4],
+        _visible: bool,
+        _retire: bool,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     pub fn prepare_for_webview_reload() -> Result<(), String> {
         Ok(())
     }
@@ -1327,13 +1371,13 @@ mod imp {
 
 #[allow(unused_imports)]
 pub use imp::{
-    action, annotation_selection_snapshot, application_is_active, available, create_host_managed,
-    focus, human_browser_history_state, initialize, is_ready_for_replay, paste_approved_text,
-    play_bundled_sound, play_system_sound, prepare_for_webview_reload, read_viewport_text, receive,
-    remove, seed_settings, send_text, set_annotation_monitoring, set_browser_overlay_open,
-    set_human_browser_loading_background, set_human_browser_webview, set_iframe_shortcut_fallback,
-    set_layout, set_stage_backstop, set_web_overlay_region, set_web_pointer_claimed, shutdown,
-    submit, update_settings,
+    action, annotation_selection_snapshot, application_is_active, apply_browser_surface, available,
+    create_host_managed, focus, human_browser_history_state, initialize, is_ready_for_replay,
+    paste_approved_text, play_bundled_sound, play_system_sound, prepare_for_webview_reload,
+    read_viewport_text, receive, remove, seed_settings, send_text, set_annotation_monitoring,
+    set_browser_overlay_open, set_human_browser_loading_background, set_human_browser_webview,
+    set_iframe_shortcut_fallback, set_layout, set_stage_backstop, set_web_overlay_region,
+    set_web_pointer_claimed, shutdown, submit, update_settings,
 };
 
 fn with_app_state(operation: impl FnOnce(&AppState)) {

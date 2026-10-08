@@ -3855,6 +3855,9 @@ fn main() {
         .on_window_event({
             let state = state.clone();
             move |window, event| {
+                if window.label() == "main" && matches!(event, tauri::WindowEvent::Focused(true)) {
+                    human_browser::reconcile_on_activation(window.app_handle());
+                }
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     if window.label() == "global-task-launcher" {
                         api.prevent_close();
