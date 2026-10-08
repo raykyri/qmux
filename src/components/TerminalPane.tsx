@@ -1,5 +1,6 @@
 import {
   remoteConnectionLabel,
+  remoteConnectionCanRetry,
   remotePaneCloseButtonVisible,
 } from "../lib/remoteConnection";
 import { LoaderCircle } from "lucide-react";
@@ -33,6 +34,7 @@ import { inspectPaste } from "../lib/paste";
 import type { PasteProtectionSettings } from "../lib/paste";
 import type { PaneInfo } from "../types";
 import PaneSearchBar from "./PaneSearchBar";
+import { Button } from "./ui";
 
 interface TerminalPaneProps {
   pane: PaneInfo;
@@ -71,6 +73,7 @@ interface TerminalPaneProps {
   webEditableFocused: boolean;
   requestAttach: (paneId: string) => void;
   onCloseRemote: () => void;
+  onRetryRemote: () => Promise<void>;
   onUserInput?: (agentId: string) => void;
   onActivate?: (paneId: string) => void;
   onOverlayStateChange?: (paneId: string, open: boolean) => void;
@@ -110,6 +113,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     webEditableFocused,
     requestAttach,
     onCloseRemote,
+    onRetryRemote,
     onUserInput,
     onActivate,
     onOverlayStateChange,
@@ -143,6 +147,27 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   onActivateRef.current = onActivate;
 
   const { confirm, dialog: confirmDialog } = useConfirm();
+  const [retryPending, setRetryPending] = useState(false);
+  const retryPendingRef = useRef(false);
+  const retryRemote = async () => {
+    if (retryPendingRef.current || !remoteConnectionCanRetry(pane.remoteConnection)) return;
+    retryPendingRef.current = true;
+    setRetryPending(true);
+    try {
+      await onRetryRemote();
+    } catch {
+      // App reports the request error through its existing error display.
+    } finally {
+      retryPendingRef.current = false;
+      setRetryPending(false);
+    }
+  };
+  const endRemoteSession = async () => {
+    if (await confirm({
+      message: "End this remote session? This stops the shell and any agents running in it. The remote host must be reachable to confirm termination.",
+      confirmLabel: "End session",
+    })) onCloseRemote();
+  };
   const confirmOpen = Boolean(confirmDialog);
   const confirmRef = useRef(confirm);
   confirmRef.current = confirm;
@@ -491,19 +516,19 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       <div ref={hostRef} className="terminal-host" />
       {remoteUnavailable ? (
         <div className="remote-connection-overlay" role="status" aria-live="polite" aria-label={!showRemoteCloseButton ? connectionLabel : undefined}>
-          {!showRemoteCloseButton ? (
-            <LoaderCircle className="remote-connection-spinner" size={24} aria-hidden="true" />
-          ) : (
-            <>
-              <span className="remote-connection-state">
-                {connectionLabel}
-              </span>
-              <RemoteConnectionDetailsText className="remote-connection-detail" connection={pane.remoteConnection} active={visible} />
-              <button type="button" className="control-button remote-connection-close" onClick={onCloseRemote}>
-                Close
-              </button>
-            </>
-          )}
+          {!showRemoteCloseButton && <LoaderCircle className="remote-connection-spinner" size={24} aria-hidden="true" />}
+          <span className="remote-connection-state">{connectionLabel}</span>
+          <RemoteConnectionDetailsText className="remote-connection-detail" connection={pane.remoteConnection} active={visible} />
+          <div className="remote-connection-actions">
+            <Button disabled={retryPending || !remoteConnectionCanRetry(pane.remoteConnection)} onClick={() => void retryRemote()}>
+              Retry now
+            </Button>
+            {showRemoteCloseButton && (
+              <Button variant="link" tone="danger" onClick={() => void endRemoteSession()}>
+                End session…
+              </Button>
+            )}
+          </div>
         </div>
       ) : null}
       {confirmDialog}

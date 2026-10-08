@@ -19,6 +19,6 @@ export default function RemoteConnectionDetailsText({ connection, active = true,
   const description = view.lines.join("\n");
   return <span className={["remote-connection-details-text", className].filter(Boolean).join(" ")}>
     {description ? <span>{description}</span> : null}
-    {view.lastConnection ? <span className="remote-connection-last-connection">{view.lastConnection}</span> : null}
+    {view.outageDuration ? <span className="remote-connection-outage-duration">{view.outageDuration}</span> : null}
   </span>;
 }

@@ -1,5 +1,4 @@
 import type { PaneInfo, RemoteConnectionInfo } from "../types";
-import { formatRelativeTime } from "./transcriptSessions";
 
 export function parseRemoteConnection(raw: unknown): RemoteConnectionInfo | null {
   if (!raw || typeof raw !== "object") return null;
@@ -28,7 +27,7 @@ export function parseRemoteConnection(raw: unknown): RemoteConnectionInfo | null
 const RECOVERY_TITLES = new Map([
   ["initialConnection", "Connecting"],
   ["appRestart", "Restoring session"],
-  ["connectionLost", "Restoring lost connection"],
+  ["connectionLost", "Connection lost"],
   ["systemWake", "Resuming after sleep"],
 ]);
 
@@ -66,7 +65,7 @@ interface ConnectionError {
 export interface RemoteConnectionPresentation {
   title: string;
   lines: string[];
-  lastConnection: string | null;
+  outageDuration: string | null;
   refreshEveryMs: number | null;
 }
 
@@ -76,7 +75,7 @@ export function remoteConnectionPresentation(
   now = Date.now(),
 ): RemoteConnectionPresentation {
   const view: RemoteConnectionPresentation = {
-    title: "Disconnected", lines: [], lastConnection: null, refreshEveryMs: null,
+    title: "Disconnected", lines: [], outageDuration: null, refreshEveryMs: null,
   };
   if (!connection) return view;
   if (connection.state === "connected") {
@@ -84,9 +83,13 @@ export function remoteConnectionPresentation(
     view.lines = connectedDetails(connection);
     return view;
   }
-  if (connection.lastConnectedAt != null) {
-    view.lastConnection = `Last connection: ${formatRelativeTime(connection.lastConnectedAt, now)}`;
-    view.refreshEveryMs = 1000;
+  if (connection.disconnectedAt != null) {
+    const seconds = Math.max(0, Math.floor((now - connection.disconnectedAt) / 1000));
+    const duration = seconds < 60 ? `${seconds}s`
+      : seconds < 3600 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+      : `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
+    view.outageDuration = `Disconnected for ${duration}`;
+    view.refreshEveryMs = seconds < 3600 ? 1000 : 60_000;
   }
   if (connection.stage === "sleeping") {
     view.title = "Sleeping";
@@ -117,20 +120,30 @@ export function remoteConnectionPresentation(
   const showStep = recoveryTitle !== undefined;
   view.title = recoveryTitle ?? step;
 
+  const waiting = remoteConnectionWaitingToRetry(connection);
   const retrySeconds = connection.nextRetryAt == null ? null : Math.max(0, Math.ceil((connection.nextRetryAt - now) / 1000));
-  const combinedRetry = showStep && stepKey === "reconnecting" && retrySeconds != null && retrySeconds > 0;
-  if (showStep) {
+  if (waiting) {
+    if (!recoveryTitle) view.title = "Connection lost";
+    view.lines.push(retrySeconds != null && retrySeconds > 0 ? `Retrying in ${retrySeconds}s` : "Waiting to retry...");
+    view.refreshEveryMs = 1000;
+  } else if (showStep) {
     const descriptionStep = connection.reason === "initialConnection" && !credentialRecovery && stepKey === "connecting"
       ? "Establishing connection" : step;
-    view.lines.push(combinedRetry ? `${descriptionStep}... (retrying in ${retrySeconds} sec)` : `${descriptionStep}...`);
+    view.lines.push(`${descriptionStep}...`);
   }
   const hideTimeout = connection.state === "reconnecting" && connection.reason === "connectionLost" && error.kind === "timeout";
   if (error.text && !credentialRecovery && !hideTimeout) view.lines.push(error.text);
-  if (retrySeconds != null) {
-    view.refreshEveryMs = 1000;
-    if (!combinedRetry) view.lines.push(retrySeconds > 0 ? `Retrying in ${retrySeconds} sec...` : "Waiting to retry...");
-  }
   return view;
+}
+
+export function remoteConnectionWaitingToRetry(connection?: RemoteConnectionInfo | null): boolean {
+  return connection?.state === "reconnecting" && (connection.stage === "waitingToRetry"
+    || (!connection.stage && connection.nextRetryAt != null));
+}
+
+export function remoteConnectionCanRetry(connection?: RemoteConnectionInfo | null): boolean {
+  if (!connection || connection.stage === "sleeping" || connection.stage === "sessionEnded" || connection.sessionExists === false) return false;
+  return remoteConnectionWaitingToRetry(connection) || connection.state === "disconnected" || connection.state === "failed";
 }
 
 export function remoteConnectionLabel(connection?: RemoteConnectionInfo | null): string {
@@ -169,7 +182,7 @@ export function shouldCloseRemotePaneOnControlD(
 
 export function remoteConnectionDetails(connection?: RemoteConnectionInfo | null, now = Date.now()): string {
   const view = remoteConnectionPresentation(connection, now);
-  return [...view.lines, ...(view.lastConnection ? [view.lastConnection] : [])].join("\n");
+  return [...view.lines, ...(view.outageDuration ? [view.outageDuration] : [])].join("\n");
 }
 
 export function remoteHooksNeedAttention(connection?: RemoteConnectionInfo | null): boolean {

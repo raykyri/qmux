@@ -18643,6 +18643,14 @@ function MainApp() {
               }
               requestAttach={requestPaneAttach}
               onCloseRemote={() => void closePane(pane)}
+              onRetryRemote={async () => {
+                try {
+                  await reconnectPane(pane.id);
+                } catch (error) {
+                  setError(String(error));
+                  throw error;
+                }
+              }}
               onUserInput={stableNoteUserInput}
               onActivate={activateTerminalPane}
               onOverlayStateChange={updateTerminalOverlayState}

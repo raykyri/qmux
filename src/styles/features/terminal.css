@@ -48,7 +48,12 @@
   font-weight: 600;
 }
 
-.remote-connection-close {
+.remote-connection-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
   margin-top: var(--remote-connection-gap);
 }
 
@@ -71,7 +76,7 @@
   gap: var(--remote-connection-gap, 6px);
 }
 
-.remote-connection-last-connection {
+.remote-connection-outage-duration {
   color: var(--text-muted, var(--text-secondary));
   font-weight: 400;
   opacity: 0.75;
