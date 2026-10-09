@@ -110,11 +110,13 @@
   gap: 2px;
   min-width: 200px;
   max-width: calc(100vw - 16px);
-  padding: 4px;
+  padding: 5px 4px;
 }
 
-.link-context-menu-item {
+.link-context-menu .link-context-menu-item {
   gap: 8px;
+  min-height: calc(var(--control-h-md) - 2px);
+  padding-block: 5px;
   white-space: nowrap;
 }
 

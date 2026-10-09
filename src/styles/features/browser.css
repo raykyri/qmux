@@ -258,29 +258,6 @@
   box-shadow: 0 0 0 2px var(--accent-shadow);
 }
 
-/* Right-click chooser for a transcript/terminal link. Positioned at the pointer
-   (viewport coords), above the browser overlay and other chrome. */
-.link-context-menu {
-  z-index: var(--z-context-menu);
-  gap: 2px;
-  min-width: 200px;
-  max-width: calc(100vw - 16px);
-  padding: 4px;
-}
-
-.link-context-menu-item {
-  gap: 8px;
-  white-space: nowrap;
-}
-
-/* Keep the icon at full size so the label stays on the same line beside it
-   instead of wrapping below a collapsed icon. */
-.link-context-menu-item svg {
-  flex: none;
-  width: 14px;
-  height: 14px;
-}
-
 .file-match-menu {
   z-index: var(--z-context-menu);
   gap: 2px;

@@ -14,6 +14,7 @@ interface LinkContextMenuProps {
   externalKind?: "browser" | "reveal";
   onOpenExternal: () => void;
   onOpenWithDefaultApp?: (() => void) | null;
+  onCopy?: () => void;
   onClose: () => void;
   remoteActions?: {
     cachedAvailable: boolean;
@@ -32,6 +33,7 @@ export default function LinkContextMenu({
   externalKind = "browser",
   onOpenExternal,
   onOpenWithDefaultApp = null,
+  onCopy,
   onClose,
   remoteActions,
 }: LinkContextMenuProps) {
@@ -124,6 +126,17 @@ export default function LinkContextMenu({
         >
           <ExternalLink size={14} aria-hidden="true" />
           <span>Open with default app</span>
+        </MenuItem>
+      ) : null}
+      {!remoteActions && onCopy ? (
+        <MenuItem
+          type="button"
+          role="menuitem"
+          className="link-context-menu-item"
+          onClick={() => choose(onCopy)}
+        >
+          <Copy size={14} aria-hidden="true" />
+          <span>{externalKind === "reveal" ? "Copy path" : "Copy URL"}</span>
         </MenuItem>
       ) : null}
     </Menu>

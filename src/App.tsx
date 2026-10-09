@@ -18957,6 +18957,9 @@ function MainApp() {
               : undefined
           }
           externalKind={linkMenuLocalPath !== undefined ? "reveal" : undefined}
+          onCopy={() => {
+            void writeClipboardText(linkMenuLocalPath ?? linkMenu.url).catch(reportHumanBrowserError);
+          }}
           onOpenWithDefaultApp={
             linkMenuLocalPath !== undefined && linkMenuPaneId !== null
               ? () => {
