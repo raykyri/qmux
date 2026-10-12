@@ -513,11 +513,7 @@ impl ChromiumRuntime {
             subscribers,
         )?;
         let session_id = required_string(&result, "sessionId")?;
-        self.session_to_tab.insert(session_id.clone(), tab_id);
-        self.tabs
-            .get_mut(&tab_id)
-            .expect("tab disappeared while attaching")
-            .attached_session = Some(session_id.clone());
+        self.register_attached_session(tab_id, &session_id, None)?;
         Ok(session_id)
     }
 
@@ -565,10 +561,34 @@ impl ChromiumRuntime {
             subscribers,
         )?;
         let session_id = required_string(&result, "sessionId")?;
-        self.session_to_tab.insert(session_id.clone(), tab_id);
-        self.target_sessions
-            .insert((tab_id, target_id.to_string()), session_id.clone());
+        self.register_attached_session(tab_id, &session_id, Some(target_id))?;
         Ok(session_id)
+    }
+
+    fn register_attached_session(
+        &mut self,
+        tab_id: u64,
+        session_id: &str,
+        target_id: Option<&str>,
+    ) -> Result<(), String> {
+        // Waiting for CDP services queued commands, including refresh/close.
+        // Recheck ownership after the reply, before publishing either mapping.
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+            self.send_cdp_without_waiting(
+                "Target.detachFromTarget",
+                json!({ "sessionId": session_id }),
+                None,
+            );
+            return Err(format!("tab {tab_id} does not exist"));
+        };
+        if let Some(target_id) = target_id {
+            self.target_sessions
+                .insert((tab_id, target_id.to_string()), session_id.to_string());
+        } else {
+            tab.attached_session = Some(session_id.to_string());
+        }
+        self.session_to_tab.insert(session_id.to_string(), tab_id);
+        Ok(())
     }
 
     fn detach_target(
@@ -1496,6 +1516,101 @@ mod tests {
     use super::*;
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener;
+
+    #[test]
+    fn closing_an_owner_during_attach_does_not_panic_or_register_a_stale_session() {
+        use tungstenite::protocol::Role;
+
+        for nested_target in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let (peer, _) = listener.accept().unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let server = thread::spawn(move || {
+                let mut socket = WebSocket::from_raw_socket(peer, Role::Server, None);
+                let attach: Value =
+                    serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+                assert_eq!(attach["method"], "Target.attachToTarget");
+                let refresh: Value =
+                    serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+                assert_eq!(refresh["method"], "Target.getTargets");
+                // The attach reply arrives while a nested refresh is still
+                // waiting. Refresh removes the owner before attach resumes.
+                socket
+                    .send(Message::text(
+                        json!({
+                            "id": attach["id"], "result": { "sessionId": "late-session" }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap();
+                socket
+                    .send(Message::text(
+                        json!({
+                            "id": refresh["id"], "result": { "targetInfos": [] }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap();
+                let detach: Value =
+                    serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+                assert_eq!(detach["method"], "Target.detachFromTarget");
+                assert_eq!(detach["params"]["sessionId"], "late-session");
+            });
+            let (commands, receiver) = mpsc::channel();
+            let (reply, refresh_result) = mpsc::channel();
+            commands
+                .send(EngineCommand::Call {
+                    method: "getTabs".to_string(),
+                    params: json!({}),
+                    reply,
+                })
+                .unwrap();
+            let mut runtime = ChromiumRuntime {
+                child: Command::new("/usr/bin/true").spawn().unwrap(),
+                profile_dir: unique_profile_dir(),
+                executable: PathBuf::from("/usr/bin/true"),
+                socket: WebSocket::from_raw_socket(
+                    MaybeTlsStream::Plain(stream),
+                    Role::Client,
+                    None,
+                ),
+                commands: receiver,
+                screencast_sink: Arc::new(Mutex::new(None)),
+                screencast_tabs: HashSet::new(),
+                deferred_responses: HashMap::new(),
+                waiting_cdp_ids: HashSet::new(),
+                unwaited_cdp_ids: HashSet::new(),
+                next_cdp_id: 1,
+                next_tab_id: 1,
+                tabs: HashMap::new(),
+                target_to_tab: HashMap::new(),
+                session_to_tab: HashMap::new(),
+                target_sessions: HashMap::new(),
+                active_tab: None,
+                expression_cache: HashMap::new(),
+            };
+            let tab =
+                runtime.register_tab("closing-target".into(), "about:blank".into(), String::new());
+            let subscribers = Arc::new(Mutex::new(HashMap::new()));
+            let result = if nested_target {
+                runtime.attach_target(tab.id, "child-target", &subscribers)
+            } else {
+                runtime.ensure_attached(tab.id, &subscribers)
+            };
+            assert_eq!(
+                result.unwrap_err(),
+                format!("tab {} does not exist", tab.id)
+            );
+            assert_eq!(refresh_result.recv().unwrap().unwrap(), json!([]));
+            assert!(runtime.session_to_tab.is_empty());
+            assert!(runtime.target_sessions.is_empty());
+            server.join().unwrap();
+        }
+    }
 
     #[test]
     fn tab_ids_must_be_positive_numbers() {

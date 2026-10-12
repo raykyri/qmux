@@ -63,7 +63,8 @@
     "tauri": "tauri",
     "typecheck": "tsc --noEmit && tsc -p web/tsconfig.json",
     "verify:release": "npm run typecheck && npm run format && npm test",
-    "test:native": "bash scripts/test-native-terminal.sh"
+    "test:native": "bash scripts/test-native-terminal.sh",
+    "test:native-browser": "bash scripts/test-native-browser.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

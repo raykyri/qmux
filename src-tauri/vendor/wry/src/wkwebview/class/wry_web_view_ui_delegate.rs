@@ -143,14 +143,10 @@ define_class!(
       action: &objc2_web_kit::WKNavigationAction,
       window_features: &objc2_web_kit::WKWindowFeatures,
     ) -> Option<Retained<objc2_web_kit::WKWebView>> {
-      if let Some(new_window_req_handler) = &self.ivars().new_window_req_handler {
-        let request = action.request();
-        let url = request.URL().unwrap().absoluteString().unwrap();
-
-        let current_window = webview.window().unwrap();
-        let screen = current_window.screen().unwrap();
-        let screen_frame = screen.frame();
-
+      if let (Some(new_window_req_handler), Some(url)) = (
+        &self.ivars().new_window_req_handler,
+        action.request().URL().and_then(|url| url.absoluteString()),
+      ) {
         match new_window_req_handler(
           url.to_string(),
           NewWindowFeatures {
@@ -175,8 +171,13 @@ define_class!(
             },
           },
         ) {
-          NewWindowResponse::Allow => {
-            let mtm = MainThreadMarker::new().unwrap();
+          NewWindowResponse::Allow => webview.window().and_then(|current_window| {
+            // A popup callback can arrive after a child view was detached.
+            // Deny/Create need no originating window; Allow requires a live
+            // window and screen. Never panic across this Objective-C callback.
+            let screen = current_window.screen()?;
+            let screen_frame = screen.frame();
+            let mtm = MainThreadMarker::new()?;
 
             let defaults = current_window.frame();
             let size = objc2_foundation::NSSize::new(
@@ -248,7 +249,7 @@ define_class!(
             });
 
             Some(webview)
-          }
+          }),
           NewWindowResponse::Create { webview } => Some(webview),
           NewWindowResponse::Deny => None,
         }

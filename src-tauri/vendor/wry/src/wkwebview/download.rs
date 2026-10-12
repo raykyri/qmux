@@ -51,8 +51,14 @@ pub(crate) fn download_policy(
   completion_handler: &block2::Block<dyn Fn(*const NSURL)>,
 ) {
   unsafe {
-    let request = download.originalRequest().unwrap();
-    let url = request.URL().unwrap().absoluteString().unwrap();
+    let Some(url) = download
+      .originalRequest()
+      .and_then(|request| request.URL())
+      .and_then(|url| url.absoluteString())
+    else {
+      (*completion_handler).call((null_mut(),));
+      return;
+    };
     let suggested_filename = suggested_filename.to_string();
     let mut download_destination =
       dirs::download_dir().unwrap_or_else(|| current_dir().unwrap_or_default());
@@ -92,8 +98,13 @@ pub(crate) fn download_policy(
 
 pub(crate) fn download_did_finish(this: &WryDownloadDelegate, download: &WKDownload) {
   unsafe {
-    let original_request = download.originalRequest().unwrap();
-    let url = original_request.URL().unwrap().absoluteString().unwrap();
+    let Some(url) = download
+      .originalRequest()
+      .and_then(|request| request.URL())
+      .and_then(|url| url.absoluteString())
+    else {
+      return;
+    };
     if let Some(completed_fn) = this.ivars().completed.clone() {
       completed_fn(url.to_string(), None, true);
     }
@@ -104,7 +115,7 @@ pub(crate) fn download_did_fail(
   this: &WryDownloadDelegate,
   download: &WKDownload,
   _error: &NSError,
-  _resume_data: &NSData,
+  _resume_data: Option<&NSData>,
 ) {
   unsafe {
     #[cfg(debug_assertions)]
@@ -113,8 +124,13 @@ pub(crate) fn download_did_fail(
       eprintln!("Download failed with error: {description}");
     }
 
-    let original_request = download.originalRequest().unwrap();
-    let url = original_request.URL().unwrap().absoluteString().unwrap();
+    let Some(url) = download
+      .originalRequest()
+      .and_then(|request| request.URL())
+      .and_then(|url| url.absoluteString())
+    else {
+      return;
+    };
     if let Some(completed_fn) = this.ivars().completed.clone() {
       completed_fn(url.to_string(), None, false);
     }

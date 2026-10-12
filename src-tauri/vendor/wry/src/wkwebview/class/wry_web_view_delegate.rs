@@ -49,8 +49,9 @@ define_class!(
 
           let frame_info = msg.frameInfo();
           let request = frame_info.request();
-          let url = request.URL().unwrap();
-          let absolute_url = url.absoluteString().unwrap();
+          let Some(absolute_url) = request.URL().and_then(|url| url.absoluteString()) else {
+            return;
+          };
           let url_utf8 = absolute_url.UTF8String();
 
           if let (Ok(url), Ok(js)) = (

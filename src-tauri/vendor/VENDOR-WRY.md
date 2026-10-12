@@ -47,6 +47,15 @@ The modifications are:
 5. **Added `NSPasteboardItem` feature** to the `objc2-app-kit` dependency
    in `Cargo.toml`.
 
+6. **Handle nullable WebKit callback data during teardown**
+   (`wry_web_view_ui_delegate.rs`, `wry_web_view_delegate.rs`,
+   `wry_download_delegate.rs`, `navigation.rs`, `download.rs`) — popup policy
+   runs without requiring an attached window; unmanaged popup creation is
+   declined if the originating window or screen is gone. Missing request URLs
+   cancel navigation/download decisions or drop notifications instead of
+   panicking across Objective-C. Failed downloads accept nullable resume data
+   as declared by `WKDownloadDelegate`, avoiding a null Rust reference.
+
 ## Verification
 
 Run `scripts/verify-vendor-wry.sh` to confirm that the vendored copy matches
@@ -59,6 +68,11 @@ scripts/verify-vendor-wry.sh
 
 The script exits `0` when the vendored source matches the recorded patch and
 `1` on any mismatch.  Run it in CI and after any manual edit to `vendor/wry`.
+
+On macOS, `npm run test:native-browser` exercises detached popup views, missing
+navigation/download URLs, and nullable download resume data against the app's
+compiled Wry library. Its standalone runner owns AppKit's main thread and needs
+Command Line Tools, without requiring the full Xcode XCTest runner.
 
 ## Updating the patch
 

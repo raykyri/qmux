@@ -43,7 +43,7 @@ define_class!(
     }
 
     #[unsafe(method(download:didFailWithError:resumeData:))]
-    fn download_did_fail(&self, download: &WKDownload, error: &NSError, resume_data: &NSData) {
+    fn download_did_fail(&self, download: &WKDownload, error: &NSError, resume_data: Option<&NSData>) {
       download_did_fail(self, download, error, resume_data);
     }
   }
