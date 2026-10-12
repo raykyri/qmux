@@ -23,6 +23,7 @@ UPSTREAM_COMMIT="a5bf203a1c8dbb3583588382538d6521655222a8"
 MODIFIED_FILES=(
   "src/wkwebview/class/url_scheme_handler.rs"
   "src/wkwebview/class/wry_web_view_parent.rs"
+  "src/wkwebview/class/wry_web_view.rs"
   "src/wkwebview/class/wry_web_view_ui_delegate.rs"
   "src/wkwebview/class/wry_web_view_delegate.rs"
   "src/wkwebview/class/wry_download_delegate.rs"

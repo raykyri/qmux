@@ -72,6 +72,15 @@ The modifications are:
    stream and fails the WebKit task without forwarding a partial body. This
    avoids unchecked vector lengths, repeated EOF reads, and unfinished tasks.
 
+9. **Complete failed custom-protocol requests without disturbing replacements**
+   (`url_scheme_handler.rs`, `wry_web_view.rs`) — malformed requests, missing
+   handlers, and application panics fail the active task. Delayed responders
+   also contain Rust panics and reject invalid response metadata. Completion
+   and failure retire the exact task UUID before notifying WebKit, so a
+   reentrant replacement survives and cancelled tasks receive no later
+   completion. Disposing a view during response delivery also suppresses
+   subsequent callbacks.
+
 ## Verification
 
 Run `scripts/verify-vendor-wry.sh` to confirm that the vendored copy matches
@@ -87,11 +96,13 @@ The script exits `0` when the vendored source matches the recorded patch and
 
 On macOS, `npm run test:native-browser` exercises detached popup views, missing
 navigation/download URLs, nullable download resume data, absent page metadata,
-real JavaScript evaluation results, and request-body stream failures against
-the app's compiled Wry library.
+real JavaScript evaluation results, request-body stream failures, and custom
+protocol failures, cancellation, and reentrant completion against the app's
+compiled Wry library.
 Its standalone runner owns AppKit's main thread and needs Command Line Tools,
 without requiring the full Xcode XCTest runner. Pass `-- url`, `-- title`,
-`-- navigation`, `-- eval`, or `-- streams` to run a single group alone.
+`-- navigation`, `-- eval`, `-- streams`, or `-- protocols` to run a single
+group alone.
 
 ## Updating the patch
 

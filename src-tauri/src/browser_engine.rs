@@ -552,7 +552,14 @@ impl ChromiumRuntime {
             DEFAULT_CDP_TIMEOUT,
             subscribers,
         )?;
-        if self.tab(tab_id)?.attached_session.as_deref() == Some(session_id.as_str()) {
+        // A nested refresh may already have removed this tab and its session.
+        // The successful detach remains successful; preserve any replacement.
+        if self
+            .tabs
+            .get(&tab_id)
+            .and_then(|tab| tab.attached_session.as_deref())
+            == Some(session_id.as_str())
+        {
             self.forget_session(&session_id);
             broadcast_cdp_detach(subscribers, tab_id);
         }
@@ -638,7 +645,8 @@ impl ChromiumRuntime {
     ) -> RpcReply {
         let Some(session_id) = self
             .target_sessions
-            .remove(&(tab_id, target_id.to_string()))
+            .get(&(tab_id, target_id.to_string()))
+            .cloned()
         else {
             return Ok(Value::Null);
         };
@@ -649,7 +657,9 @@ impl ChromiumRuntime {
             DEFAULT_CDP_TIMEOUT,
             subscribers,
         )?;
-        self.session_to_tab.remove(&session_id);
+        // Keep both indexes usable if CDP rejects or times out the detach.
+        // Remove only this session after success, not a nested replacement.
+        self.forget_session(&session_id);
         Ok(Value::Null)
     }
 
@@ -734,14 +744,33 @@ impl ChromiumRuntime {
                     .collect::<HashSet<_>>()
             })
             .unwrap_or_default();
+        // The discovery backend supplies this scope for pane-owned callers.
+        // A present but invalid scope must never turn into global cleanup.
+        let allowed_tabs = params.get("allowedTabIds").map(|value| {
+            value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_u64)
+                .collect::<HashSet<_>>()
+        });
         let close = self
             .tabs
             .keys()
             .copied()
-            .filter(|tab_id| !keep.contains(tab_id))
+            .filter(|tab_id| {
+                !keep.contains(tab_id)
+                    && allowed_tabs
+                        .as_ref()
+                        .is_none_or(|allowed| allowed.contains(tab_id))
+            })
             .collect::<Vec<_>>();
         for tab_id in close {
-            let target_id = self.tab(tab_id)?.target_id.clone();
+            let Some(target_id) = self.tabs.get(&tab_id).map(|tab| tab.target_id.clone()) else {
+                // A previous close may have serviced a refresh that removed
+                // this tab. Continue closing the remaining scoped snapshot.
+                continue;
+            };
             self.call_cdp(
                 "Target.closeTarget",
                 json!({ "targetId": target_id }),
@@ -1612,6 +1641,266 @@ mod tests {
                 json!({ "id": command["id"], "result": result }).to_string(),
             ))
             .unwrap();
+    }
+
+    #[test]
+    fn finalize_tabs_respects_the_calling_panes_tab_scope() {
+        for scoped in [true, false] {
+            let (mut runtime, _commands, mut socket) = mock_cdp_runtime();
+            let kept =
+                runtime.register_tab("owned-kept".into(), "about:blank".into(), String::new());
+            let closed =
+                runtime.register_tab("owned-closed".into(), "about:blank".into(), String::new());
+            runtime.register_tab("another-pane".into(), "about:blank".into(), String::new());
+            runtime.register_tab("unclaimed".into(), "about:blank".into(), String::new());
+            let server = thread::spawn(move || {
+                let mut live =
+                    HashSet::from(["owned-kept", "owned-closed", "another-pane", "unclaimed"]);
+                let mut closed = HashSet::new();
+                loop {
+                    let command: Value =
+                        serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+                    match command["method"].as_str().unwrap() {
+                        "Target.closeTarget" => {
+                            let target = command["params"]["targetId"].as_str().unwrap();
+                            assert!(live.remove(target));
+                            closed.insert(target.to_string());
+                            mock_reply(&mut socket, &command, json!({ "success": true }));
+                        }
+                        "Target.getTargets" => {
+                            let infos = live.iter().map(|target| json!({ "type": "page", "targetId": target, "url": "about:blank" })).collect::<Vec<_>>();
+                            mock_reply(&mut socket, &command, json!({ "targetInfos": infos }));
+                            return closed;
+                        }
+                        method => panic!("unexpected CDP command {method}"),
+                    }
+                }
+            });
+            let mut params = json!({ "keep": [kept.id] });
+            if scoped {
+                params["allowedTabIds"] = json!([kept.id, closed.id]);
+            }
+            runtime
+                .finalize_tabs(&params, &Arc::new(Mutex::new(HashMap::new())))
+                .unwrap();
+            let closed = server.join().unwrap();
+            let expected = if scoped {
+                HashSet::from(["owned-closed".to_string()])
+            } else {
+                HashSet::from([
+                    "owned-closed".to_string(),
+                    "another-pane".to_string(),
+                    "unclaimed".to_string(),
+                ])
+            };
+            assert_eq!(closed, expected);
+            assert!(runtime.tabs.contains_key(&kept.id));
+            assert_eq!(runtime.tabs.len(), if scoped { 3 } else { 1 });
+        }
+    }
+
+    #[test]
+    fn empty_or_invalid_finalize_scope_never_closes_a_tab() {
+        for scope in [json!([]), json!("invalid"), Value::Null] {
+            let (mut runtime, _commands, mut socket) = mock_cdp_runtime();
+            let tab =
+                runtime.register_tab("live-target".into(), "about:blank".into(), String::new());
+            let server = thread::spawn(move || {
+                let refresh = read_mock_command(&mut socket, "Target.getTargets");
+                mock_reply(
+                    &mut socket,
+                    &refresh,
+                    json!({ "targetInfos": [{
+                    "type": "page", "targetId": "live-target", "url": "about:blank"
+                }] }),
+                );
+            });
+            runtime
+                .finalize_tabs(
+                    &json!({ "allowedTabIds": scope }),
+                    &Arc::new(Mutex::new(HashMap::new())),
+                )
+                .unwrap();
+            server.join().unwrap();
+            assert!(runtime.tabs.contains_key(&tab.id));
+        }
+    }
+
+    #[test]
+    fn finalize_continues_when_a_nested_refresh_removes_a_later_tab() {
+        let (mut runtime, commands, mut socket) = mock_cdp_runtime();
+        for name in ["first", "second", "third"] {
+            runtime.register_tab(name.into(), "about:blank".into(), String::new());
+        }
+        // Use the exact initial iteration order: finalize takes the same snapshot.
+        let order = runtime.tabs.keys().copied().collect::<Vec<_>>();
+        let first = runtime.tab(order[0]).unwrap().target_id.clone();
+        let survivor = runtime.tab(order[2]).unwrap().target_id.clone();
+        let expected_survivor = survivor.clone();
+        let server = thread::spawn(move || {
+            let close = read_mock_command(&mut socket, "Target.closeTarget");
+            assert_eq!(close["params"]["targetId"], first);
+            let refresh = read_mock_command(&mut socket, "Target.getTargets");
+            mock_reply(&mut socket, &close, json!({ "success": true }));
+            mock_reply(
+                &mut socket,
+                &refresh,
+                json!({ "targetInfos": [{
+                "type": "page", "targetId": survivor, "url": "about:blank"
+            }] }),
+            );
+            let close = socket
+                .read()
+                .ok()
+                .and_then(|message| serde_json::from_str::<Value>(message.to_text().ok()?).ok());
+            if let Some(close) = &close {
+                mock_reply(&mut socket, close, json!({ "success": true }));
+                let refresh = read_mock_command(&mut socket, "Target.getTargets");
+                mock_reply(&mut socket, &refresh, json!({ "targetInfos": [] }));
+            }
+            close
+        });
+        let (reply, refreshed) = mpsc::channel();
+        commands
+            .send(EngineCommand::Call {
+                method: "getTabs".into(),
+                params: json!({}),
+                reply,
+            })
+            .unwrap();
+        let result = runtime.finalize_tabs(&json!({}), &Arc::new(Mutex::new(HashMap::new())));
+        assert!(refreshed.recv().unwrap().is_ok());
+        let close = server.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "finalize aborted after a tab disappeared: {result:?}"
+        );
+        let close = close.expect("remaining live tab was not closed");
+        assert_eq!(close["method"], "Target.closeTarget");
+        assert_eq!(close["params"]["targetId"], expected_survivor);
+        assert!(runtime.tabs.is_empty());
+    }
+
+    #[test]
+    fn successful_detach_tolerates_owner_removal_while_waiting() {
+        let (mut runtime, commands, mut socket) = mock_cdp_runtime();
+        let tab = runtime.register_tab("owner".into(), "about:blank".into(), String::new());
+        runtime
+            .register_attached_session(tab.id, "attached", None)
+            .unwrap();
+        let server = thread::spawn(move || {
+            let detach = read_mock_command(&mut socket, "Target.detachFromTarget");
+            let refresh = read_mock_command(&mut socket, "Target.getTargets");
+            mock_reply(&mut socket, &detach, json!({}));
+            mock_reply(&mut socket, &refresh, json!({ "targetInfos": [] }));
+        });
+        let (reply, refreshed) = mpsc::channel();
+        commands
+            .send(EngineCommand::Call {
+                method: "getTabs".into(),
+                params: json!({}),
+                reply,
+            })
+            .unwrap();
+        let result = runtime.detach_tab(tab.id, &Arc::new(Mutex::new(HashMap::new())));
+        assert!(refreshed.recv().unwrap().is_ok());
+        server.join().unwrap();
+        assert_eq!(result, Ok(Value::Null));
+        assert!(runtime.tabs.is_empty());
+        assert!(runtime.session_to_tab.is_empty());
+        assert!(runtime.target_sessions.is_empty());
+    }
+
+    #[test]
+    fn failed_target_detach_preserves_session_mappings_for_retry() {
+        let (mut runtime, _commands, mut socket) = mock_cdp_runtime();
+        let tab = runtime.register_tab("owner".into(), "about:blank".into(), String::new());
+        runtime
+            .register_attached_session(tab.id, "attached", Some("child"))
+            .unwrap();
+        let server = thread::spawn(move || {
+            let detach = read_mock_command(&mut socket, "Target.detachFromTarget");
+            socket
+                .send(Message::text(
+                    json!({
+                        "id": detach["id"], "error": { "message": "detach failed" }
+                    })
+                    .to_string(),
+                ))
+                .unwrap();
+            if let Ok(message) = socket.read() {
+                let retry: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                assert_eq!(retry["method"], "Target.detachFromTarget");
+                assert_eq!(retry["params"]["sessionId"], "attached");
+                mock_reply(&mut socket, &retry, json!({}));
+            }
+        });
+        let subscribers = Arc::new(Mutex::new(HashMap::new()));
+        assert!(
+            runtime
+                .detach_target(tab.id, "child", &subscribers)
+                .is_err()
+        );
+        assert_eq!(runtime.session_to_tab.get("attached"), Some(&tab.id));
+        assert_eq!(
+            runtime
+                .target_sessions
+                .get(&(tab.id, "child".into()))
+                .map(String::as_str),
+            Some("attached")
+        );
+        assert_eq!(
+            runtime.detach_target(tab.id, "child", &subscribers),
+            Ok(Value::Null)
+        );
+        server.join().unwrap();
+        assert!(runtime.session_to_tab.is_empty());
+        assert!(runtime.target_sessions.is_empty());
+    }
+
+    #[test]
+    fn target_detach_reply_preserves_a_replacement_session() {
+        for fails in [false, true] {
+            let (mut runtime, _commands, mut socket) = mock_cdp_runtime();
+            let tab = runtime.register_tab("owner".into(), "about:blank".into(), String::new());
+            runtime
+                .register_attached_session(tab.id, "top", None)
+                .unwrap();
+            runtime
+                .register_attached_session(tab.id, "old-child", Some("child"))
+                .unwrap();
+            let server = thread::spawn(move || {
+                let detach = read_mock_command(&mut socket, "Target.detachFromTarget");
+                for event in [
+                    json!({ "sessionId": "top", "method": "Target.detachedFromTarget", "params": { "sessionId": "old-child" } }),
+                    json!({ "sessionId": "top", "method": "Target.attachedToTarget", "params": { "sessionId": "new-child", "targetInfo": { "targetId": "child" } } }),
+                ] {
+                    socket.send(Message::text(event.to_string())).unwrap();
+                }
+                if fails {
+                    socket.send(Message::text(json!({ "id": detach["id"], "error": { "message": "old session already detached" } }).to_string())).unwrap();
+                } else {
+                    mock_reply(&mut socket, &detach, json!({}));
+                }
+            });
+            let result =
+                runtime.detach_target(tab.id, "child", &Arc::new(Mutex::new(HashMap::new())));
+            server.join().unwrap();
+            assert_eq!(result.is_err(), fails);
+            assert_eq!(
+                runtime.tab(tab.id).unwrap().attached_session.as_deref(),
+                Some("top")
+            );
+            assert_eq!(
+                runtime
+                    .target_sessions
+                    .get(&(tab.id, "child".into()))
+                    .map(String::as_str),
+                Some("new-child")
+            );
+            assert_eq!(runtime.session_to_tab.get("new-child"), Some(&tab.id));
+            assert!(!runtime.session_to_tab.contains_key("old-child"));
+        }
     }
 
     #[test]

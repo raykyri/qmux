@@ -12,7 +12,7 @@ use std::{
 
 use http::{
   header::{CONTENT_LENGTH, CONTENT_TYPE},
-  Request, Response as HttpResponse, StatusCode, Version,
+  Request, Response as HttpResponse,
 };
 use objc2::{
   rc::Retained,
@@ -20,8 +20,8 @@ use objc2::{
   AllocAnyThread, ClassType, Message,
 };
 use objc2_foundation::{
-  NSData, NSError, NSHTTPURLResponse, NSMutableDictionary, NSObject, NSObjectProtocol, NSString, NSURL,
-  NSUUID,
+  NSData, NSError, NSHTTPURLResponse, NSMutableDictionary, NSObject, NSObjectProtocol, NSString,
+  NSURL, NSUUID,
 };
 use objc2_web_kit::{WKURLSchemeHandler, WKURLSchemeTask};
 
@@ -33,6 +33,37 @@ fn report_ffi_panic(message: &'static [u8]) {
   let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
     let _ = std::io::stderr().write_all(message);
   }));
+}
+
+fn check_webview_id_valid(webview_id: &str) -> crate::Result<()> {
+  if !WEBVIEW_STATE
+    .read()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+    .contains_key(webview_id)
+  {
+    return Err(crate::Error::CustomProtocolTaskInvalid);
+  }
+  Ok(())
+}
+
+unsafe fn protocol_error(code: isize) -> Retained<NSError> {
+  NSError::errorWithDomain_code_userInfo(&NSString::from_str("wry.custom-protocol"), code, None)
+}
+
+unsafe fn fail_task(
+  webview: &WryWebView,
+  task: &ProtocolObject<dyn WKURLSchemeTask>,
+  task_key: usize,
+  task_uuid: &NSUUID,
+  error: &NSError,
+) {
+  // Remove the exact active task before calling back into WebKit. A handler
+  // may already have completed, cancelled, or replaced it before failing.
+  if webview.remove_custom_task_key_if_current(task_key, task_uuid) {
+    let _ = objc2::exception::catch(AssertUnwindSafe(|| {
+      task.didFailWithError(error);
+    }));
+  }
 }
 
 pub fn create(name: &str) -> &AnyClass {
@@ -72,12 +103,37 @@ extern "C" fn start_task(
   // No Rust panic may cross an Objective-C method implementation. Rust turns
   // an unwind through this `extern "C"` boundary into `panic_cannot_unwind`,
   // aborting the entire host application.
+  let mut task_identity = None;
+  let mut cleanup_webview_id = None;
   if std::panic::catch_unwind(AssertUnwindSafe(|| {
-    start_task_inner(this, webview, task);
+    let task_key = task.hash();
+    let task_uuid = webview.add_custom_task_key(task_key);
+    task_identity = Some((task_key, task_uuid.clone()));
+    start_task_inner(
+      this,
+      webview,
+      task,
+      task_key,
+      task_uuid,
+      &mut cleanup_webview_id,
+    );
   }))
   .is_err()
   {
-    report_ffi_panic(b"wry: custom URL-scheme handler panicked; dropping the request\n");
+    // Cleanup must also stay behind the FFI unwind boundary.
+    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| unsafe {
+      if let Some((task_key, task_uuid)) = task_identity {
+        if cleanup_webview_id
+          .as_deref()
+          .is_some_and(|id| check_webview_id_valid(id).is_err())
+        {
+          webview.remove_custom_task_key_if_current(task_key, &task_uuid);
+        } else {
+          fail_task(webview, task, task_key, &task_uuid, &protocol_error(3));
+        }
+      }
+    }));
+    report_ffi_panic(b"wry: custom URL-scheme handler panicked; failing any active request\n");
   }
 }
 
@@ -85,14 +141,14 @@ fn start_task_inner(
   this: &AnyObject,
   webview: &WryWebView,
   task: &ProtocolObject<dyn WKURLSchemeTask>,
+  task_key: usize,
+  task_uuid: Retained<NSUUID>,
+  cleanup_webview_id: &mut Option<String>,
 ) {
   unsafe {
     #[cfg(feature = "tracing")]
     let span = tracing::info_span!(parent: None, "wry::custom_protocol::handle", uri = tracing::field::Empty)
       .entered();
-
-    let task_key = task.hash(); // hash by task object address
-    let task_uuid = webview.add_custom_task_key(task_key);
 
     let ivar = this.class().instance_variable(c"webview_id").unwrap();
     let webview_id_ptr: *mut c_char = *ivar.load(this);
@@ -100,6 +156,10 @@ fn start_task_inner(
       .to_str()
       .ok()
       .unwrap_or_default();
+    // The application handler may dispose the view before panicking. Keep an
+    // owned identity available to its unwind cleanup, independent of the
+    // Objective-C handler's borrowed identifier storage.
+    *cleanup_webview_id = Some(webview_id.to_string());
 
     let ivar = this.class().instance_variable(c"protocol_index").unwrap();
     let protocol_index: usize = *ivar.load(this);
@@ -114,15 +174,25 @@ fn start_task_inner(
     if let Some(function) = function {
       // Get url request
       let request = task.request();
-      let url = request.URL().unwrap();
-
-      let uri = url.absoluteString().unwrap().to_string();
+      let Some(url) = request.URL() else {
+        fail_task(webview, task, task_key, &task_uuid, &protocol_error(2));
+        return;
+      };
+      let Some(uri) = url.absoluteString() else {
+        fail_task(webview, task, task_key, &task_uuid, &protocol_error(2));
+        return;
+      };
+      let uri = uri.to_string();
 
       #[cfg(feature = "tracing")]
       span.record("uri", uri.clone());
 
       // Get request method (GET, POST, PUT etc...)
-      let method = request.HTTPMethod().unwrap().to_string();
+      let Some(method) = request.HTTPMethod() else {
+        fail_task(webview, task, task_key, &task_uuid, &protocol_error(2));
+        return;
+      };
+      let method = method.to_string();
 
       // Prepare our HttpRequest
       let mut http_request = Request::builder().uri(uri).method(method.as_str());
@@ -141,13 +211,11 @@ fn start_task_inner(
           // error. Never turn that result into an unchecked Vec length.
           let count = body_stream.read_maxLength(NonNull::from(&mut buffer).cast(), buffer.len());
           if count < 0 {
-            break Some(body_stream.streamError().unwrap_or_else(|| {
-              NSError::errorWithDomain_code_userInfo(
-                &NSString::from_str("wry.custom-protocol"),
-                1,
-                None,
-              )
-            }));
+            break Some(
+              body_stream
+                .streamError()
+                .unwrap_or_else(|| protocol_error(1)),
+            );
           }
           if count == 0 {
             break None;
@@ -158,10 +226,7 @@ fn start_task_inner(
         if let Some(error) = stream_error {
           // Do not dispatch an incomplete body to the application. Complete
           // the WebKit task even if a failed stream did not provide an error.
-          webview.remove_custom_task_key(task_key);
-          let _ = objc2::exception::catch(AssertUnwindSafe(|| {
-            task.didFailWithError(&error);
-          }));
+          fail_task(webview, task, task_key, &task_uuid, &error);
           return;
         }
       }
@@ -176,34 +241,6 @@ fn start_task_inner(
           // inject the header into the request
           http_request = http_request.header(current_header.to_string(), header_value.to_string());
         }
-      }
-
-      let respond_with_404 = || {
-        let urlresponse = NSHTTPURLResponse::alloc();
-        let response = NSHTTPURLResponse::initWithURL_statusCode_HTTPVersion_headerFields(
-          urlresponse,
-          &url,
-          StatusCode::NOT_FOUND.as_u16().try_into().unwrap(),
-          Some(&NSString::from_str(
-            format!("{:#?}", Version::HTTP_11).as_str(),
-          )),
-          None,
-        )
-        .unwrap();
-        task.didReceiveResponse(&response);
-        // Finish
-        task.didFinish();
-      };
-
-      fn check_webview_id_valid(webview_id: &str) -> crate::Result<()> {
-        if !WEBVIEW_STATE
-          .read()
-          .unwrap_or_else(|poisoned| poisoned.into_inner())
-          .contains_key(webview_id)
-        {
-          return Err(crate::Error::CustomProtocolTaskInvalid);
-        }
-        Ok(())
       }
 
       /// Task may not live longer than async custom protocol handler.
@@ -273,9 +310,12 @@ fn start_task_inner(
 
                 let headers = NSMutableDictionary::new();
                 if let Some(mime) = wanted_mime {
+                  let mime = mime
+                    .to_str()
+                    .map_err(|_| crate::Error::CustomProtocolTaskInvalid)?;
                   headers.insert(
                     &*NSString::from_str(CONTENT_TYPE.as_str()),
-                    &*NSString::from_str(mime.to_str().unwrap()),
+                    &*NSString::from_str(mime),
                   );
                 }
                 headers.insert(
@@ -297,11 +337,11 @@ fn start_task_inner(
                 let response = NSHTTPURLResponse::initWithURL_statusCode_HTTPVersion_headerFields(
                   urlresponse,
                   &url,
-                  wanted_status_code.try_into().unwrap(),
+                  wanted_status_code as isize,
                   Some(&NSString::from_str(&wanted_version)),
                   Some(&headers),
                 )
-                .unwrap();
+                .ok_or(crate::Error::CustomProtocolTaskInvalid)?;
 
                 // Re-validate before calling didReceiveResponse
                 check_webview_id_valid(webview_id)?;
@@ -333,39 +373,51 @@ fn start_task_inner(
                 .map_err(|_e| crate::Error::CustomProtocolTaskInvalid)?;
 
                 check_webview_id_valid(webview_id)?;
-                check_task_is_valid(&webview, task_key, task_uuid)?;
+                // Retire before the terminal callback: didFinish can reenter
+                // startURLSchemeTask and install a replacement at this key.
+                // Its completion must not delete that newer registration.
+                if !webview.remove_custom_task_key_if_current(task_key, &task_uuid) {
+                  return Err(crate::Error::CustomProtocolTaskInvalid);
+                }
 
                 objc2::exception::catch(AssertUnwindSafe(|| {
                   task.didFinish();
                 }))
                 .map_err(|_e| crate::Error::CustomProtocolTaskInvalid)?;
 
-                if WEBVIEW_STATE
-                  .read()
-                  .unwrap_or_else(|poisoned| poisoned.into_inner())
-                  .contains_key(webview_id)
-                {
-                  webview.remove_custom_task_key(task_key);
-                  Ok(())
-                } else {
-                  Err(crate::Error::CustomProtocolTaskInvalid)
-                }
+                Ok(())
               }
 
               #[cfg(feature = "tracing")]
               let _span = tracing::info_span!("wry::custom_protocol::call_handler").entered();
 
-              if let Err(_e) = response(
-                task,
-                webview,
-                task_key,
-                task_uuid,
-                webview_id,
-                url,
-                sent_response,
-              ) {
+              // Async responders execute after start_task's unwind guard has
+              // returned. Keep their errors and panics local, and finish only
+              // the exact task that is still active after any native callback.
+              let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                response(
+                  task.clone(),
+                  webview.clone(),
+                  task_key,
+                  task_uuid.clone(),
+                  webview_id,
+                  url,
+                  sent_response,
+                )
+              }));
+              if !matches!(result, Ok(Ok(()))) {
+                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                  if check_webview_id_valid(webview_id).is_ok() {
+                    fail_task(&webview, &task, task_key, &task_uuid, &protocol_error(5));
+                  } else {
+                    // didReceiveResponse/Data may synchronously dispose the
+                    // view. Match upfront validation: retire our registration
+                    // without calling into a task owned by the disposed view.
+                    webview.remove_custom_task_key_if_current(task_key, &task_uuid);
+                  }
+                }));
                 #[cfg(feature = "tracing")]
-                tracing::error!("Error responding to task: {:?}", _e);
+                tracing::error!("Error responding to custom protocol task");
               }
             });
 
@@ -378,9 +430,10 @@ fn start_task_inner(
             RequestAsyncResponder { responder },
           );
         }
-        Err(_) => respond_with_404(),
+        Err(_) => fail_task(webview, task, task_key, &task_uuid, &protocol_error(2)),
       };
     } else {
+      fail_task(webview, task, task_key, &task_uuid, &protocol_error(4));
       #[cfg(feature = "tracing")]
       tracing::warn!(
         "Either WebView or WebContext instance is dropped! This handler shouldn't be called."

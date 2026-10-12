@@ -141,6 +141,22 @@ impl WryWebView {
       .unwrap()
       .remove(&task_id);
   }
+  pub(crate) fn remove_custom_task_key_if_current(
+    &self,
+    task_id: usize,
+    task_uuid: &NSUUID,
+  ) -> bool {
+    let mut tasks = self.ivars().custom_protocol_task_ids.lock().unwrap();
+    if tasks
+      .get(&task_id)
+      .is_some_and(|current| &**current == task_uuid)
+    {
+      tasks.remove(&task_id);
+      true
+    } else {
+      false
+    }
+  }
   pub(crate) fn get_custom_task_uuid(&self, task_id: usize) -> Option<Retained<NSUUID>> {
     self
       .ivars()

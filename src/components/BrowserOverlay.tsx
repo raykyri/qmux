@@ -281,6 +281,8 @@ export default function BrowserOverlay({
     let busyRetryTimer: number | null = null;
     let locationPollInFlight = false;
     let lastNavigationRevision = humanBrowserNavigationRevisionRef.current;
+    let appliedNavigationRevision = lastNavigationRevision;
+    let locationEventSequence = 0;
     let locationPollSuppressedUntil = 0;
     let syncSequence = 0;
     let lastSyncedUrl = url;
@@ -301,6 +303,7 @@ export default function BrowserOverlay({
       syncInFlight = true;
       const rect = body.getBoundingClientRect();
       const sequence = ++syncSequence;
+      const locationSequence = locationEventSequence;
       const navigationRevision = humanBrowserNavigationRevisionRef.current;
       if (navigationRevision !== lastNavigationRevision) {
         lastNavigationRevision = navigationRevision;
@@ -320,8 +323,13 @@ export default function BrowserOverlay({
           navigationRevision: humanBrowserNavigationRevisionRef.current,
         });
         if (!cancelled && sequence === syncSequence && result.applied) {
+          appliedNavigationRevision = navigationRevision;
           setHumanBrowserError(null);
-          if (result.snapshot) {
+          if (
+            result.snapshot &&
+            navigationRevision === humanBrowserNavigationRevisionRef.current &&
+            locationSequence === locationEventSequence
+          ) {
             setHumanBrowserSnapshot(result.snapshot);
           }
         }
@@ -368,11 +376,21 @@ export default function BrowserOverlay({
       if (cancelled || event.ownerId !== paneId) {
         return;
       }
+      // React can publish a typed URL before rAF sends its navigation. Old
+      // document callbacks, including popups, must not replace that destination
+      // while sync waits in the queue or retries a busy native lifecycle.
+      if (
+        humanBrowserNavigationRevisionRef.current !== lastNavigationRevision ||
+        humanBrowserNavigationRevisionRef.current !== appliedNavigationRevision
+      ) {
+        return;
+      }
       if (event.kind === "newWindow" && event.url) {
         onNavigateRef.current(event.url);
         return;
       }
       if ((event.kind === "navigation" || event.kind === "title") && event.url) {
+        locationEventSequence += 1;
         locationPollSuppressedUntil = 0;
         onLocationChangeRef.current(event.url);
       }
@@ -396,22 +414,33 @@ export default function BrowserOverlay({
         return;
       }
       const navigationRevision = humanBrowserNavigationRevisionRef.current;
+      const locationSequence = locationEventSequence;
       // A React navigation render can precede the rAF that sends it to the
       // native child. Do not let a poll from that narrow window restore the
       // page's old URL before syncSlot establishes the navigation grace period.
-      if (navigationRevision !== lastNavigationRevision) {
+      if (
+        navigationRevision !== lastNavigationRevision ||
+        navigationRevision !== appliedNavigationRevision
+      ) {
         return;
       }
       locationPollInFlight = true;
       try {
         const snapshot = await getHumanBrowserSnapshot(paneId);
-        if (!cancelled && snapshot) {
+        // Page/history navigation does not increment the typed navigation
+        // revision. A newer native event also makes this older poll obsolete.
+        if (
+          cancelled ||
+          navigationRevision !== humanBrowserNavigationRevisionRef.current ||
+          navigationRevision !== appliedNavigationRevision ||
+          locationSequence !== locationEventSequence
+        ) {
+          return;
+        }
+        if (snapshot) {
           setHumanBrowserSnapshot(snapshot);
         }
         if (
-          !cancelled &&
-          navigationRevision === humanBrowserNavigationRevisionRef.current &&
-          navigationRevision === lastNavigationRevision &&
           snapshot?.url &&
           snapshot.url !== humanBrowserUrlRef.current &&
           performance.now() >= locationPollSuppressedUntil

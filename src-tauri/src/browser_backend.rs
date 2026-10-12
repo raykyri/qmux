@@ -11,7 +11,7 @@ use crate::browser_engine::{BrowserEngine, ScreencastFrame};
 use crate::state::AppState;
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -51,6 +51,7 @@ struct BrowserBackend {
     engine_error: Option<String>,
     app_state: Option<AppState>,
     pane_by_session: Mutex<HashMap<String, String>>,
+    tab_list_revisions: Mutex<TabListRevisions>,
     tab_by_pane: Mutex<HashMap<String, u64>>,
     pane_by_tab: Mutex<HashMap<u64, String>>,
     viewport_by_pane: Mutex<HashMap<String, BrowserViewport>>,
@@ -60,6 +61,41 @@ struct BrowserBackend {
     /// respect to one another.
     screencast_control: Mutex<()>,
     screencast_by_pane: Mutex<HashMap<String, BrowserViewport>>,
+}
+
+#[derive(Default)]
+struct TabListRevisions {
+    next: u64,
+    applied: u64,
+}
+
+struct TabListScope {
+    revision: u64,
+    known_tabs: HashSet<u64>,
+}
+
+fn begin_tab_list_scope(backend: &BrowserBackend) -> TabListScope {
+    let mut revisions = lock_or_recover(&backend.tab_list_revisions);
+    revisions.next += 1;
+    let mut known_tabs = lock_or_recover(&backend.pane_by_tab)
+        .keys()
+        .copied()
+        .collect::<HashSet<_>>();
+    known_tabs.extend(lock_or_recover(&backend.tab_by_pane).values().copied());
+    known_tabs.extend(
+        lock_or_recover(&backend.viewport_by_pane)
+            .values()
+            .map(|view| view.tab_id),
+    );
+    known_tabs.extend(
+        lock_or_recover(&backend.screencast_by_pane)
+            .values()
+            .map(|view| view.tab_id),
+    );
+    TabListScope {
+        revision: revisions.next,
+        known_tabs,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -142,6 +178,7 @@ pub fn start_browser_discovery(
         engine_error,
         app_state,
         pane_by_session: Mutex::new(HashMap::new()),
+        tab_list_revisions: Mutex::default(),
         tab_by_pane: Mutex::new(HashMap::new()),
         pane_by_tab: Mutex::new(HashMap::new()),
         viewport_by_pane: Mutex::new(HashMap::new()),
@@ -316,6 +353,8 @@ fn handle_request(
         lock_or_recover(&backend.pane_by_session)
             .insert(session_id.to_string(), pane_id.to_string());
     }
+    let tab_list_scope =
+        (method == "getTabs" && owned_pane.is_some()).then(|| begin_tab_list_scope(backend));
     match method {
         "getInfo" => {
             let session_id = request
@@ -380,12 +419,22 @@ fn handle_request(
         _ => match backend.engine.as_ref() {
             Some(engine) => match engine.call(
                 method,
-                request.get("params").cloned().unwrap_or_else(|| json!({})),
+                scope_params_to_pane(
+                    backend,
+                    owned_pane.as_deref(),
+                    method,
+                    request.get("params").cloned().unwrap_or_else(|| json!({})),
+                ),
             ) {
                 Ok(result) => {
                     remember_tab_owner(backend, owned_pane.as_deref(), method, request, &result);
-                    let result =
-                        scope_result_to_pane(backend, owned_pane.as_deref(), method, result);
+                    let result = scope_result_to_pane(
+                        backend,
+                        owned_pane.as_deref(),
+                        method,
+                        result,
+                        tab_list_scope,
+                    );
                     json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -415,6 +464,29 @@ fn handle_request(
     }
 }
 
+fn scope_params_to_pane(
+    backend: &BrowserBackend,
+    pane_id: Option<&str>,
+    method: &str,
+    mut params: Value,
+) -> Value {
+    let (Some(pane_id), "finalizeTabs") = (pane_id, method) else {
+        return params;
+    };
+    // A pane only sees its own tabs in getTabs, so its keep list cannot
+    // account for other panes or unclaimed targets. Restrict which tabs may
+    // be closed instead of expanding keep from a potentially stale snapshot.
+    let allowed_tabs = lock_or_recover(&backend.pane_by_tab)
+        .iter()
+        .filter_map(|(tab_id, owner)| (owner == pane_id).then_some(*tab_id))
+        .collect::<Vec<_>>();
+    if !params.is_object() {
+        params = json!({});
+    }
+    params["allowedTabIds"] = json!(allowed_tabs);
+    params
+}
+
 fn remember_tab_owner(
     backend: &BrowserBackend,
     pane_id: Option<&str>,
@@ -434,8 +506,7 @@ fn remember_tab_owner(
             .and_then(Value::as_u64)
     };
     if let Some(tab_id) = tab_id {
-        lock_or_recover(&backend.tab_by_pane).insert(pane_id.to_string(), tab_id);
-        lock_or_recover(&backend.pane_by_tab).insert(tab_id, pane_id.to_string());
+        select_owned_tab(backend, pane_id, tab_id);
     }
     if method == "executeCdp"
         && request
@@ -467,6 +538,28 @@ fn remember_tab_owner(
             }
         }
     }
+}
+
+fn select_owned_tab(backend: &BrowserBackend, pane_id: &str, tab_id: u64) {
+    let mut owners = lock_or_recover(&backend.pane_by_tab);
+    let mut selected = lock_or_recover(&backend.tab_by_pane);
+    owners.insert(tab_id, pane_id.to_string());
+    selected.insert(pane_id.to_string(), tab_id);
+}
+
+fn forget_missing_tab(backend: &BrowserBackend, pane_id: &str, tab_id: u64) {
+    // A different worker may have replaced this pane's selected tab while
+    // getTabs was in flight. Remove only records referring to the missing ID.
+    let mut owners = lock_or_recover(&backend.pane_by_tab);
+    if owners.get(&tab_id).is_some_and(|owner| owner == pane_id) {
+        owners.remove(&tab_id);
+    }
+    lock_or_recover(&backend.tab_by_pane)
+        .retain(|owner, selected| owner != pane_id || *selected != tab_id);
+    lock_or_recover(&backend.viewport_by_pane)
+        .retain(|owner, view| owner != pane_id || view.tab_id != tab_id);
+    lock_or_recover(&backend.screencast_by_pane)
+        .retain(|owner, view| owner != pane_id || view.tab_id != tab_id);
 }
 
 fn request_tab_id(request: &Value) -> Option<u64> {
@@ -506,6 +599,7 @@ fn scope_result_to_pane(
     pane_id: Option<&str>,
     method: &str,
     mut result: Value,
+    request_scope: Option<TabListScope>,
 ) -> Value {
     let (Some(pane_id), "getTabs", Some(tabs)) = (pane_id, method, result.as_array_mut()) else {
         return result;
@@ -514,10 +608,23 @@ fn scope_result_to_pane(
         .iter()
         .filter_map(|tab| tab.get("id").and_then(Value::as_u64))
         .collect::<std::collections::HashSet<_>>();
+    let Some(request_scope) = request_scope else {
+        return result;
+    };
+    // Workers process engine replies concurrently. An old list may retire only
+    // records it could have observed, and cannot commit after a newer list.
+    // Release this ordering lock before any stop command calls the engine.
+    let mut revisions = lock_or_recover(&backend.tab_list_revisions);
+    if request_scope.revision < revisions.applied {
+        filter_tab_list(backend, pane_id, tabs, false);
+        return result;
+    }
+    revisions.applied = request_scope.revision;
+    let is_missing =
+        |tab_id: &u64| request_scope.known_tabs.contains(tab_id) && !live_tab_ids.contains(tab_id);
     {
         let mut owners = lock_or_recover(&backend.pane_by_tab);
-        owners
-            .retain(|tab_id, owner| live_tab_ids.contains(tab_id) && pane_is_live(backend, owner));
+        owners.retain(|tab_id, owner| !is_missing(tab_id) && pane_is_live(backend, owner));
         if !owners.values().any(|owner| owner == pane_id) {
             let claim = tabs
                 .iter()
@@ -544,31 +651,37 @@ fn scope_result_to_pane(
         }
     }
     lock_or_recover(&backend.tab_by_pane)
-        .retain(|owner, tab_id| live_tab_ids.contains(tab_id) && pane_is_live(backend, owner));
-    let selected_tabs = lock_or_recover(&backend.tab_by_pane).clone();
+        .retain(|owner, tab_id| !is_missing(tab_id) && pane_is_live(backend, owner));
+    let selected_tabs = lock_or_recover(&backend.tab_by_pane);
     lock_or_recover(&backend.viewport_by_pane).retain(|owner, viewport| {
-        selected_tabs.get(owner) == Some(&viewport.tab_id)
-            && live_tab_ids.contains(&viewport.tab_id)
+        selected_tabs.get(owner) == Some(&viewport.tab_id) && !is_missing(&viewport.tab_id)
     });
+    drop(selected_tabs);
     // A selected-tab change invalidates the viewport cache, but the active
     // screencast record must survive until the heartbeat stops that old tab.
     // Targets already gone need no stop; streams owned by panes that vanished
     // unexpectedly are actively reaped instead of merely forgotten.
     let orphaned_screencasts = {
         let mut streams = lock_or_recover(&backend.screencast_by_pane);
-        streams.retain(|_, viewport| live_tab_ids.contains(&viewport.tab_id));
+        streams.retain(|_, viewport| !is_missing(&viewport.tab_id));
         streams
             .iter()
             .filter(|(owner, _)| !pane_is_live(backend, owner))
             .map(|(owner, viewport)| (owner.clone(), *viewport))
             .collect::<Vec<_>>()
     };
+    lock_or_recover(&backend.pane_by_session).retain(|_, owner| pane_is_live(backend, owner));
+    filter_tab_list(backend, pane_id, tabs, true);
+    drop(revisions);
     for (owner, viewport) in orphaned_screencasts {
         if let Err(error) = stop_recorded_screencast(backend, &owner, viewport) {
             eprintln!("qmux: failed to stop orphaned pane {owner} screencast: {error}");
         }
     }
-    lock_or_recover(&backend.pane_by_session).retain(|_, owner| pane_is_live(backend, owner));
+    result
+}
+
+fn filter_tab_list(backend: &BrowserBackend, pane_id: &str, tabs: &mut Vec<Value>, select: bool) {
     let owners = lock_or_recover(&backend.pane_by_tab);
     tabs.retain(|tab| {
         tab.get("id")
@@ -576,21 +689,17 @@ fn scope_result_to_pane(
             .and_then(|tab_id| owners.get(&tab_id))
             .is_some_and(|owner| owner == pane_id)
     });
-    let selected = lock_or_recover(&backend.tab_by_pane)
-        .get(pane_id)
-        .copied()
-        .filter(|selected| {
-            tabs.iter()
-                .any(|tab| tab.get("id").and_then(Value::as_u64) == Some(*selected))
-        })
-        .or_else(|| {
-            tabs.first()
-                .and_then(|tab| tab.get("id"))
-                .and_then(Value::as_u64)
-        });
+    let mut selected_tabs = lock_or_recover(&backend.tab_by_pane);
+    let selected = selected_tabs.get(pane_id).copied().or_else(|| {
+        tabs.first()
+            .and_then(|tab| tab.get("id"))
+            .and_then(Value::as_u64)
+    });
     drop(owners);
     if let Some(selected) = selected {
-        lock_or_recover(&backend.tab_by_pane).insert(pane_id.to_string(), selected);
+        if select {
+            selected_tabs.insert(pane_id.to_string(), selected);
+        }
         for tab in tabs {
             if let Some(tab) = tab.as_object_mut() {
                 let active = tab.get("id").and_then(Value::as_u64) == Some(selected);
@@ -598,7 +707,6 @@ fn scope_result_to_pane(
             }
         }
     }
-    result
 }
 
 fn event_is_visible_to_pane(
@@ -725,8 +833,7 @@ impl BrowserDiscoverySocket {
             .get("id")
             .and_then(Value::as_u64)
             .ok_or_else(|| "qmux chrome-headless-shell returned an invalid tab".to_string())?;
-        lock_or_recover(&self._backend.tab_by_pane).insert(pane_id.to_string(), selected);
-        lock_or_recover(&self._backend.pane_by_tab).insert(selected, pane_id.to_string());
+        select_owned_tab(&self._backend, pane_id, selected);
         Ok(selected)
     }
 
@@ -847,10 +954,7 @@ fn prepare_agent_mirror(
         })
         .cloned();
     if tab.is_none() {
-        lock_or_recover(&browser._backend.pane_by_tab).remove(&tab_id);
-        lock_or_recover(&browser._backend.tab_by_pane).remove(pane_id);
-        lock_or_recover(&browser._backend.viewport_by_pane).remove(pane_id);
-        lock_or_recover(&browser._backend.screencast_by_pane).remove(pane_id);
+        forget_missing_tab(&browser._backend, pane_id, tab_id);
         tab_id = browser.tab_id_for_pane(pane_id)?;
         tabs = browser.engine()?.call("getTabs", json!({}))?;
         tab = tabs
@@ -1401,6 +1505,7 @@ mod tests {
             engine_error: Some("test browser unavailable".to_string()),
             app_state: None,
             pane_by_session: Mutex::new(HashMap::new()),
+            tab_list_revisions: Mutex::default(),
             tab_by_pane: Mutex::new(HashMap::new()),
             pane_by_tab: Mutex::new(HashMap::new()),
             viewport_by_pane: Mutex::new(HashMap::new()),
@@ -1428,6 +1533,34 @@ mod tests {
             "session-123"
         );
         assert_eq!(response["result"]["capabilities"]["browser"], json!([]));
+    }
+
+    #[test]
+    fn finalize_tabs_scope_comes_from_pane_ownership() {
+        let backend = unavailable_backend();
+        lock_or_recover(&backend.pane_by_tab).extend([
+            (1, "pane-a".to_string()),
+            (2, "pane-a".to_string()),
+            (3, "pane-b".to_string()),
+        ]);
+        let original = json!({ "keep": [1], "allowedTabIds": [3] });
+        let scoped =
+            scope_params_to_pane(&backend, Some("pane-a"), "finalizeTabs", original.clone());
+        assert_eq!(scoped["keep"], original["keep"]);
+        let mut allowed = scoped["allowedTabIds"].as_array().unwrap().clone();
+        allowed.sort_by_key(|value| value.as_u64().unwrap());
+        assert_eq!(allowed, vec![json!(1), json!(2)]);
+        let no_owned_tabs =
+            scope_params_to_pane(&backend, Some("pane-c"), "finalizeTabs", Value::Null);
+        assert_eq!(no_owned_tabs, json!({ "allowedTabIds": [] }));
+        assert_eq!(
+            scope_params_to_pane(&backend, None, "finalizeTabs", original.clone()),
+            original
+        );
+        assert_eq!(
+            scope_params_to_pane(&backend, Some("pane-a"), "getTabs", original.clone()),
+            original
+        );
     }
 
     #[test]
@@ -1500,6 +1633,7 @@ mod tests {
             Some("pane-1"),
             "getTabs",
             json!([{ "id": 9, "url": "about:blank", "title": "", "active": true }]),
+            Some(begin_tab_list_scope(&backend)),
         );
 
         assert!(lock_or_recover(&backend.screencast_by_pane).is_empty());
@@ -1527,6 +1661,7 @@ mod tests {
                 { "id": 4, "url": "https://old.example", "title": "old", "active": false },
                 { "id": 9, "url": "about:blank", "title": "", "active": true }
             ]),
+            Some(begin_tab_list_scope(&backend)),
         );
 
         assert_eq!(
@@ -1535,6 +1670,121 @@ mod tests {
                 .copied(),
             Some(previous)
         );
+    }
+
+    #[test]
+    fn old_tab_list_preserves_newer_tab_ownership_selection_and_stream() {
+        let backend = unavailable_backend();
+        remember_tab_owner(
+            &backend,
+            Some("pane-1"),
+            "createTab",
+            &Value::Null,
+            &json!({ "id": 1 }),
+        );
+        let old_list = json!([{ "id": 1, "active": true }]);
+        let request_scope = begin_tab_list_scope(&backend);
+        // Another request worker finishes createTab after this list was read.
+        remember_tab_owner(
+            &backend,
+            Some("pane-1"),
+            "createTab",
+            &Value::Null,
+            &json!({ "id": 2 }),
+        );
+        let viewport = BrowserViewport {
+            tab_id: 2,
+            width: 800,
+            height: 600,
+            scale_factor: 2.0,
+        };
+        lock_or_recover(&backend.viewport_by_pane).insert("pane-1".into(), viewport);
+        lock_or_recover(&backend.screencast_by_pane).insert("pane-1".into(), viewport);
+        scope_result_to_pane(
+            &backend,
+            Some("pane-1"),
+            "getTabs",
+            old_list,
+            Some(request_scope),
+        );
+        assert_eq!(
+            lock_or_recover(&backend.pane_by_tab)
+                .get(&2)
+                .map(String::as_str),
+            Some("pane-1")
+        );
+        assert_eq!(
+            lock_or_recover(&backend.tab_by_pane).get("pane-1"),
+            Some(&2)
+        );
+        assert_eq!(
+            lock_or_recover(&backend.viewport_by_pane).get("pane-1"),
+            Some(&viewport)
+        );
+        assert_eq!(
+            lock_or_recover(&backend.screencast_by_pane).get("pane-1"),
+            Some(&viewport)
+        );
+        assert!(!tab_access_is_allowed(
+            &backend,
+            Some("pane-2"),
+            &json!({ "params": { "tabId": 2 } })
+        ));
+    }
+
+    #[test]
+    fn older_tab_list_cannot_reclaim_a_tab_removed_by_a_newer_list() {
+        let backend = unavailable_backend();
+        select_owned_tab(&backend, "pane-1", 1);
+        let older = begin_tab_list_scope(&backend);
+        let newer = begin_tab_list_scope(&backend);
+        scope_result_to_pane(&backend, Some("pane-1"), "getTabs", json!([]), Some(newer));
+        let result = scope_result_to_pane(
+            &backend,
+            Some("pane-1"),
+            "getTabs",
+            json!([{ "id": 1, "active": true }]),
+            Some(older),
+        );
+        assert_eq!(result, json!([]));
+        assert!(lock_or_recover(&backend.pane_by_tab).is_empty());
+        assert!(lock_or_recover(&backend.tab_by_pane).is_empty());
+    }
+
+    #[test]
+    fn missing_old_mirror_tab_preserves_the_newer_selection_and_caches() {
+        let backend = unavailable_backend();
+        select_owned_tab(&backend, "pane-1", 1);
+        // The worker waiting on getTabs captured tab 1. Another worker has
+        // since installed tab 2 before the missing-tab reply is handled.
+        select_owned_tab(&backend, "pane-1", 2);
+        let viewport = BrowserViewport {
+            tab_id: 2,
+            width: 800,
+            height: 600,
+            scale_factor: 2.0,
+        };
+        lock_or_recover(&backend.viewport_by_pane).insert("pane-1".into(), viewport);
+        lock_or_recover(&backend.screencast_by_pane).insert("pane-1".into(), viewport);
+        forget_missing_tab(&backend, "pane-1", 1);
+        assert!(!lock_or_recover(&backend.pane_by_tab).contains_key(&1));
+        assert_eq!(
+            lock_or_recover(&backend.tab_by_pane).get("pane-1"),
+            Some(&2)
+        );
+        assert_eq!(
+            lock_or_recover(&backend.viewport_by_pane).get("pane-1"),
+            Some(&viewport)
+        );
+        assert_eq!(
+            lock_or_recover(&backend.screencast_by_pane).get("pane-1"),
+            Some(&viewport)
+        );
+        forget_missing_tab(&backend, "pane-1", 2);
+        assert!(lock_or_recover(&backend.pane_by_tab).is_empty());
+        assert!(lock_or_recover(&backend.tab_by_pane).is_empty());
+        assert!(lock_or_recover(&backend.viewport_by_pane).is_empty());
+        assert!(lock_or_recover(&backend.screencast_by_pane).is_empty());
     }
 
     #[test]
@@ -1593,8 +1843,20 @@ mod tests {
             { "id": 1, "url": "about:blank", "title": "one", "active": true },
             { "id": 2, "url": "about:blank", "title": "two", "active": false }
         ]);
-        let pane_a = scope_result_to_pane(&backend, Some("pane-a"), "getTabs", tabs.clone());
-        let pane_b = scope_result_to_pane(&backend, Some("pane-b"), "getTabs", tabs);
+        let pane_a = scope_result_to_pane(
+            &backend,
+            Some("pane-a"),
+            "getTabs",
+            tabs.clone(),
+            Some(begin_tab_list_scope(&backend)),
+        );
+        let pane_b = scope_result_to_pane(
+            &backend,
+            Some("pane-b"),
+            "getTabs",
+            tabs,
+            Some(begin_tab_list_scope(&backend)),
+        );
         assert_eq!(pane_a.as_array().unwrap().len(), 1);
         assert_eq!(pane_a[0]["id"], 1);
         assert_eq!(pane_b.as_array().unwrap().len(), 1);

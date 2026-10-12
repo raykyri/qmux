@@ -1,4 +1,6 @@
 // Native callback regressions. Run with npm run test:native-browser on macOS.
+#[path = "nativeBrowserProtocols.rs"]
+mod native_browser_protocols;
 #[path = "nativeBrowserStreams.rs"]
 mod native_browser_streams;
 use objc2::{
@@ -233,9 +235,15 @@ fn main() {
     let handle = unsafe { WindowHandle::borrow_raw(raw.into()) };
     let selected = std::env::args().nth(1);
     assert!(
-        selected
-            .as_deref()
-            .is_none_or(|name| ["url", "title", "navigation", "eval", "streams"].contains(&name)),
+        selected.as_deref().is_none_or(|name| [
+            "url",
+            "title",
+            "navigation",
+            "eval",
+            "streams",
+            "protocols"
+        ]
+        .contains(&name)),
         "unknown native browser test group"
     );
     for (name, test) in [
@@ -244,6 +252,7 @@ fn main() {
         ("navigation", test_empty_navigation),
         ("eval", test_eval_results),
         ("streams", native_browser_streams::test_streams),
+        ("protocols", native_browser_protocols::test_protocols),
     ] {
         if selected.as_deref().is_none_or(|selected| selected == name) {
             test(&handle);
