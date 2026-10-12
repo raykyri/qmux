@@ -17,7 +17,7 @@ use super::class::wry_navigation_delegate::WryNavigationDelegate;
 pub(crate) fn did_commit_navigation(
   this: &WryNavigationDelegate,
   webview: &WKWebView,
-  _navigation: &WKNavigation,
+  _navigation: Option<&WKNavigation>,
 ) {
   unsafe {
     // Call on_load_handler
@@ -39,7 +39,7 @@ pub(crate) fn did_commit_navigation(
 pub(crate) fn did_finish_navigation(
   this: &WryNavigationDelegate,
   _webview: &WKWebView,
-  _navigation: &WKNavigation,
+  _navigation: Option<&WKNavigation>,
 ) {
   if let Some(on_page_load) = &this.ivars().on_page_load_handler {
     on_page_load(PageLoadEvent::Finished);

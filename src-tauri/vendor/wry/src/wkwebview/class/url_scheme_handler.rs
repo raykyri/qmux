@@ -20,7 +20,7 @@ use objc2::{
   AllocAnyThread, ClassType, Message,
 };
 use objc2_foundation::{
-  NSData, NSHTTPURLResponse, NSMutableDictionary, NSObject, NSObjectProtocol, NSString, NSURL,
+  NSData, NSError, NSHTTPURLResponse, NSMutableDictionary, NSObject, NSObjectProtocol, NSString, NSURL,
   NSUUID,
 };
 use objc2_web_kit::{WKURLSchemeHandler, WKURLSchemeTask};
@@ -135,16 +135,35 @@ fn start_task_inner(
         sent_form_body = body.to_vec();
       } else if let Some(body_stream) = body_stream {
         body_stream.open();
-
-        while body_stream.hasBytesAvailable() {
-          sent_form_body.reserve(128);
-          let p = sent_form_body.as_mut_ptr().add(sent_form_body.len());
-          let read_length = sent_form_body.capacity() - sent_form_body.len();
-          let count = body_stream.read_maxLength(NonNull::new(p).unwrap(), read_length);
-          sent_form_body.set_len(sent_form_body.len() + count as usize);
-        }
-
+        let mut buffer = [0u8; 4096];
+        let stream_error = loop {
+          // NSInputStream returns a signed count: zero is EOF and -1 is an
+          // error. Never turn that result into an unchecked Vec length.
+          let count = body_stream.read_maxLength(NonNull::from(&mut buffer).cast(), buffer.len());
+          if count < 0 {
+            break Some(body_stream.streamError().unwrap_or_else(|| {
+              NSError::errorWithDomain_code_userInfo(
+                &NSString::from_str("wry.custom-protocol"),
+                1,
+                None,
+              )
+            }));
+          }
+          if count == 0 {
+            break None;
+          }
+          sent_form_body.extend_from_slice(&buffer[..count as usize]);
+        };
         body_stream.close();
+        if let Some(error) = stream_error {
+          // Do not dispatch an incomplete body to the application. Complete
+          // the WebKit task even if a failed stream did not provide an error.
+          webview.remove_custom_task_key(task_key);
+          let _ = objc2::exception::catch(AssertUnwindSafe(|| {
+            task.didFailWithError(&error);
+          }));
+          return;
+        }
       }
 
       // Extract all headers fields

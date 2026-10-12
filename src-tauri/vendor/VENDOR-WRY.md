@@ -56,6 +56,22 @@ The modifications are:
    panicking across Objective-C. Failed downloads accept nullable resume data
    as declared by `WKDownloadDelegate`, avoiding a null Rust reference.
 
+7. **Handle absent page metadata and non-JSON JavaScript results**
+   (`mod.rs`, `document_title_changed_observer.rs`,
+   `wry_navigation_delegate.rs`, `navigation.rs`) — reading an unset URL returns
+   an error; a nullable title clears the title instead of dereferencing nil.
+   Load callbacks accept nullable navigation objects. JavaScript callback
+   results are validated before Foundation serializes them, avoiding native
+   exceptions for NaN, infinity, dates, and nested non-JSON values. Unsupported
+   results use the existing empty-string failure result; valid JSON scalars,
+   arrays, and objects retain their normal representation.
+
+8. **Read custom-protocol request streams safely**
+   (`url_scheme_handler.rs`) — use a bounded initialized buffer and handle
+   signed read counts explicitly. EOF ends the read; a stream error closes the
+   stream and fails the WebKit task without forwarding a partial body. This
+   avoids unchecked vector lengths, repeated EOF reads, and unfinished tasks.
+
 ## Verification
 
 Run `scripts/verify-vendor-wry.sh` to confirm that the vendored copy matches
@@ -70,9 +86,12 @@ The script exits `0` when the vendored source matches the recorded patch and
 `1` on any mismatch.  Run it in CI and after any manual edit to `vendor/wry`.
 
 On macOS, `npm run test:native-browser` exercises detached popup views, missing
-navigation/download URLs, and nullable download resume data against the app's
-compiled Wry library. Its standalone runner owns AppKit's main thread and needs
-Command Line Tools, without requiring the full Xcode XCTest runner.
+navigation/download URLs, nullable download resume data, absent page metadata,
+real JavaScript evaluation results, and request-body stream failures against
+the app's compiled Wry library.
+Its standalone runner owns AppKit's main thread and needs Command Line Tools,
+without requiring the full Xcode XCTest runner. Pass `-- url`, `-- title`,
+`-- navigation`, `-- eval`, or `-- streams` to run a single group alone.
 
 ## Updating the patch
 

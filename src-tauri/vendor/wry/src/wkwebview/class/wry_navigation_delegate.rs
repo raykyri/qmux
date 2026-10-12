@@ -69,12 +69,12 @@ define_class!(
     }
 
     #[unsafe(method(webView:didFinishNavigation:))]
-    fn did_finish_navigation(&self, webview: &WKWebView, navigation: &WKNavigation) {
+    fn did_finish_navigation(&self, webview: &WKWebView, navigation: Option<&WKNavigation>) {
       did_finish_navigation(self, webview, navigation);
     }
 
     #[unsafe(method(webView:didCommitNavigation:))]
-    fn did_commit_navigation(&self, webview: &WKWebView, navigation: &WKNavigation) {
+    fn did_commit_navigation(&self, webview: &WKWebView, navigation: Option<&WKNavigation>) {
       did_commit_navigation(self, webview, navigation);
     }
 

@@ -26,6 +26,8 @@ MODIFIED_FILES=(
   "src/wkwebview/class/wry_web_view_ui_delegate.rs"
   "src/wkwebview/class/wry_web_view_delegate.rs"
   "src/wkwebview/class/wry_download_delegate.rs"
+  "src/wkwebview/class/wry_navigation_delegate.rs"
+  "src/wkwebview/class/document_title_changed_observer.rs"
   "src/wkwebview/download.rs"
   "src/wkwebview/navigation.rs"
   "src/wkwebview/drag_drop.rs"

@@ -156,6 +156,7 @@ struct ChromiumRuntime {
     unwaited_cdp_ids: HashSet<u64>,
     next_cdp_id: u64,
     next_tab_id: u64,
+    last_tab_refresh_id: u64,
     tabs: HashMap<u64, BrowserTab>,
     target_to_tab: HashMap<String, u64>,
     session_to_tab: HashMap<String, u64>,
@@ -286,6 +287,7 @@ impl ChromiumRuntime {
             unwaited_cdp_ids: HashSet::new(),
             next_cdp_id: 1,
             next_tab_id: 1,
+            last_tab_refresh_id: 0,
             tabs: HashMap::new(),
             target_to_tab: HashMap::new(),
             session_to_tab: HashMap::new(),
@@ -405,6 +407,10 @@ impl ChromiumRuntime {
         &mut self,
         subscribers: &Arc<Mutex<HashMap<u64, mpsc::SyncSender<Value>>>>,
     ) -> Result<(), String> {
+        // CDP waits service nested calls. Remember which tabs existed when
+        // this snapshot was requested, and the ordering of refresh requests.
+        let first_new_tab_id = self.next_tab_id;
+        let refresh_id = self.next_cdp_id;
         let result = self.call_cdp(
             "Target.getTargets",
             json!({}),
@@ -412,6 +418,9 @@ impl ChromiumRuntime {
             DEFAULT_CDP_TIMEOUT,
             subscribers,
         )?;
+        if refresh_id < self.last_tab_refresh_id {
+            return Ok(());
+        }
         let infos = result
             .get("targetInfos")
             .and_then(Value::as_array)
@@ -444,9 +453,11 @@ impl ChromiumRuntime {
         }
         let removed = self
             .target_to_tab
-            .keys()
-            .filter(|target_id| !live_targets.contains(*target_id))
-            .cloned()
+            .iter()
+            .filter(|(target_id, tab_id)| {
+                **tab_id < first_new_tab_id && !live_targets.contains(*target_id)
+            })
+            .map(|(target_id, _)| target_id.clone())
             .collect::<Vec<_>>();
         for target_id in removed {
             if let Some(tab_id) = self.target_to_tab.remove(&target_id) {
@@ -463,10 +474,20 @@ impl ChromiumRuntime {
         if self.active_tab.is_none() {
             self.active_tab = self.tabs.keys().copied().min();
         }
+        self.last_tab_refresh_id = refresh_id;
         Ok(())
     }
 
     fn register_tab(&mut self, target_id: String, url: String, title: String) -> BrowserTab {
+        // A nested refresh may discover a target before createTarget returns.
+        // Keep its ID, session and newer metadata when creation resumes.
+        if let Some(tab) = self
+            .target_to_tab
+            .get(&target_id)
+            .and_then(|id| self.tabs.get(id))
+        {
+            return tab.clone();
+        }
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         let tab = BrowserTab {
@@ -513,8 +534,7 @@ impl ChromiumRuntime {
             subscribers,
         )?;
         let session_id = required_string(&result, "sessionId")?;
-        self.register_attached_session(tab_id, &session_id, None)?;
-        Ok(session_id)
+        self.register_attached_session(tab_id, &session_id, None)
     }
 
     fn detach_tab(
@@ -561,8 +581,7 @@ impl ChromiumRuntime {
             subscribers,
         )?;
         let session_id = required_string(&result, "sessionId")?;
-        self.register_attached_session(tab_id, &session_id, Some(target_id))?;
-        Ok(session_id)
+        self.register_attached_session(tab_id, &session_id, Some(target_id))
     }
 
     fn register_attached_session(
@@ -570,7 +589,7 @@ impl ChromiumRuntime {
         tab_id: u64,
         session_id: &str,
         target_id: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         // Waiting for CDP services queued commands, including refresh/close.
         // Recheck ownership after the reply, before publishing either mapping.
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
@@ -581,6 +600,26 @@ impl ChromiumRuntime {
             );
             return Err(format!("tab {tab_id} does not exist"));
         };
+        let existing = if let Some(target_id) = target_id {
+            self.target_sessions
+                .get(&(tab_id, target_id.to_string()))
+                .cloned()
+        } else {
+            tab.attached_session.clone()
+        };
+        // A nested command may have attached and already configured a session
+        // for this target. Keep that session for both callers, and release the
+        // extra attachment instead of replacing its event routing.
+        if let Some(existing) = existing {
+            if existing != session_id {
+                self.send_cdp_without_waiting(
+                    "Target.detachFromTarget",
+                    json!({ "sessionId": session_id }),
+                    None,
+                );
+            }
+            return Ok(existing);
+        }
         if let Some(target_id) = target_id {
             self.target_sessions
                 .insert((tab_id, target_id.to_string()), session_id.to_string());
@@ -588,7 +627,7 @@ impl ChromiumRuntime {
             tab.attached_session = Some(session_id.to_string());
         }
         self.session_to_tab.insert(session_id.to_string(), tab_id);
-        Ok(())
+        Ok(session_id.to_string())
     }
 
     fn detach_target(
@@ -1517,6 +1556,232 @@ mod tests {
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener;
 
+    fn mock_cdp_runtime() -> (
+        ChromiumRuntime,
+        mpsc::Sender<EngineCommand>,
+        WebSocket<TcpStream>,
+    ) {
+        use tungstenite::protocol::Role;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let (commands, receiver) = mpsc::channel();
+        let runtime = ChromiumRuntime {
+            child: Command::new("/usr/bin/true").spawn().unwrap(),
+            profile_dir: unique_profile_dir(),
+            executable: PathBuf::from("/usr/bin/true"),
+            socket: WebSocket::from_raw_socket(MaybeTlsStream::Plain(stream), Role::Client, None),
+            commands: receiver,
+            screencast_sink: Arc::new(Mutex::new(None)),
+            screencast_tabs: HashSet::new(),
+            deferred_responses: HashMap::new(),
+            waiting_cdp_ids: HashSet::new(),
+            unwaited_cdp_ids: HashSet::new(),
+            next_cdp_id: 1,
+            next_tab_id: 1,
+            last_tab_refresh_id: 0,
+            tabs: HashMap::new(),
+            target_to_tab: HashMap::new(),
+            session_to_tab: HashMap::new(),
+            target_sessions: HashMap::new(),
+            active_tab: None,
+            expression_cache: HashMap::new(),
+        };
+        (
+            runtime,
+            commands,
+            WebSocket::from_raw_socket(peer, Role::Server, None),
+        )
+    }
+
+    fn read_mock_command(socket: &mut WebSocket<TcpStream>, method: &str) -> Value {
+        let command: Value =
+            serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(command["method"], method);
+        command
+    }
+
+    fn mock_reply(socket: &mut WebSocket<TcpStream>, command: &Value, result: Value) {
+        socket
+            .send(Message::text(
+                json!({ "id": command["id"], "result": result }).to_string(),
+            ))
+            .unwrap();
+    }
+
+    #[test]
+    fn refresh_during_create_keeps_one_stable_tab_id() {
+        let (mut runtime, commands, mut socket) = mock_cdp_runtime();
+        let server = thread::spawn(move || {
+            let create = read_mock_command(&mut socket, "Target.createTarget");
+            let refresh = read_mock_command(&mut socket, "Target.getTargets");
+            mock_reply(&mut socket, &create, json!({ "targetId": "new-target" }));
+            mock_reply(
+                &mut socket,
+                &refresh,
+                json!({ "targetInfos": [{
+                "type": "page", "targetId": "new-target", "url": "https://example.test/", "title": "New page"
+            }] }),
+            );
+        });
+        let (reply, refreshed) = mpsc::channel();
+        commands
+            .send(EngineCommand::Call {
+                method: "getTabs".into(),
+                params: json!({}),
+                reply,
+            })
+            .unwrap();
+        let subscribers = Arc::new(Mutex::new(HashMap::new()));
+        let created = runtime.create_tab(&subscribers).unwrap();
+        let refreshed = refreshed.recv().unwrap().unwrap();
+        server.join().unwrap();
+        assert_eq!(created["id"], refreshed[0]["id"]);
+        assert_eq!(created["url"], "https://example.test/");
+        assert_eq!(runtime.tabs.len(), 1);
+        assert_eq!(runtime.target_to_tab.len(), 1);
+    }
+
+    #[test]
+    fn refresh_snapshot_preserves_tabs_created_while_waiting() {
+        let (mut runtime, commands, mut socket) = mock_cdp_runtime();
+        let closed =
+            runtime.register_tab("closed-target".into(), "about:blank".into(), String::new());
+        let server = thread::spawn(move || {
+            let refresh = read_mock_command(&mut socket, "Target.getTargets");
+            let create = read_mock_command(&mut socket, "Target.createTarget");
+            mock_reply(&mut socket, &refresh, json!({ "targetInfos": [] }));
+            mock_reply(&mut socket, &create, json!({ "targetId": "new-target" }));
+        });
+        let (reply, created) = mpsc::channel();
+        commands
+            .send(EngineCommand::Call {
+                method: "createTab".into(),
+                params: json!({}),
+                reply,
+            })
+            .unwrap();
+        let subscribers = Arc::new(Mutex::new(HashMap::new()));
+        let refreshed = runtime.get_tabs(&subscribers).unwrap();
+        let created = created.recv().unwrap().unwrap();
+        server.join().unwrap();
+        assert!(!runtime.tabs.contains_key(&closed.id));
+        assert_eq!(refreshed, json!([created]));
+        assert_eq!(runtime.tabs.len(), 1);
+        assert_eq!(runtime.target_to_tab.len(), 1);
+    }
+
+    #[test]
+    fn older_refresh_does_not_restore_a_tab_removed_by_a_newer_refresh() {
+        let (mut runtime, commands, mut socket) = mock_cdp_runtime();
+        runtime.register_tab("closed-target".into(), "about:blank".into(), String::new());
+        let server = thread::spawn(move || {
+            let older = read_mock_command(&mut socket, "Target.getTargets");
+            let newer = read_mock_command(&mut socket, "Target.getTargets");
+            mock_reply(
+                &mut socket,
+                &older,
+                json!({ "targetInfos": [{
+                "type": "page", "targetId": "closed-target", "url": "about:blank"
+            }] }),
+            );
+            mock_reply(&mut socket, &newer, json!({ "targetInfos": [] }));
+        });
+        let (reply, refreshed) = mpsc::channel();
+        commands
+            .send(EngineCommand::Call {
+                method: "getTabs".into(),
+                params: json!({}),
+                reply,
+            })
+            .unwrap();
+        let subscribers = Arc::new(Mutex::new(HashMap::new()));
+        let older = runtime.get_tabs(&subscribers).unwrap();
+        let newer = refreshed.recv().unwrap().unwrap();
+        server.join().unwrap();
+        assert_eq!(older, json!([]));
+        assert_eq!(newer, json!([]));
+        assert!(runtime.tabs.is_empty());
+        assert!(runtime.target_to_tab.is_empty());
+    }
+
+    #[test]
+    fn concurrent_attachment_keeps_the_session_already_in_use() {
+        for nested_target in [false, true] {
+            let (mut runtime, commands, mut socket) = mock_cdp_runtime();
+            let tab =
+                runtime.register_tab("owner-target".into(), "about:blank".into(), String::new());
+            let server = thread::spawn(move || {
+                let older = read_mock_command(&mut socket, "Target.attachToTarget");
+                let newer = read_mock_command(&mut socket, "Target.attachToTarget");
+                assert_eq!(older["params"], newer["params"]);
+                mock_reply(
+                    &mut socket,
+                    &older,
+                    json!({ "sessionId": "duplicate-session" }),
+                );
+                mock_reply(
+                    &mut socket,
+                    &newer,
+                    json!({ "sessionId": "winning-session" }),
+                );
+                // The losing session should be detached without blocking the
+                // controller on its response. The timeout lets the old buggy
+                // implementation finish with a useful assertion failure.
+                socket
+                    .read()
+                    .ok()
+                    .and_then(|message| serde_json::from_str::<Value>(message.to_text().ok()?).ok())
+            });
+            let (reply, attached) = mpsc::channel();
+            commands
+                .send(EngineCommand::Call {
+                    method: if nested_target {
+                        "attachTarget"
+                    } else {
+                        "attach"
+                    }
+                    .into(),
+                    params: json!({ "tabId": tab.id, "targetId": "child-target" }),
+                    reply,
+                })
+                .unwrap();
+            let subscribers = Arc::new(Mutex::new(HashMap::new()));
+            let session = if nested_target {
+                runtime.attach_target(tab.id, "child-target", &subscribers)
+            } else {
+                runtime.ensure_attached(tab.id, &subscribers)
+            }
+            .unwrap();
+            assert_eq!(attached.recv().unwrap().unwrap(), Value::Null);
+            let cleanup = server.join().unwrap();
+            assert_eq!(session, "winning-session");
+            assert_eq!(runtime.session_to_tab.len(), 1);
+            assert_eq!(runtime.session_to_tab.get(&session), Some(&tab.id));
+            if nested_target {
+                assert_eq!(
+                    runtime
+                        .target_sessions
+                        .get(&(tab.id, "child-target".into())),
+                    Some(&session)
+                );
+            } else {
+                assert_eq!(
+                    runtime.tab(tab.id).unwrap().attached_session.as_ref(),
+                    Some(&session)
+                );
+            }
+            let cleanup = cleanup.expect("duplicate attachment was not detached");
+            assert_eq!(cleanup["method"], "Target.detachFromTarget");
+            assert_eq!(cleanup["params"]["sessionId"], "duplicate-session");
+        }
+    }
+
     #[test]
     fn closing_an_owner_during_attach_does_not_panic_or_register_a_stale_session() {
         use tungstenite::protocol::Role;
@@ -1586,6 +1851,7 @@ mod tests {
                 unwaited_cdp_ids: HashSet::new(),
                 next_cdp_id: 1,
                 next_tab_id: 1,
+                last_tab_refresh_id: 0,
                 tabs: HashMap::new(),
                 target_to_tab: HashMap::new(),
                 session_to_tab: HashMap::new(),

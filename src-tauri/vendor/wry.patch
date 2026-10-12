@@ -8,7 +8,15 @@
    panic::AssertUnwindSafe,
    ptr::NonNull,
  };
-@@ -26,6 +27,14 @@
+@@ -19,13 +20,21 @@
+   AllocAnyThread, ClassType, Message,
+ };
+ use objc2_foundation::{
+-  NSData, NSHTTPURLResponse, NSMutableDictionary, NSObject, NSObjectProtocol, NSString, NSURL,
++  NSData, NSError, NSHTTPURLResponse, NSMutableDictionary, NSObject, NSObjectProtocol, NSString, NSURL,
+   NSUUID,
+ };
+ use objc2_web_kit::{WKURLSchemeHandler, WKURLSchemeTask};
  
  use crate::{wkwebview::WEBVIEW_STATE, RequestAsyncResponder, WryWebView};
  
@@ -23,13 +31,10 @@
  pub fn create(name: &str) -> &AnyClass {
    unsafe {
      // Include the address of WEBVIEW_STATE in the class name so that each dylib in the process
-@@ -57,6 +66,23 @@
- extern "C" fn start_task(
-   this: &AnyObject,
-   _sel: objc2::runtime::Sel,
-+  webview: &WryWebView,
-+  task: &ProtocolObject<dyn WKURLSchemeTask>,
-+) {
+@@ -60,6 +69,23 @@
+   webview: &WryWebView,
+   task: &ProtocolObject<dyn WKURLSchemeTask>,
+ ) {
 +  // No Rust panic may cross an Objective-C method implementation. Rust turns
 +  // an unwind through this `extern "C"` boundary into `panic_cannot_unwind`,
 +  // aborting the entire host application.
@@ -44,9 +49,12 @@
 +
 +fn start_task_inner(
 +  this: &AnyObject,
-   webview: &WryWebView,
-   task: &ProtocolObject<dyn WKURLSchemeTask>,
- ) {
++  webview: &WryWebView,
++  task: &ProtocolObject<dyn WKURLSchemeTask>,
++) {
+   unsafe {
+     #[cfg(feature = "tracing")]
+     let span = tracing::info_span!(parent: None, "wry::custom_protocol::handle", uri = tracing::field::Empty)
 @@ -80,7 +106,7 @@
  
      let function = WEBVIEW_STATE
@@ -56,7 +64,52 @@
        .get(webview_id)
        .and_then(|v| v.protocol_ptrs.get(protocol_index))
        .cloned();
-@@ -151,7 +177,11 @@
+@@ -109,16 +135,35 @@
+         sent_form_body = body.to_vec();
+       } else if let Some(body_stream) = body_stream {
+         body_stream.open();
+-
+-        while body_stream.hasBytesAvailable() {
+-          sent_form_body.reserve(128);
+-          let p = sent_form_body.as_mut_ptr().add(sent_form_body.len());
+-          let read_length = sent_form_body.capacity() - sent_form_body.len();
+-          let count = body_stream.read_maxLength(NonNull::new(p).unwrap(), read_length);
+-          sent_form_body.set_len(sent_form_body.len() + count as usize);
+-        }
+-
++        let mut buffer = [0u8; 4096];
++        let stream_error = loop {
++          // NSInputStream returns a signed count: zero is EOF and -1 is an
++          // error. Never turn that result into an unchecked Vec length.
++          let count = body_stream.read_maxLength(NonNull::from(&mut buffer).cast(), buffer.len());
++          if count < 0 {
++            break Some(body_stream.streamError().unwrap_or_else(|| {
++              NSError::errorWithDomain_code_userInfo(
++                &NSString::from_str("wry.custom-protocol"),
++                1,
++                None,
++              )
++            }));
++          }
++          if count == 0 {
++            break None;
++          }
++          sent_form_body.extend_from_slice(&buffer[..count as usize]);
++        };
+         body_stream.close();
++        if let Some(error) = stream_error {
++          // Do not dispatch an incomplete body to the application. Complete
++          // the WebKit task even if a failed stream did not provide an error.
++          webview.remove_custom_task_key(task_key);
++          let _ = objc2::exception::catch(AssertUnwindSafe(|| {
++            task.didFailWithError(&error);
++          }));
++          return;
++        }
+       }
+ 
+       // Extract all headers fields
+@@ -151,7 +196,11 @@
        };
  
        fn check_webview_id_valid(webview_id: &str) -> crate::Result<()> {
@@ -69,7 +122,7 @@
            return Err(crate::Error::CustomProtocolTaskInvalid);
          }
          Ok(())
-@@ -291,7 +321,11 @@
+@@ -291,7 +340,11 @@
                  }))
                  .map_err(|_e| crate::Error::CustomProtocolTaskInvalid)?;
  
@@ -82,7 +135,7 @@
                    webview.remove_custom_task_key(task_key);
                    Ok(())
                  } else {
-@@ -342,5 +376,11 @@
+@@ -342,5 +395,11 @@
    webview: &WryWebView,
    task: &ProtocolObject<dyn WKURLSchemeTask>,
  ) {
@@ -192,6 +245,43 @@
        download_did_fail(self, download, error, resume_data);
      }
    }
+--- a/src/wkwebview/class/wry_navigation_delegate.rs
++++ b/src/wkwebview/class/wry_navigation_delegate.rs
+@@ -69,12 +69,12 @@
+     }
+ 
+     #[unsafe(method(webView:didFinishNavigation:))]
+-    fn did_finish_navigation(&self, webview: &WKWebView, navigation: &WKNavigation) {
++    fn did_finish_navigation(&self, webview: &WKWebView, navigation: Option<&WKNavigation>) {
+       did_finish_navigation(self, webview, navigation);
+     }
+ 
+     #[unsafe(method(webView:didCommitNavigation:))]
+-    fn did_commit_navigation(&self, webview: &WKWebView, navigation: &WKNavigation) {
++    fn did_commit_navigation(&self, webview: &WKWebView, navigation: Option<&WKNavigation>) {
+       did_commit_navigation(self, webview, navigation);
+     }
+ 
+--- a/src/wkwebview/class/document_title_changed_observer.rs
++++ b/src/wkwebview/class/document_title_changed_observer.rs
+@@ -36,14 +36,12 @@
+       _change: Option<&NSDictionary<NSKeyValueChangeKey, AnyObject>>,
+       _context: *mut c_void,
+     ) {
+-      if let (Some(key_path), Some(object)) = (key_path, of_object) {
++      if let (Some(key_path), Some(_object)) = (key_path, of_object) {
+         unsafe {
+           if key_path.isEqualToString(ns_string!("title")) {
+             let handler = &self.ivars().handler;
+-            // if !handler.is_null() {
+-            let title: *const NSString = msg_send![object, title];
+-            handler((*title).to_string());
+-            // }
++            let title = self.ivars().object.title();
++            handler(title.map(|title| title.to_string()).unwrap_or_default());
+           }
+         }
+       }
 --- a/src/wkwebview/download.rs
 +++ b/src/wkwebview/download.rs
 @@ -51,8 +51,14 @@
@@ -258,6 +348,24 @@
      }
 --- a/src/wkwebview/navigation.rs
 +++ b/src/wkwebview/navigation.rs
+@@ -17,7 +17,7 @@
+ pub(crate) fn did_commit_navigation(
+   this: &WryNavigationDelegate,
+   webview: &WKWebView,
+-  _navigation: &WKNavigation,
++  _navigation: Option<&WKNavigation>,
+ ) {
+   unsafe {
+     // Call on_load_handler
+@@ -39,7 +39,7 @@
+ pub(crate) fn did_finish_navigation(
+   this: &WryNavigationDelegate,
+   _webview: &WKWebView,
+-  _navigation: &WKNavigation,
++  _navigation: Option<&WKNavigation>,
+ ) {
+   if let Some(on_page_load) = &this.ivars().on_page_load_handler {
+     on_page_load(PageLoadEvent::Finished);
 @@ -63,7 +63,10 @@
        false
      };
@@ -369,6 +477,15 @@
    AllocAnyThread, DeclaredClass, MainThreadOnly, Message,
  };
  #[cfg(target_os = "macos")]
+@@ -83,7 +85,7 @@
+   panic::AssertUnwindSafe,
+   ptr::NonNull,
+   rc::Rc,
+-  str::{self, FromStr},
++  str::FromStr,
+   sync::{Arc, Mutex, RwLock},
+   time::Duration,
+ };
 @@ -293,7 +295,7 @@
  
        WEBVIEW_STATE
@@ -378,16 +495,74 @@
          .insert(webview_id.clone(), WebViewState { protocol_ptrs });
  
        // WebView and manager
-@@ -1347,7 +1349,7 @@
+@@ -734,18 +736,23 @@
+ 
+             let mut result = String::new();
+ 
+-            if !val.is_null() {
+-              let json_ns_data = NSJSONSerialization::dataWithJSONObject_options_error(
+-                &*val,
+-                objc2_foundation::NSJSONWritingOptions::FragmentsAllowed,
+-              )
+-              .unwrap();
+-              let json_string = NSString::alloc();
+-              let json_string =
+-                NSString::initWithData_encoding(json_string, &json_ns_data, NSUTF8StringEncoding)
+-                  .unwrap();
+-
+-              result = json_string.to_string();
++            if let Some(value) = val.as_ref() {
++              // WebKit can return non-JSON values such as NaN and NSDate.
++              // Foundation can throw an ObjC exception for these, even with
++              // an NSError out parameter. Validate first, wrapping the value
++              // in an array so JSON scalar results remain supported.
++              if NSJSONSerialization::isValidJSONObject(&NSArray::from_slice(&[value])) {
++                result = NSJSONSerialization::dataWithJSONObject_options_error(
++                  value,
++                  objc2_foundation::NSJSONWritingOptions::FragmentsAllowed,
++                )
++                .ok()
++                .and_then(|data| {
++                  NSString::initWithData_encoding(NSString::alloc(), &data, NSUTF8StringEncoding)
++                })
++                .map(|value| value.to_string())
++                .unwrap_or_default();
++              }
+             }
+ 
+             callback(result);
+@@ -1346,21 +1353,15 @@
+ }
  
  pub fn url_from_webview(webview: &WKWebView) -> Result<String> {
-   let url_obj = unsafe { webview.URL().unwrap() };
+-  let url_obj = unsafe { webview.URL().unwrap() };
 -  let absolute_url = unsafe { url_obj.absoluteString().unwrap() };
-+  let absolute_url = url_obj.absoluteString().unwrap();
+-
+-  let bytes = {
+-    let bytes: *const c_char = absolute_url.UTF8String();
+-    bytes as *const u8
+-  };
+-
+-  // 4 represents utf8 encoding
+-  let len = absolute_url.lengthOfBytesUsingEncoding(4);
+-  let bytes = unsafe { std::slice::from_raw_parts(bytes, len) };
+-
+-  std::str::from_utf8(bytes)
+-    .map(Into::into)
+-    .map_err(Into::into)
++  let absolute_url = unsafe { webview.URL() }
++    .and_then(|url| url.absoluteString())
++    .ok_or_else(|| {
++      Error::Io(std::io::Error::new(
++        std::io::ErrorKind::NotFound,
++        "the WebView has no current URL",
++      ))
++    })?;
++  Ok(absolute_url.to_string())
+ }
  
-   let bytes = {
-     let bytes: *const c_char = absolute_url.UTF8String();
-@@ -1395,7 +1397,10 @@
+ pub fn platform_webview_version() -> Result<String> {
+@@ -1395,7 +1396,10 @@
  
  impl Drop for InnerWebView {
    fn drop(&mut self) {

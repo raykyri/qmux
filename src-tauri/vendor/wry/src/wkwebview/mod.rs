@@ -85,7 +85,7 @@ use std::{
   panic::AssertUnwindSafe,
   ptr::NonNull,
   rc::Rc,
-  str::{self, FromStr},
+  str::FromStr,
   sync::{Arc, Mutex, RwLock},
   time::Duration,
 };
@@ -736,18 +736,23 @@ r#"Object.defineProperty(window, 'ipc', {
 
             let mut result = String::new();
 
-            if !val.is_null() {
-              let json_ns_data = NSJSONSerialization::dataWithJSONObject_options_error(
-                &*val,
-                objc2_foundation::NSJSONWritingOptions::FragmentsAllowed,
-              )
-              .unwrap();
-              let json_string = NSString::alloc();
-              let json_string =
-                NSString::initWithData_encoding(json_string, &json_ns_data, NSUTF8StringEncoding)
-                  .unwrap();
-
-              result = json_string.to_string();
+            if let Some(value) = val.as_ref() {
+              // WebKit can return non-JSON values such as NaN and NSDate.
+              // Foundation can throw an ObjC exception for these, even with
+              // an NSError out parameter. Validate first, wrapping the value
+              // in an array so JSON scalar results remain supported.
+              if NSJSONSerialization::isValidJSONObject(&NSArray::from_slice(&[value])) {
+                result = NSJSONSerialization::dataWithJSONObject_options_error(
+                  value,
+                  objc2_foundation::NSJSONWritingOptions::FragmentsAllowed,
+                )
+                .ok()
+                .and_then(|data| {
+                  NSString::initWithData_encoding(NSString::alloc(), &data, NSUTF8StringEncoding)
+                })
+                .map(|value| value.to_string())
+                .unwrap_or_default();
+              }
             }
 
             callback(result);
@@ -1348,21 +1353,15 @@ r#"Object.defineProperty(window, 'ipc', {
 }
 
 pub fn url_from_webview(webview: &WKWebView) -> Result<String> {
-  let url_obj = unsafe { webview.URL().unwrap() };
-  let absolute_url = url_obj.absoluteString().unwrap();
-
-  let bytes = {
-    let bytes: *const c_char = absolute_url.UTF8String();
-    bytes as *const u8
-  };
-
-  // 4 represents utf8 encoding
-  let len = absolute_url.lengthOfBytesUsingEncoding(4);
-  let bytes = unsafe { std::slice::from_raw_parts(bytes, len) };
-
-  std::str::from_utf8(bytes)
-    .map(Into::into)
-    .map_err(Into::into)
+  let absolute_url = unsafe { webview.URL() }
+    .and_then(|url| url.absoluteString())
+    .ok_or_else(|| {
+      Error::Io(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "the WebView has no current URL",
+      ))
+    })?;
+  Ok(absolute_url.to_string())
 }
 
 pub fn platform_webview_version() -> Result<String> {

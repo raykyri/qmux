@@ -14,14 +14,14 @@ test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 cargo test --manifest-path "$repo_root/src-tauri/Cargo.toml" --package qmux \
   --no-run --message-format=json > "$test_dir/artifacts.jsonl"
-python3 - "$repo_root" "$test_dir" <<'PY'
+python3 - "$repo_root" "$test_dir" "$@" <<'PY'
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 
-repo, output = map(Path, sys.argv[1:])
+repo, output = map(Path, sys.argv[1:3])
 dependencies = {name: set() for name in (
     "wry", "objc2", "objc2_app_kit", "objc2_web_kit", "objc2_foundation",
     "raw_window_handle", "block2",
@@ -47,5 +47,5 @@ for name, paths in dependencies.items():
 for directory in sorted(directories):
     command.extend(["-L", f"dependency={directory}"])
 subprocess.run(command, check=True)
-subprocess.run([str(output / "native-browser-callbacks")], check=True)
+subprocess.run([str(output / "native-browser-callbacks"), *sys.argv[3:]], check=True)
 PY

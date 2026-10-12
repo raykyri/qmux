@@ -42,6 +42,7 @@ import {
   syncHumanBrowser,
 } from "../lib/api";
 import type { BrowserAutomationSnapshot, HumanBrowserSnapshot } from "../lib/api";
+import { isHumanBrowserLifecycleBusy } from "../lib/humanBrowserLifecycleQueue";
 
 const MIN_BROWSER_OVERLAY_WIDTH = 360;
 const MIN_BROWSER_OVERLAY_HEIGHT = 240;
@@ -66,6 +67,7 @@ const SCREENCAST_SETTLE_ECHO_MS = 200;
 const SNAPSHOT_POLL_MS = 500;
 const HUMAN_BROWSER_LOCATION_POLL_MS = 500;
 const HUMAN_BROWSER_NAVIGATION_GRACE_MS = 1200;
+const HUMAN_BROWSER_BUSY_RETRY_MS = 250;
 const lastAutomationNavigationByPane = new Map<string, number>();
 const MAX_REMEMBERED_AUTOMATION_PANES = 256;
 
@@ -276,6 +278,7 @@ export default function BrowserOverlay({
     let frame: number | null = null;
     let unlisten: UnlistenFn | null = null;
     let locationPollTimer: number | null = null;
+    let busyRetryTimer: number | null = null;
     let locationPollInFlight = false;
     let lastNavigationRevision = humanBrowserNavigationRevisionRef.current;
     let locationPollSuppressedUntil = 0;
@@ -325,6 +328,15 @@ export default function BrowserOverlay({
       } catch (error) {
         if (!cancelled && sequence === syncSequence) {
           setHumanBrowserError(error instanceof Error ? error.message : String(error));
+          // A close/reopen can interrupt the frontend queue while the old
+          // native child is still being created. Its permit can outlast the
+          // API's short retry burst; keep the current mounted slot pending.
+          if (isHumanBrowserLifecycleBusy(error) && busyRetryTimer === null) {
+            busyRetryTimer = window.setTimeout(() => {
+              busyRetryTimer = null;
+              scheduleSync();
+            }, HUMAN_BROWSER_BUSY_RETRY_MS);
+          }
         }
       } finally {
         syncInFlight = false;
@@ -335,6 +347,10 @@ export default function BrowserOverlay({
     };
 
     const scheduleSync = () => {
+      if (busyRetryTimer !== null) {
+        window.clearTimeout(busyRetryTimer);
+        busyRetryTimer = null;
+      }
       syncPending = true;
       if (!syncInFlight && frame === null) {
         frame = requestAnimationFrame(() => void syncSlot());
@@ -426,6 +442,9 @@ export default function BrowserOverlay({
       window.removeEventListener("resize", scheduleSync);
       if (locationPollTimer !== null) {
         window.clearInterval(locationPollTimer);
+      }
+      if (busyRetryTimer !== null) {
+        window.clearTimeout(busyRetryTimer);
       }
       unlisten?.();
       if (lastSyncedUrl) {

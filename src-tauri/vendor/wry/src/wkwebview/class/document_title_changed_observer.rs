@@ -36,14 +36,12 @@ define_class!(
       _change: Option<&NSDictionary<NSKeyValueChangeKey, AnyObject>>,
       _context: *mut c_void,
     ) {
-      if let (Some(key_path), Some(object)) = (key_path, of_object) {
+      if let (Some(key_path), Some(_object)) = (key_path, of_object) {
         unsafe {
           if key_path.isEqualToString(ns_string!("title")) {
             let handler = &self.ivars().handler;
-            // if !handler.is_null() {
-            let title: *const NSString = msg_send![object, title];
-            handler((*title).to_string());
-            // }
+            let title = self.ivars().object.title();
+            handler(title.map(|title| title.to_string()).unwrap_or_default());
           }
         }
       }
