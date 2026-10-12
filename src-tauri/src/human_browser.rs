@@ -579,6 +579,12 @@ fn create_webview(
         // can be safely exposed as a human-browser feature.
         .on_download(|_webview, _event| false);
 
+    // Install before page/router scripts capture the native History methods.
+    // This compatibility shim belongs only to external WebKit documents, never
+    // the privileged app webview or Chromium automation browser.
+    #[cfg(target_os = "macos")]
+    let builder = builder.initialization_script(include_str!("human_browser_history.js"));
+
     let window = app
         .get_window(MAIN_WEBVIEW_LABEL)
         .ok_or_else(|| "the main window is unavailable".to_string())?;
