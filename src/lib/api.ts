@@ -135,11 +135,9 @@ export function launchConversationHistory(request: ConversationHistoryLaunchRequ
   return invoke<PaneInfo>("launch_conversation_history", { request });
 }
 
-// Shows the main window. It starts hidden (visible: false in tauri.conf.json)
-// so launches never flash a blank translucent shell; App calls this once the
-// boot snapshot has been applied and the first real paint is imminent.
-export function markAppWindowReady() {
-  return invoke<void>("app_window_ready");
+// The boot snapshot is applied and the interface can handle quit confirmation.
+export function markAppInterfaceReady() {
+  return invoke<void>("app_interface_ready");
 }
 
 export function getLauncherAdapterPreference() {

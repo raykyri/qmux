@@ -992,6 +992,9 @@ fn handle_request_with_peer(
             crate::user_notifications::dispatch(state, Some(&authed_pane), payload)
         }
         "cli.call" => {
+            if state.startup_restoring() {
+                return Err("qmux is restoring its session; try again shortly".to_string());
+            }
             let payload = serde_json::from_value::<PublicControlRequest>(request.payload)
                 .map_err(|err| format!("invalid cli.call payload: {err}"))?;
             Ok(crate::control::handle_call(

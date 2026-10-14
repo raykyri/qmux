@@ -619,7 +619,7 @@ import {
   markAllNotificationsRead,
   clearNotificationLogEntry,
   getResearchTree,
-  markAppWindowReady,
+  markAppInterfaceReady,
   moveQueuedAgentTurn,
   reorderQueuedAgentTurn,
   movePaneToGroup,
@@ -1745,7 +1745,7 @@ interface HomeTurnHistoryState {
   loading: boolean;
 }
 
-function MainApp() {
+function MainApp({ onReady }: { onReady?: () => void }) {
   const appRef = useRef<HTMLElement | null>(null);
   const paneListRef = useRef<HTMLElement | null>(null);
   const sidebarScrollTopByRegionRef = useRef<Record<SidebarScrollRegion, number>>({
@@ -7911,13 +7911,12 @@ function MainApp() {
       }
     }
 
-    // Reveal the hidden-at-boot window whether boot succeeded or threw — the
-    // error banner is exactly what the user must see on a failed boot. The
-    // effect-cancelled rerun (StrictMode, remount) leaves showing to the run
-    // that actually completes; the backend watchdog covers a hung boot.
+    // Replace the startup screen with the hydrated interface (or its error
+    // banner). A cancelled effect leaves readiness to the next mount.
     void boot().finally(() => {
       if (!cancelled) {
-        void markAppWindowReady().catch(() => undefined);
+        onReady?.();
+        void markAppInterfaceReady().catch(() => undefined);
       }
     });
 
@@ -19102,9 +19101,9 @@ function MainApp() {
   );
 }
 
-export default function App() {
+export default function App({ onReady }: { onReady?: () => void }) {
   if (new URLSearchParams(window.location.search).has("global-task-launcher")) {
     return <GlobalTaskLauncher />;
   }
-  return <MainApp />;
+  return <MainApp onReady={onReady} />;
 }

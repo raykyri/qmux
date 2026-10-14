@@ -1,5 +1,5 @@
 import ReactDOM from "react-dom/client";
-import App from "./App";
+import Startup from "./components/Startup";
 import { loadTerminalFont } from "./lib/terminalFont";
 import "./styles.css";
 
@@ -13,5 +13,5 @@ if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("ui-c
     root.render(<ComponentCatalog />);
   });
 } else {
-  root.render(<App />);
+  root.render(<Startup />);
 }

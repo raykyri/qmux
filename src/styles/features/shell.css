@@ -1,3 +1,30 @@
+.startup-app { height: 100%; }
+
+.startup-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: var(--workspace-bg);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+}
+
+.startup-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  max-width: min(560px, 80vw);
+  text-align: center;
+}
+
+.startup-brand { font-size: 28px; font-weight: 600; }
+.startup-content h1 { margin: 0 0 8px; font-size: 18px; font-weight: 500; }
+.startup-content p { margin: 0; color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
+.startup-progress { width: 220px; }
+
 .app-shell {
   position: relative;
   display: grid;

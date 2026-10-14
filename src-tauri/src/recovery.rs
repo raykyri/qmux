@@ -13,16 +13,29 @@ use serde_json::json;
 /// Each remaining pane is respawned in place (same id); a failure is isolated so
 /// one bad pane never blocks the rest. Failed agent respawns mark the agent as
 /// failed so the UI surfaces a "needs relaunch" state.
-pub fn respawn_session(state: &AppState, panes: Vec<PaneInfo>) {
+pub fn respawn_session(
+    state: &AppState,
+    mut panes: Vec<PaneInfo>,
+    startup: &crate::startup::StartupState,
+) {
     let mut recovered = 0_usize;
     let mut failed = 0_usize;
-
-    for pane in panes {
-        if matches!(
+    panes.retain(|pane| {
+        !matches!(
             pane.status,
             PaneStatus::Exited | PaneStatus::Killed | PaneStatus::Failed
-        ) {
-            continue;
+        )
+    });
+    let active = state.active_tab_id().ok().flatten();
+    let saved_order = panes.iter().map(|pane| pane.id.clone()).collect::<Vec<_>>();
+    // Stable ordering keeps siblings in their saved order after the selection.
+    panes.sort_by_key(|pane| active.as_deref() != Some(pane.id.as_str()));
+    let total = panes.len();
+    startup.panes(0, total);
+
+    for (index, pane) in panes.into_iter().enumerate() {
+        if startup.quitting() {
+            break;
         }
 
         if let Err(err) =
@@ -35,6 +48,7 @@ pub fn respawn_session(state: &AppState, panes: Vec<PaneInfo>) {
                 pane.agent_id.clone(),
                 json!({ "error": err, "title": pane.title, "kind": pane.kind }),
             ));
+            startup.panes(index + 1, total);
             continue;
         }
 
@@ -80,8 +94,10 @@ pub fn respawn_session(state: &AppState, panes: Vec<PaneInfo>) {
                 ));
             }
         }
+        startup.panes(index + 1, total);
     }
 
+    state.restore_startup_pane_order(&saved_order);
     if recovered > 0 || failed > 0 {
         state.emit(QmuxEvent::new(
             "session.recovered",

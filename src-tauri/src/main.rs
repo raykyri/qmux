@@ -38,6 +38,7 @@ mod shell_jobs;
 mod show_hide_shortcut;
 mod sleep;
 mod ssh_config;
+mod startup;
 mod state;
 mod thread_graph;
 mod title_generation;
@@ -213,6 +214,9 @@ fn handle_app_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) 
         app.exit(0);
         return;
     };
+    if handle_startup_exit(app) {
+        return;
+    }
     if state.should_confirm_exit() {
         state.request_exit_confirmation();
     } else {
@@ -851,26 +855,6 @@ fn active_tab_get(state: tauri::State<'_, AppState>) -> Result<Option<String>, S
 fn active_tab_set(state: tauri::State<'_, AppState>, tab_id: Option<String>) -> Result<(), String> {
     state.set_active_tab_id(tab_id)
 }
-
-/// Surfaces a fatal startup error in a native dialog, for GUI (Finder/Dock)
-/// launches that have no terminal to show the `eprintln`. Best-effort: if
-/// `osascript` fails the message is still on stderr for a terminal launch.
-#[cfg(target_os = "macos")]
-fn notify_fatal_startup(message: &str) {
-    // AppleScript string literals escape backslash and double-quote; embedded
-    // newlines are fine inside the quoted literal.
-    let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!(
-        "display dialog \"{escaped}\" with title \"qmux\" buttons {{\"Quit\"}} default button \"Quit\" with icon stop"
-    );
-    let _ = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .status();
-}
-
-#[cfg(not(target_os = "macos"))]
-fn notify_fatal_startup(_message: &str) {}
 
 /// Surfaces a non-fatal startup warning (persisted state moved aside, entries
 /// dropped during recovery) in a native dialog without blocking startup.
@@ -3721,16 +3705,33 @@ pub(crate) fn request_unhealthy_interface_reload(
     });
 }
 
-/// The window starts hidden (`visible: false` in tauri.conf.json) so startup
-/// never shows a blank translucent shell while the session restores and the
-/// webview boots. The frontend calls this once its boot snapshot is applied —
-/// the first paint the user sees is the restored session. A watchdog in setup
-/// shows the window anyway if the frontend never reports in.
+/// Reveal the startup shell once, without stealing focus again when recovery
+/// finishes or the interface reloads after the user hides the window.
 #[tauri::command]
 fn app_window_ready(app: tauri::AppHandle) -> Result<(), String> {
-    WINDOW_READY_REPORTED.store(true, std::sync::atomic::Ordering::Relaxed);
-    show_main_window(&app);
+    if !WINDOW_READY_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        show_main_window(&app);
+    }
     Ok(())
+}
+
+/// Keep the event loop alive until the recovery worker stops. The worker may
+/// be waiting for a native terminal operation on this thread, so never join it.
+fn handle_startup_exit(app: &tauri::AppHandle) -> bool {
+    let Some(startup) = app.try_state::<startup::StartupState>() else {
+        return false;
+    };
+    match startup.request_exit() {
+        startup::StartupExit::Defer => true,
+        startup::StartupExit::Exit => {
+            if let Some(state) = app.try_state::<AppState>() {
+                state.mark_exit_confirmed();
+            }
+            app.exit(0);
+            true
+        }
+        startup::StartupExit::Confirm => false,
+    }
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
@@ -3749,6 +3750,9 @@ fn prepare_main_webview_reload(app: Option<&tauri::AppHandle>) {
     cancel_interface_health_probe();
     native_terminal::set_events_listener_ready(false);
     if let Some(app) = app {
+        if let Some(startup) = app.try_state::<startup::StartupState>() {
+            startup.interface_loading();
+        }
         human_browser::reset_all(app);
     }
     let _ = native_terminal::prepare_for_webview_reload();
@@ -3809,6 +3813,94 @@ pub(crate) fn ensure_rustls_crypto_provider() -> Result<(), String> {
         .ok_or_else(|| "failed to install the rustls ring crypto provider".to_string())
 }
 
+fn restore_startup_session(app: &tauri::AppHandle, state: &AppState) -> Result<(), String> {
+    let startup = app.state::<startup::StartupState>();
+    // Refuse to continue if the saved session exists but can't be read:
+    // starting empty here would let the first save overwrite it with
+    // nothing and no backup. Abort loudly (terminal + GUI) so a relaunch
+    // after fixing the transient cause restores the session intact.
+    state.preflight_persisted_state()?;
+    if startup.quitting() {
+        return Ok(());
+    }
+    // Sweep scratch files stranded by earlier processes that were killed
+    // mid-save (most commonly the final persist racing process exit).
+    // Backgrounded: it scans the state dir and only ever removes files
+    // whose unique pid-tagged names no live save can be using, so it
+    // doesn't need to gate window creation.
+    {
+        let workspace_root = state.config().workspace_root.clone();
+        std::thread::spawn(move || {
+            persistence::remove_stale_tmp_files(&workspace_root);
+        });
+    }
+    // Restore persisted groups/agents/queues, then respawn recoverable
+    // panes into fresh PTYs before the full interface mounts, so its first
+    // list_panes() already sees the recovered session.
+    let recovered_panes = state.restore_session();
+    if startup.quitting() {
+        return Ok(());
+    }
+    {
+        let workspace_root = state.config().workspace_root.clone();
+        let referenced = state
+            .list_artifacts()
+            .map(|artifacts| {
+                artifacts
+                    .into_iter()
+                    .filter_map(|artifact| artifact.path.map(std::path::PathBuf::from))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let state = state.clone();
+        std::thread::spawn(move || {
+            remote_files::remove_orphaned(&workspace_root, &referenced);
+            remote_preview::cleanup(&state);
+        });
+    }
+    workspace::reconcile_imported_research_archives(state);
+    // Recovery fell back to an empty session (state discarded to a .bak)
+    // or dropped entries: say so in a dialog, since a Finder launch never
+    // shows stderr and silent session loss looks like qmux ate the tabs.
+    if let Some(warning) = state.take_recovery_warning() {
+        notify_startup_warning(app, &warning);
+    }
+    // Muse and Cursor pane bindings hand a hook the pane's
+    // control-socket token, and tokens are minted per process.
+    // Every binding left on disk by the previous run is therefore
+    // already useless — drop them before recovery writes fresh
+    // ones for the panes that do come back.
+    adapters::muse::clear_muse_bindings();
+    adapters::cursor::clear_cursor_bindings();
+    if startup.quitting() {
+        return Ok(());
+    }
+    recovery::respawn_session(state, recovered_panes, &startup);
+    if startup.quitting() {
+        return Ok(());
+    }
+    // Re-level persisted nesting now that we know which panes actually
+    // came back (exited panes are not respawned).
+    state.normalize_pane_layout();
+    // Now that the surviving panes are known, sweep scrollback logs
+    // and trim scratch files no live pane owns — orphans a kill or an
+    // unrecovered pane left on disk holding raw terminal output.
+    // Backgrounded like the state-dir scratch sweep; the live pane-id
+    // set is captured up front and new panes self-heal a racing delete.
+    {
+        let workspace_root = state.config().workspace_root.clone();
+        let live_pane_ids: std::collections::HashSet<String> = state
+            .list_panes()
+            .map(|panes| panes.into_iter().map(|pane| pane.id).collect())
+            .unwrap_or_default();
+        std::thread::spawn(move || {
+            scrollback::remove_orphaned_scrollback(&workspace_root, &live_pane_ids);
+        });
+    }
+    state.finish_startup_restore();
+    Ok(())
+}
+
 fn main() {
     ensure_rustls_crypto_provider().unwrap_or_else(|err| {
         eprintln!("{err}");
@@ -3860,6 +3952,8 @@ fn main() {
                     if window.label() == "global-task-launcher" {
                         api.prevent_close();
                         let _ = window.hide();
+                    } else if handle_startup_exit(window.app_handle()) {
+                        api.prevent_close();
                     } else if state.should_confirm_exit() {
                         api.prevent_close();
                         state.request_exit_confirmation();
@@ -3907,6 +4001,10 @@ fn main() {
                 // heavy shell profiles) overlaps the rest of startup instead of
                 // stalling the first recovered pane's spawn at the end of it.
                 launch_path::warm_login_shell_path();
+                state.begin_startup_restore();
+                app.manage(state.clone());
+                app.manage(startup::StartupState::default());
+                app.manage(SleepGuard::default());
                 state
                     .attach_app(app.handle().clone())
                     .map_err(std::io::Error::other)?;
@@ -3958,82 +4056,20 @@ fn main() {
                     Err(err) => eprintln!("qmux: failed to start file server: {err}"),
                 }
                 app.manage(start_control_socket(state.clone()).map_err(std::io::Error::other)?);
-                // Refuse to continue if the saved session exists but can't be read:
-                // starting empty here would let the first save overwrite it with
-                // nothing and no backup. Abort loudly (terminal + GUI) so a relaunch
-                // after fixing the transient cause restores the session intact.
-                if let Err(err) = state.preflight_persisted_state() {
-                    eprintln!("\nqmux: {err}\n");
-                    notify_fatal_startup(&err);
-                    std::process::exit(1);
-                }
-                // Sweep scratch files stranded by earlier processes that were killed
-                // mid-save (most commonly the final persist racing process exit).
-                // Backgrounded: it scans the state dir and only ever removes files
-                // whose unique pid-tagged names no live save can be using, so it
-                // doesn't need to gate window creation.
-                {
-                    let workspace_root = state.config().workspace_root.clone();
-                    std::thread::spawn(move || {
-                        persistence::remove_stale_tmp_files(&workspace_root);
-                    });
-                }
-                // Restore persisted groups/agents/queues, then respawn recoverable
-                // panes into fresh PTYs before the command handlers go live so the
-                // webview's first list_panes() already sees the recovered session.
-                let recovered_panes = state.restore_session();
-                {
-                    let workspace_root = state.config().workspace_root.clone();
-                    let referenced = state
-                        .list_artifacts()
-                        .map(|artifacts| {
-                            artifacts
-                                .into_iter()
-                                .filter_map(|artifact| artifact.path.map(std::path::PathBuf::from))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    let state = state.clone();
-                    std::thread::spawn(move || {
-                        remote_files::remove_orphaned(&workspace_root, &referenced);
-                        remote_preview::cleanup(&state);
-                    });
-                }
-                workspace::reconcile_imported_research_archives(&state);
-                // Recovery fell back to an empty session (state discarded to a .bak)
-                // or dropped entries: say so in a dialog, since a Finder launch never
-                // shows stderr and silent session loss looks like qmux ate the tabs.
-                if let Some(warning) = state.take_recovery_warning() {
-                    notify_startup_warning(app.handle(), &warning);
-                }
-                // Muse and Cursor pane bindings hand a hook the pane's
-                // control-socket token, and tokens are minted per process.
-                // Every binding left on disk by the previous run is therefore
-                // already useless — drop them before recovery writes fresh
-                // ones for the panes that do come back.
-                adapters::muse::clear_muse_bindings();
-                adapters::cursor::clear_cursor_bindings();
-                recovery::respawn_session(&state, recovered_panes);
-                // Re-level persisted nesting now that we know which panes actually
-                // came back (exited panes are not respawned).
-                state.normalize_pane_layout();
-                // Now that the surviving panes are known, sweep scrollback logs
-                // and trim scratch files no live pane owns — orphans a kill or an
-                // unrecovered pane left on disk holding raw terminal output.
-                // Backgrounded like the state-dir scratch sweep; the live pane-id
-                // set is captured up front and new panes self-heal a racing delete.
-                {
-                    let workspace_root = state.config().workspace_root.clone();
-                    let live_pane_ids: std::collections::HashSet<String> = state
-                        .list_panes()
-                        .map(|panes| panes.into_iter().map(|pane| pane.id).collect())
-                        .unwrap_or_default();
-                    std::thread::spawn(move || {
-                        scrollback::remove_orphaned_scrollback(&workspace_root, &live_pane_ids);
-                    });
-                }
-                app.manage(state.clone());
-                app.manage(SleepGuard::default());
+                // Let WebKit paint and AppKit process input while disk reads,
+                // shell initialization, and pane recovery run on a worker.
+                let recovery_app = app.handle().clone();
+                let recovery_state = state.clone();
+                std::thread::spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        restore_startup_session(&recovery_app, &recovery_state)
+                    })).unwrap_or_else(|_| Err("Session restoration failed unexpectedly. Quit and reopen qmux to try again.".into()));
+                    if let Err(err) = &result { eprintln!("qmux: startup failed: {err}"); }
+                    if recovery_app.state::<startup::StartupState>().finish(result) {
+                        recovery_state.mark_exit_confirmed();
+                        recovery_app.exit(0);
+                    }
+                });
                 // Watchdog for the hidden-at-boot window: if the frontend fails
                 // to boot (dev server down, bundle error) it can never call
                 // app_window_ready, and an invisible app that must be force-quit
@@ -4042,7 +4078,7 @@ fn main() {
                     let app_handle = app.handle().clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_secs(10));
-                        if !WINDOW_READY_REPORTED.load(std::sync::atomic::Ordering::Relaxed) {
+                        if !WINDOW_READY_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                             let app_handle_on_main = app_handle.clone();
                             let _ = app_handle.run_on_main_thread(move || {
                                 show_main_window(&app_handle_on_main);
@@ -4056,6 +4092,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             app_window_ready,
+            startup::startup_progress,
+            startup::app_interface_ready,
+            startup::startup_quit,
             acknowledge_interface_health_probe,
             get_runtime_config,
             list_ssh_config_aliases,
@@ -4274,6 +4313,14 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building qmux")
         .run(move |app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { api, .. }
+                if app_handle.try_state::<startup::StartupState>().is_some_and(|startup| {
+                    match startup.request_exit() {
+                        startup::StartupExit::Defer => true,
+                        startup::StartupExit::Exit => { exit_state.mark_exit_confirmed(); false }
+                        startup::StartupExit::Confirm => false,
+                    }
+                }) => { api.prevent_exit(); }
             tauri::RunEvent::ExitRequested { api, code, .. }
                 if code != Some(tauri::RESTART_EXIT_CODE) && exit_state.should_confirm_exit() =>
             {

@@ -8322,3 +8322,72 @@ fn stale_shell_job_cleanup_must_match_its_agent() {
             .is_some()
     );
 }
+
+#[test]
+fn startup_cancel_preserves_saved_panes_even_after_partial_recovery() {
+    let root = temp_workspace();
+    let saved = PersistedState {
+        groups: vec![sample_terminal_group()],
+        panes: vec![sample_pane("pane-1", None), sample_pane("pane-2", None)],
+        ..PersistedState::default()
+    };
+    persistence::save(&root, &saved).unwrap();
+    let path = root.join(".qmux/state.json");
+    let original = std::fs::read(&path).unwrap();
+    let state = AppState::new(test_config(root.clone()));
+    state.begin_startup_restore();
+    assert_eq!(state.restore_session().len(), 2);
+    state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    state.finalize_persistence_for_exit();
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn startup_completion_restores_saved_order_and_resumes_persistence() {
+    let root = temp_workspace();
+    let state = AppState::new(test_config(root.clone()));
+    state.begin_startup_restore();
+    state.restore_session();
+    state
+        .insert_group_after(sample_terminal_group(), None)
+        .unwrap();
+    // Selection is recovered first; sidebar order is still the saved order.
+    state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+    state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+    state.restore_startup_pane_order(&["pane-1".into(), "missing".into(), "pane-2".into()]);
+    state.finish_startup_restore();
+    assert!(!state.startup_restoring());
+    let saved = persistence::load_with_diagnostics(&root).state;
+    assert_eq!(
+        saved
+            .panes
+            .iter()
+            .map(|pane| pane.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["pane-1", "pane-2"]
+    );
+    state.set_active_tab_id(Some("pane-2".into())).unwrap();
+    assert_eq!(
+        persistence::load_with_diagnostics(&root)
+            .state
+            .active_tab_id
+            .as_deref(),
+        Some("pane-2")
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn startup_failed_preflight_quit_does_not_overwrite_unreadable_session() {
+    let root = temp_workspace();
+    let path = root.join(".qmux/state.json");
+    std::fs::create_dir_all(&path).unwrap();
+    let state = AppState::new(test_config(root.clone()));
+    state.begin_startup_restore();
+    assert!(state.preflight_persisted_state().is_err());
+    state.finalize_persistence_for_exit();
+    assert!(path.is_dir());
+    std::fs::remove_dir_all(root).unwrap();
+}

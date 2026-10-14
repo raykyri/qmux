@@ -375,6 +375,9 @@ struct AppStateInner {
     // the state dirty and the persister thread snapshots it to
     // workspace_root/.qmux/state.json on a short debounce.
     persist_enabled: AtomicBool,
+    // Recovery now runs with the event loop live. Never replace the saved
+    // session with a partial set of panes if startup is cancelled or fails.
+    startup_restoring: AtomicBool,
     // Serializes the whole snapshot->write->rename in persist() so concurrent
     // saves commit in snapshot order. Without it, a slower older snapshot's
     // rename can land after a newer one and clobber it, losing the last change
@@ -2024,6 +2027,7 @@ impl AppState {
                     crate::completion_sound::CompletionSoundState::default(),
                 ),
                 persist_enabled: AtomicBool::new(false),
+                startup_restoring: AtomicBool::new(false),
                 persist_lock: Mutex::new(()),
                 research_document_lock: Mutex::new(()),
                 persist_dirty: Mutex::new(false),
@@ -2392,6 +2396,41 @@ impl AppState {
             .lock()
             .ok()
             .and_then(|mut slot| slot.take())
+    }
+
+    pub fn begin_startup_restore(&self) {
+        self.inner.startup_restoring.store(true, Ordering::SeqCst);
+    }
+
+    pub fn startup_restoring(&self) -> bool {
+        self.inner.startup_restoring.load(Ordering::SeqCst)
+    }
+
+    pub fn finish_startup_restore(&self) {
+        let _guard = self
+            .inner
+            .persist_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.inner.startup_restoring.store(false, Ordering::SeqCst);
+        if let Err(err) = self.persist_snapshot_locked() {
+            eprintln!("qmux: failed to persist restored session: {err}");
+        }
+    }
+
+    pub fn restore_startup_pane_order(&self, saved: &[String]) {
+        let mut model = self.inner.model.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ids: Vec<String> = saved
+            .iter()
+            .filter(|id| model.panes.contains_key(*id))
+            .cloned()
+            .collect();
+        for id in ordered_pane_ids(&model) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        model.pane_order = ids;
     }
 
     pub fn restore_session(&self) -> Vec<PaneInfo> {
@@ -2848,8 +2887,9 @@ impl AppState {
             self.upsert_recent_session_for_agent(agent, now, false);
         }
 
-        // Enable persistence only after hydration so loading does not rewrite the
-        // file, but before respawn so respawned panes get persisted.
+        // Hydration enables ordinary persistence. Production startup holds its
+        // separate guard until all panes are restored, so a cancelled recovery
+        // cannot replace the saved session with only some of its panes.
         self.inner.persist_enabled.store(true, Ordering::Relaxed);
         self.spawn_persister();
         if research_reconciled || artifacts_reconciled {
@@ -2873,7 +2913,7 @@ impl AppState {
         // unlocked read can never race `finalize_persistence_for_exit` into
         // clobbering the final snapshot — at worst a mutation made while
         // disabled marks nothing, which is today's behavior too.
-        if !self.inner.persist_enabled.load(Ordering::Relaxed) {
+        if !self.inner.persist_enabled.load(Ordering::Relaxed) || self.startup_restoring() {
             return;
         }
         if cfg!(test) {
@@ -2959,7 +2999,7 @@ impl AppState {
         // flag, then wake and snapshot a model that `kill_all_panes` has since
         // stripped — overwriting the final state with the tabs deleted. Reading the
         // flag here means such a persist observes the cleared flag and bails.
-        if !self.inner.persist_enabled.load(Ordering::Relaxed) {
+        if !self.inner.persist_enabled.load(Ordering::Relaxed) || self.startup_restoring() {
             return;
         }
 
@@ -3048,6 +3088,13 @@ impl AppState {
             .persist_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.startup_restoring() {
+            // The recovery worker has stopped before startup quit is allowed.
+            // Leave the original snapshot intact, including panes not restored.
+            self.inner.persist_enabled.store(false, Ordering::Relaxed);
+            thread_graph::flush_dirty_thread_graphs();
+            return;
+        }
         if self.inner.exit_confirmed.load(Ordering::Relaxed) {
             // A confirmed quit is a user cancellation, not a crash. Settle
             // active research before freezing state.json so restore agrees
