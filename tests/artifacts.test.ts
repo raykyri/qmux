@@ -47,7 +47,6 @@ test("an open browser toggles only for the artifact that owns its page", () => {
     artifactId: "artifact-1",
     reloadNonce: 1,
     sandbox: false,
-    mode: "webkit",
   };
 
   assert.equal(isArtifactBrowserOpen(browser, "artifact-1"), true);

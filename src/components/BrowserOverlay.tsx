@@ -1,10 +1,8 @@
 import {
   ArrowLeft,
   ArrowRight,
-  Bot,
   Expand,
   ExternalLink,
-  Globe,
   Minimize2,
   RotateCw,
   X,
@@ -13,75 +11,32 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   CSSProperties,
   ReactNode,
-  KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { Input } from "./ui";
 import type {
-  BrowserOverlayMode,
   BrowserOverlaySize,
   BrowserPreviewScrollPosition,
 } from "../appTypes";
 import {
   claimNativeTerminalPointerForWebDrag,
   getHumanBrowserSnapshot,
-  getBrowserAutomationSnapshot,
-  insertBrowserAutomationText,
-  listenToBrowserScreencastFrames,
   listenToHumanBrowserEvents,
-  navigateBrowserAutomation,
-  navigateBrowserAutomationHistory,
   navigateHumanBrowserHistory,
-  reloadBrowserAutomation,
-  sendBrowserAutomationKey,
-  sendBrowserAutomationMouse,
   setNativeTerminalIframeShortcutFallback,
-  startBrowserScreencast,
-  stopBrowserScreencast,
   syncHumanBrowser,
 } from "../lib/api";
-import type { BrowserAutomationSnapshot, HumanBrowserSnapshot } from "../lib/api";
+import type { HumanBrowserSnapshot } from "../lib/api";
 import { isHumanBrowserLifecycleBusy } from "../lib/humanBrowserLifecycleQueue";
 
 const MIN_BROWSER_OVERLAY_WIDTH = 360;
 const MIN_BROWSER_OVERLAY_HEIGHT = 240;
 const BROWSER_OVERLAY_LEFT_INSET_FALLBACK = 64;
 const BROWSER_OVERLAY_BOTTOM_INSET = 50;
-// Chromium pushes a frame whenever the mirrored page composites, so the only
-// polling left is a metadata refresh: it keeps the address bar current and
-// restarts the stream after the overlay is resized or its tab is replaced.
-const SCREENCAST_HEARTBEAT_MS = 1000;
-// A headless build that refuses to composite would leave the mirror blank
-// forever, so give the first frame a deadline and fall back to screenshots.
-const SCREENCAST_FIRST_FRAME_MS = 2500;
-// Screencast frames are always CSS-resolution — Chromium's screencast scale
-// only ever shrinks a frame, so no device scale makes it stream at 2x. Once
-// the page stops compositing, replace the last frame with a screenshot, which
-// does honour the emulated scale and comes back Retina-sharp.
-const SCREENCAST_SETTLE_MS = 250;
-// Chromium occasionally composites once more just after a capture. That frame
-// shows what the capture already shows, at half the resolution, so displaying
-// it would soften a settled mirror for no reason.
-const SCREENCAST_SETTLE_ECHO_MS = 200;
-const SNAPSHOT_POLL_MS = 500;
 const HUMAN_BROWSER_LOCATION_POLL_MS = 500;
 const HUMAN_BROWSER_NAVIGATION_GRACE_MS = 1200;
 const HUMAN_BROWSER_BUSY_RETRY_MS = 250;
-const lastAutomationNavigationByPane = new Map<string, number>();
-const MAX_REMEMBERED_AUTOMATION_PANES = 256;
-
-function rememberAutomationNavigation(paneId: string, reloadNonce: number) {
-  lastAutomationNavigationByPane.delete(paneId);
-  lastAutomationNavigationByPane.set(paneId, reloadNonce);
-  while (lastAutomationNavigationByPane.size > MAX_REMEMBERED_AUTOMATION_PANES) {
-    const oldest = lastAutomationNavigationByPane.keys().next().value;
-    if (oldest === undefined) {
-      break;
-    }
-    lastAutomationNavigationByPane.delete(oldest);
-  }
-}
 
 function ignoreBrowserCommand(command: Promise<unknown>) {
   void command.catch(() => undefined);
@@ -99,7 +54,7 @@ function cssPixelValue(value: string, fallback: number) {
 // The browser overlay floats over the sidebar + center terminal (leaving a left
 // strip of the tabs visible) and renders a URL bound to the active tab. A minimal
 // navigation bar at the top shows the current URL and lets the user navigate. The
-// close control stays on the left while browser-engine selection stays on the right.
+// close control stays on the left and page controls stay on the right.
 interface BrowserOverlayProps {
   paneId: string;
   sourceLabel?: string;
@@ -112,7 +67,6 @@ interface BrowserOverlayProps {
   // untrusted) content gets an opaque origin. Executable previews receive exact-file
   // tokens that cannot fetch other workspace files. Protected previews stay in WebKit.
   sandbox: boolean;
-  mode: BrowserOverlayMode;
   // Passed to the token-gated file server so Markdown documents rendered in
   // this isolated frame use the same body font as the application. Arbitrary
   // localhost pages remain untouched.
@@ -138,8 +92,6 @@ interface BrowserOverlayProps {
   onOpenExternal: (currentUrl?: string) => void;
   // Close the overlay.
   onClose: () => void;
-  // Switch between the native WebKit preview and the mirrored Chromium target.
-  onModeChange: (mode: BrowserOverlayMode, currentUrl?: string | null) => void;
   // Persist a user-resized overlay size in the app's per-pane React state.
   onResize: (size: BrowserOverlaySize) => void;
   // Expand across the transcript pane, or restore the browser's saved width.
@@ -153,7 +105,6 @@ export default function BrowserOverlay({
   url,
   reloadNonce,
   sandbox,
-  mode,
   bodyFontId,
   initialPreviewScroll,
   size,
@@ -167,7 +118,6 @@ export default function BrowserOverlay({
   onRefresh,
   onOpenExternal,
   onClose,
-  onModeChange,
   onResize,
   onFullWidthChange,
 }: BrowserOverlayProps) {
@@ -179,19 +129,11 @@ export default function BrowserOverlay({
   const [humanBrowserSnapshot, setHumanBrowserSnapshot] = useState<HumanBrowserSnapshot | null>(
     null,
   );
-  const [automationSnapshot, setAutomationSnapshot] = useState<BrowserAutomationSnapshot | null>(
-    null,
-  );
-  // The live mirror image — a streamed frame, or the sharper capture it
-  // settles on. Held apart from the metadata above so a heartbeat that carries
-  // no screenshot can't blank the view between frames.
-  const [mirrorFrame, setMirrorFrame] = useState<string | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const addressInputRef = useRef<HTMLInputElement | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const frameScrollRef = useRef<BrowserPreviewScrollPosition | null>(initialPreviewScroll);
-  const lastAutomationMoveRef = useRef(0);
   const cleanupResizeRef = useRef<(() => void) | null>(null);
   const humanBrowserUrlRef = useRef(url);
   const humanBrowserOccludedRef = useRef(occluded);
@@ -201,10 +143,7 @@ export default function BrowserOverlay({
   const onPreviewScrollRef = useRef(onPreviewScroll);
   const syncHumanBrowserSlotRef = useRef<() => void>(() => undefined);
 
-  const automated = mode === "agent" && !sandbox;
-  const humanBrowser = mode === "webkit" && !sandbox && url !== null;
-  const displayedUrl = automated ? (automationSnapshot?.url ?? url) : url;
-  const mirrorImage = mirrorFrame ?? automationSnapshot?.imageDataUrl ?? null;
+  const humanBrowser = !sandbox && url !== null;
   const frameUrl = (() => {
     if (!url || !sandbox) {
       return url;
@@ -236,9 +175,9 @@ export default function BrowserOverlay({
 
   useEffect(() => {
     if (document.activeElement !== addressInputRef.current) {
-      setDraft(displayedUrl ?? "");
+      setDraft(url ?? "");
     }
-  }, [displayedUrl]);
+  }, [url]);
 
   useEffect(() => {
     if (!sandbox || !frameUrl || !url) {
@@ -495,234 +434,6 @@ export default function BrowserOverlay({
     syncHumanBrowserSlotRef.current();
   }, [geometryRevision, humanBrowser, occluded, reloadNonce, url]);
 
-  useEffect(() => {
-    if (!automated) {
-      setAutomationSnapshot(null);
-      setMirrorFrame(null);
-      return;
-    }
-    let cancelled = false;
-    let unlisten: UnlistenFn | null = null;
-    let heartbeatTimer: number | null = null;
-    let firstFrameTimer: number | null = null;
-    let settleTimer: number | null = null;
-    let snapshotTimer: number | null = null;
-    let requestInFlight = false;
-    let streaming = false;
-    // Bumped by every streamed frame so a slow refinement capture can tell it
-    // has been overtaken by newer motion and drop its result.
-    let frameSequence = 0;
-    let settledAt = 0;
-
-    const measure = () => {
-      const bodyRect = bodyRef.current?.getBoundingClientRect();
-      return {
-        width: Math.round(clampSize(bodyRect?.width ?? 1280, MIN_BROWSER_OVERLAY_WIDTH, 4096)),
-        height: Math.round(clampSize(bodyRect?.height ?? 900, MIN_BROWSER_OVERLAY_HEIGHT, 4096)),
-        scaleFactor: Math.min(Math.max(window.devicePixelRatio || 1, 1), 2),
-      };
-    };
-
-    const reportError = (error: unknown, currentUrl: string | null = null) => {
-      if (cancelled) {
-        return;
-      }
-      streaming = false;
-      setMirrorFrame(null);
-      setAutomationSnapshot({
-        available: false,
-        tabId: null,
-        url: currentUrl,
-        title: null,
-        canGoBack: false,
-        canGoForward: false,
-        imageDataUrl: null,
-        width: 1280,
-        height: 900,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    };
-
-    const pollSnapshot = async () => {
-      if (cancelled || requestInFlight) {
-        return;
-      }
-      requestInFlight = true;
-      try {
-        const { width, height, scaleFactor } = measure();
-        const snapshot = await getBrowserAutomationSnapshot(paneId, width, height, scaleFactor);
-        if (!cancelled) {
-          setAutomationSnapshot(snapshot);
-        }
-      } catch (error) {
-        reportError(error);
-      } finally {
-        requestInFlight = false;
-      }
-    };
-
-    // One-way switch: once this pane is known not to stream, stop asking for a
-    // screencast and go back to the screenshot poll for the rest of the mount.
-    const fallBackToSnapshots = () => {
-      if (cancelled || snapshotTimer !== null) {
-        return;
-      }
-      if (heartbeatTimer !== null) {
-        window.clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-      }
-      if (settleTimer !== null) {
-        window.clearTimeout(settleTimer);
-        settleTimer = null;
-      }
-      setMirrorFrame(null);
-      void stopBrowserScreencast(paneId).catch(() => undefined);
-      void pollSnapshot();
-      snapshotTimer = window.setInterval(() => void pollSnapshot(), SNAPSHOT_POLL_MS);
-    };
-
-    // Trade the last streamed frame for a screenshot at the display's scale.
-    // A capture occasionally nudges Chromium into compositing once more; the
-    // echo window below keeps that from softening the mirror back down.
-    const settleAtDisplayScale = async () => {
-      if (cancelled || snapshotTimer !== null) {
-        return;
-      }
-      if (requestInFlight) {
-        armSettle();
-        return;
-      }
-      const sequence = frameSequence;
-      requestInFlight = true;
-      try {
-        const { width, height, scaleFactor } = measure();
-        const snapshot = await getBrowserAutomationSnapshot(paneId, width, height, scaleFactor);
-        if (cancelled || frameSequence !== sequence || !snapshot.imageDataUrl) {
-          return;
-        }
-        setAutomationSnapshot(snapshot);
-        setMirrorFrame(snapshot.imageDataUrl);
-        settledAt = performance.now();
-      } catch {
-        // The stream is still the source of truth; the next quiet moment retries.
-      } finally {
-        requestInFlight = false;
-      }
-    };
-
-    function armSettle() {
-      if (settleTimer !== null) {
-        window.clearTimeout(settleTimer);
-      }
-      settleTimer = window.setTimeout(() => {
-        settleTimer = null;
-        void settleAtDisplayScale();
-      }, SCREENCAST_SETTLE_MS);
-    }
-
-    const refreshScreencast = async () => {
-      if (cancelled || requestInFlight || snapshotTimer !== null) {
-        return;
-      }
-      requestInFlight = true;
-      try {
-        const { width, height, scaleFactor } = measure();
-        const status = await startBrowserScreencast(paneId, width, height, scaleFactor);
-        if (cancelled) {
-          return;
-        }
-        setAutomationSnapshot(status);
-        if (!status.available) {
-          streaming = false;
-          setMirrorFrame(null);
-          if (firstFrameTimer !== null) {
-            window.clearTimeout(firstFrameTimer);
-            firstFrameTimer = null;
-          }
-          return;
-        }
-        if (status.available && !streaming && firstFrameTimer === null) {
-          firstFrameTimer = window.setTimeout(() => {
-            firstFrameTimer = null;
-            if (!streaming) {
-              fallBackToSnapshots();
-            }
-          }, SCREENCAST_FIRST_FRAME_MS);
-        }
-      } catch (error) {
-        reportError(error);
-      } finally {
-        requestInFlight = false;
-      }
-    };
-
-    void listenToBrowserScreencastFrames((frame) => {
-      if (cancelled || frame.paneId !== paneId || snapshotTimer !== null) {
-        return;
-      }
-      streaming = true;
-      frameSequence += 1;
-      if (firstFrameTimer !== null) {
-        window.clearTimeout(firstFrameTimer);
-        firstFrameTimer = null;
-      }
-      // An echo is still worth re-settling on — if the page genuinely changed,
-      // the capture that follows picks it up sharply — it just isn't worth
-      // showing in place of the capture it echoes.
-      if (performance.now() - settledAt >= SCREENCAST_SETTLE_ECHO_MS) {
-        setMirrorFrame(frame.imageDataUrl);
-      }
-      armSettle();
-      // Frames carry the tab's current identity, so navigation shows up in the
-      // address bar as soon as it paints rather than on the next heartbeat.
-      setAutomationSnapshot((previous) =>
-        previous && (previous.url !== frame.url || previous.title !== frame.title)
-          ? { ...previous, url: frame.url, title: frame.title }
-          : previous,
-      );
-    }).then(
-      (stop) => {
-        if (cancelled) {
-          stop();
-          return;
-        }
-        unlisten = stop;
-      },
-      () => fallBackToSnapshots(),
-    );
-
-    void (async () => {
-      if (url && lastAutomationNavigationByPane.get(paneId) !== reloadNonce) {
-        try {
-          await navigateBrowserAutomation(paneId, url);
-          rememberAutomationNavigation(paneId, reloadNonce);
-        } catch (error) {
-          reportError(error, url);
-        }
-      }
-      await refreshScreencast();
-    })();
-    heartbeatTimer = window.setInterval(() => void refreshScreencast(), SCREENCAST_HEARTBEAT_MS);
-
-    return () => {
-      cancelled = true;
-      if (heartbeatTimer !== null) {
-        window.clearInterval(heartbeatTimer);
-      }
-      if (snapshotTimer !== null) {
-        window.clearInterval(snapshotTimer);
-      }
-      if (firstFrameTimer !== null) {
-        window.clearTimeout(firstFrameTimer);
-      }
-      if (settleTimer !== null) {
-        window.clearTimeout(settleTimer);
-      }
-      unlisten?.();
-      void stopBrowserScreencast(paneId).catch(() => undefined);
-    };
-  }, [automated, paneId, reloadNonce, url]);
-
   // Keys typed into the framed page belong to its document: the host
   // document's window-level shortcut handlers never fire, and the native key
   // monitor deliberately leaves keys to a healthy WKWebView responder — so
@@ -735,7 +446,7 @@ export default function BrowserOverlay({
   // focusin/focusout to this one. The rAF matches the app-level samplers:
   // activeElement settles after the event.
   useEffect(() => {
-    if (!url || automated || humanBrowser) {
+    if (!url || humanBrowser) {
       return;
     }
     let frame: number | null = null;
@@ -772,7 +483,7 @@ export default function BrowserOverlay({
       // the claim explicitly instead of leaving it wedged on.
       report(false);
     };
-  }, [automated, humanBrowser, url, reloadNonce]);
+  }, [humanBrowser, url, reloadNonce]);
 
   useEffect(() => {
     return () => {
@@ -867,88 +578,7 @@ export default function BrowserOverlay({
   const closeTitle = toggleShortcutLabel
     ? `Hide browser (Esc, ${toggleShortcutLabel})`
     : "Hide browser (Esc)";
-  function automationPoint(event: {
-    clientX: number;
-    clientY: number;
-    currentTarget: HTMLImageElement;
-  }) {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const width = automationSnapshot?.width ?? 1280;
-    const height = automationSnapshot?.height ?? 900;
-    return {
-      x: ((event.clientX - rect.left) / rect.width) * width,
-      y: ((event.clientY - rect.top) / rect.height) * height,
-    };
-  }
-
-  function automationButton(button: number) {
-    if (button === 1) {
-      return "middle" as const;
-    }
-    if (button === 2) {
-      return "right" as const;
-    }
-    return "left" as const;
-  }
-
-  function automationModifiers(event: {
-    altKey: boolean;
-    ctrlKey: boolean;
-    metaKey: boolean;
-    shiftKey: boolean;
-  }) {
-    return (
-      (event.altKey ? 1 : 0) |
-      (event.ctrlKey ? 2 : 0) |
-      (event.metaKey ? 4 : 0) |
-      (event.shiftKey ? 8 : 0)
-    );
-  }
-
-  function handleAutomationKey(event: ReactKeyboardEvent<HTMLImageElement>) {
-    if (event.metaKey || event.ctrlKey || event.altKey) {
-      return;
-    }
-    if (event.key.length === 1) {
-      event.preventDefault();
-      ignoreBrowserCommand(insertBrowserAutomationText(paneId, event.key));
-      return;
-    }
-    const virtualKeys: Record<string, number> = {
-      Backspace: 8,
-      Tab: 9,
-      Enter: 13,
-      Escape: 27,
-      PageUp: 33,
-      PageDown: 34,
-      End: 35,
-      Home: 36,
-      ArrowLeft: 37,
-      ArrowUp: 38,
-      ArrowRight: 39,
-      ArrowDown: 40,
-      Delete: 46,
-    };
-    const virtualKey = virtualKeys[event.key];
-    if (virtualKey !== undefined) {
-      event.preventDefault();
-      ignoreBrowserCommand(
-        sendBrowserAutomationKey(
-          paneId,
-          event.key,
-          event.code,
-          virtualKey,
-          automationModifiers(event),
-        ),
-      );
-    }
-  }
-
   function navigateHistory(direction: "back" | "forward") {
-    if (automated) {
-      ignoreBrowserCommand(navigateBrowserAutomationHistory(paneId, direction));
-      return;
-    }
     if (humanBrowser) {
       ignoreBrowserCommand(navigateHumanBrowserHistory(paneId, direction));
     }
@@ -986,11 +616,7 @@ export default function BrowserOverlay({
             title="Go back"
             aria-label="Go back"
             onClick={() => navigateHistory("back")}
-            disabled={
-              automated
-                ? !automationSnapshot?.canGoBack
-                : !humanBrowser || !humanBrowserSnapshot?.canGoBack
-            }
+            disabled={!humanBrowser || !humanBrowserSnapshot?.canGoBack}
           >
             <ArrowLeft size={14} aria-hidden="true" />
           </button>
@@ -1000,11 +626,7 @@ export default function BrowserOverlay({
             title="Go forward"
             aria-label="Go forward"
             onClick={() => navigateHistory("forward")}
-            disabled={
-              automated
-                ? !automationSnapshot?.canGoForward
-                : !humanBrowser || !humanBrowserSnapshot?.canGoForward
-            }
+            disabled={!humanBrowser || !humanBrowserSnapshot?.canGoForward}
           >
             <ArrowRight size={14} aria-hidden="true" />
           </button>
@@ -1025,10 +647,10 @@ export default function BrowserOverlay({
             readOnly={sourceLabel !== undefined}
             aria-label={sourceLabel ? "Remote file path" : "Address"}
             onChange={(event) => setDraft(event.currentTarget.value)}
-            onBlur={() => setDraft(displayedUrl ?? "")}
+            onBlur={() => setDraft(url ?? "")}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
-                setDraft(displayedUrl ?? "");
+                setDraft(url ?? "");
                 event.currentTarget.blur();
               }
             }}
@@ -1058,13 +680,7 @@ export default function BrowserOverlay({
             className="icon-button browser-overlay-button"
             title={sourceLabel ? "Refresh from remote" : "Refresh browser"}
             aria-label={sourceLabel ? "Refresh from remote" : "Refresh browser"}
-            onClick={() => {
-              if (automated) {
-                ignoreBrowserCommand(reloadBrowserAutomation(paneId));
-              } else {
-                onRefresh();
-              }
-            }}
+            onClick={onRefresh}
           >
             <RotateCw size={14} aria-hidden="true" />
           </button>
@@ -1073,161 +689,16 @@ export default function BrowserOverlay({
             className="icon-button browser-overlay-button"
             title={sandbox ? "Open source file externally" : "Open in external browser"}
             aria-label={sandbox ? "Open source file externally" : "Open in external browser"}
-            onClick={() => onOpenExternal(displayedUrl ?? undefined)}
-            disabled={!displayedUrl || sourceLabel !== undefined}
+            onClick={() => onOpenExternal(url ?? undefined)}
+            disabled={!url || sourceLabel !== undefined}
           >
             <ExternalLink size={14} aria-hidden="true" />
           </button>
-          <div className="browser-overlay-mode-group" role="group" aria-label="Browser engine">
-            <button
-              type="button"
-              className={`icon-button browser-overlay-button browser-overlay-mode-button${mode === "webkit" ? " is-active" : ""}`}
-              title="Use the WebKit browser"
-              aria-label="Use the WebKit browser"
-              aria-pressed={mode === "webkit"}
-              onClick={() => onModeChange("webkit", automationSnapshot?.url ?? url)}
-            >
-              <Globe size={14} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className={`icon-button browser-overlay-button browser-overlay-mode-button${mode === "agent" ? " is-active" : ""}`}
-              title={
-                sandbox
-                  ? "Agent browser is unavailable for protected file previews"
-                  : "Use the mirrored Chromium agent browser"
-              }
-              aria-label="Use the mirrored Chromium agent browser"
-              aria-pressed={mode === "agent"}
-              disabled={sandbox}
-              onClick={() => onModeChange("agent", url)}
-            >
-              <Bot size={14} aria-hidden="true" />
-            </button>
-          </div>
         </div>
       </div>
       {previewStatus}
       <div ref={bodyRef} className="browser-overlay-body">
-        {automated && mirrorImage ? (
-          <img
-            className="browser-overlay-frame is-automated"
-            src={mirrorImage}
-            alt={automationSnapshot?.title || "Automated browser tab"}
-            draggable={false}
-            tabIndex={0}
-            onPointerDown={(event) => {
-              event.preventDefault();
-              const point = automationPoint(event);
-              event.currentTarget.setPointerCapture(event.pointerId);
-              event.currentTarget.focus();
-              ignoreBrowserCommand(
-                sendBrowserAutomationMouse(
-                  paneId,
-                  "down",
-                  point.x,
-                  point.y,
-                  undefined,
-                  undefined,
-                  automationButton(event.button),
-                  event.buttons,
-                  automationModifiers(event),
-                ),
-              );
-            }}
-            onPointerUp={(event) => {
-              event.preventDefault();
-              const point = automationPoint(event);
-              ignoreBrowserCommand(
-                sendBrowserAutomationMouse(
-                  paneId,
-                  "up",
-                  point.x,
-                  point.y,
-                  undefined,
-                  undefined,
-                  automationButton(event.button),
-                  event.buttons,
-                  automationModifiers(event),
-                ),
-              );
-              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                event.currentTarget.releasePointerCapture(event.pointerId);
-              }
-            }}
-            onPointerCancel={(event) => {
-              const point = automationPoint(event);
-              ignoreBrowserCommand(
-                sendBrowserAutomationMouse(
-                  paneId,
-                  "up",
-                  point.x,
-                  point.y,
-                  undefined,
-                  undefined,
-                  automationButton(event.button),
-                  0,
-                  automationModifiers(event),
-                ),
-              );
-            }}
-            onPointerMove={(event) => {
-              const now = performance.now();
-              if (now - lastAutomationMoveRef.current < 50) {
-                return;
-              }
-              lastAutomationMoveRef.current = now;
-              const point = automationPoint(event);
-              ignoreBrowserCommand(
-                sendBrowserAutomationMouse(
-                  paneId,
-                  "move",
-                  point.x,
-                  point.y,
-                  undefined,
-                  undefined,
-                  "none",
-                  event.buttons,
-                  automationModifiers(event),
-                ),
-              );
-            }}
-            onContextMenu={(event) => event.preventDefault()}
-            onWheel={(event) => {
-              event.preventDefault();
-              const point = automationPoint(event);
-              ignoreBrowserCommand(
-                sendBrowserAutomationMouse(
-                  paneId,
-                  "scroll",
-                  point.x,
-                  point.y,
-                  event.deltaX,
-                  event.deltaY,
-                  "none",
-                  event.buttons,
-                  automationModifiers(event),
-                ),
-              );
-            }}
-            onKeyDown={handleAutomationKey}
-            onPaste={(event) => {
-              const text = event.clipboardData.getData("text/plain");
-              if (!text) {
-                return;
-              }
-              event.preventDefault();
-              ignoreBrowserCommand(insertBrowserAutomationText(paneId, text));
-            }}
-          />
-        ) : automated ? (
-          <div className="browser-overlay-empty">
-            <p>
-              {automationSnapshot?.error ??
-                "Connecting to the qmux automation browser…"}
-            </p>
-          </div>
-        ) : humanBrowser ? (
+        {humanBrowser ? (
           <div className="browser-overlay-native-slot" aria-label="WebKit browser content">
             {humanBrowserError ? <p>{humanBrowserError}</p> : null}
           </div>

@@ -48,7 +48,6 @@ function Overlay() {
     ...state,
     paneId: "pane-a",
     sandbox: false,
-    mode: "webkit",
     bodyFontId: "system",
     initialPreviewScroll: null,
     fullWidth: false,
@@ -60,7 +59,6 @@ function Overlay() {
     onRefresh: () => {},
     onOpenExternal: () => {},
     onClose: () => {},
-    onModeChange: () => {},
     onResize: () => {},
     onFullWidthChange: () => {},
   });

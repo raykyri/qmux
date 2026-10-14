@@ -12,7 +12,6 @@ function overlay(overrides: Partial<BrowserOverlayState> = {}): BrowserOverlaySt
     open: true,
     reloadNonce: 1,
     sandbox: false,
-    mode: "webkit",
     size: null,
     ...overrides,
   };
@@ -21,16 +20,14 @@ function overlay(overrides: Partial<BrowserOverlayState> = {}): BrowserOverlaySt
 test("only an open external WebKit overlay retains a native child", () => {
   assert.equal(browserOverlayUsesNativeHumanChild(overlay()), true);
   assert.equal(browserOverlayUsesNativeHumanChild(overlay({ open: false })), false);
-  assert.equal(browserOverlayUsesNativeHumanChild(overlay({ mode: "agent" })), false);
   assert.equal(browserOverlayUsesNativeHumanChild(overlay({ sandbox: true })), false);
   assert.equal(browserOverlayUsesNativeHumanChild(overlay({ url: null })), false);
 });
 
-test("owner transitions identify children retired by close and mode changes", () => {
+test("owner transitions identify children retired by close and preview changes", () => {
   const owners = nativeHumanBrowserOwnerIds({
     open: overlay(),
     closed: overlay({ open: false }),
-    agent: overlay({ mode: "agent" }),
     preview: overlay({ sandbox: true }),
   });
   assert.deepEqual([...owners], ["open"]);

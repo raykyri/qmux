@@ -329,7 +329,7 @@ export function loopbackHtmlUrl(value: unknown): string | undefined {
   return /\.html$/iu.test(parsed.pathname) ? parsed.href : undefined;
 }
 
-// Normal http(s) links render through qmux's isolated Chromium automation profile.
+// Normal http(s) links render through qmux's native browser.
 // Token-bearing file previews are still detected separately and rendered in the
 // webview's sandboxed iframe. mailto and custom schemes remain OS-owned.
 export function canRenderInInternalBrowser(url: string): boolean {

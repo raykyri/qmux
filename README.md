@@ -48,16 +48,7 @@ matching UI adapter on the frontend.
   and a delete-or-keep prompt when closing worktree-backed panes.
 - (Experimental) A tab-bound, resizable browser panel. Token-gated local files
   remain in a sandboxed preview (Markdown renders as styled HTML); normal URLs
-  display the isolated browser tab controlled by the active agent.
-- (Experimental spike) qmux appears in Codex's `agent.browsers.list()` through
-  its current private in-app-browser socket and implements tab, Playwright,
-  Computer Use, screenshot, and raw CDP operations through a dedicated
-  `chrome-headless-shell` process. qmux finds a bundled installation, then a
-  PATH installation in a directory your account cannot write to (writable PATH
-  entries and the default per-user Playwright cache are skipped so an agent
-  cannot plant a binary qmux would execute), then a `PLAYWRIGHT_BROWSERS_PATH`
-  cache; `QMUX_CHROME_HEADLESS_SHELL_PATH` can override discovery outright.
-  This does not use a browser extension or the user's normal browser profile.
+  display in the native browser.
 - macOS-only at this time. Linux support is planned for the future.
 
 ## Install
@@ -321,11 +312,6 @@ hosted view can show proposal status without a separate collaboration database.
 - A loopback-only (`127.0.0.1`) HTTP server with per-pane random tokens backs
   browser-overlay file targets. It serves only the requesting pane's group,
   current directory, and agent worktree roots.
-- Codex Browser-plugin discovery listens on a qmux-owned socket under
-  `/tmp/codex-browser-use`. This is an undocumented compatibility adapter and
-  may need to track changes in the bundled OpenAI Browser plugin. It defaults to
-  the production Codex build flavor; developers can override that metadata with
-  `QMUX_CODEX_APP_BUILD_FLAVOR`.
 - Transcript tailing starts once an adapter binds a transcript path: Claude via
   `SessionStart`, Codex via an explicit `SessionStart` path or session-id lookup,
   OpenCode via qmux-managed JSONL, Pi via its observer extension and native

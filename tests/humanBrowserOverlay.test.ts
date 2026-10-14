@@ -32,7 +32,6 @@ const props = {
   url: "https://example.com/",
   reloadNonce: 0,
   sandbox: false,
-  mode: "webkit" as const,
   bodyFontId: "system",
   initialPreviewScroll: null,
   fullWidth: false,
@@ -44,7 +43,6 @@ const props = {
   onRefresh: () => {},
   onOpenExternal: () => {},
   onClose: () => {},
-  onModeChange: () => {},
   onResize: () => {},
   onFullWidthChange: () => {},
 };

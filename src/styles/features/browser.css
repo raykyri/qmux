@@ -37,7 +37,7 @@
   max-width: none;
 }
 
-/* Navigation bar across the top; close sits on the left and engine selection on the right. */
+/* Navigation bar across the top; close sits on the left and page controls on the right. */
 .browser-overlay-nav {
   flex: 0 0 auto;
   display: flex;
@@ -70,15 +70,6 @@
   flex: 0 0 auto;
   display: flex;
   gap: 4px;
-}
-
-.browser-overlay-mode-group {
-  display: flex;
-  gap: 6px;
-}
-
-.browser-overlay-mode-button {
-  flex: 0 0 auto;
 }
 
 .browser-overlay-url {
@@ -121,18 +112,6 @@
   border: 0;
   /* Most pages assume a white canvas; avoid a flash of the dark app behind them. */
   background: #ffffff;
-}
-
-.browser-overlay-frame.is-automated {
-  display: block;
-  object-fit: fill;
-  cursor: default;
-  user-select: none;
-}
-
-.browser-overlay-frame.is-automated:focus {
-  outline: 2px solid var(--accent-color);
-  outline-offset: -2px;
 }
 
 .browser-overlay-frame.is-file-content {

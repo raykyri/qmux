@@ -1,6 +1,4 @@
 mod adapters;
-mod browser_backend;
-mod browser_engine;
 mod claude_sdk;
 mod completion_sound;
 mod config;
@@ -3960,16 +3958,6 @@ fn main() {
                     Err(err) => eprintln!("qmux: failed to start file server: {err}"),
                 }
                 app.manage(start_control_socket(state.clone()).map_err(std::io::Error::other)?);
-                match browser_backend::start_browser_discovery(Some(state.clone())) {
-                    Ok(socket) => {
-                        eprintln!(
-                            "qmux: experimental Codex browser discovery listening at {}",
-                            socket.path().display()
-                        );
-                        app.manage(socket);
-                    }
-                    Err(err) => eprintln!("qmux: failed to start Codex browser discovery: {err}"),
-                }
                 // Refuse to continue if the saved session exists but can't be read:
                 // starting empty here would let the first save overwrite it with
                 // nothing and no backup. Abort loudly (terminal + GUI) so a relaunch
@@ -4091,15 +4079,6 @@ fn main() {
             publishing::publishing_resolve_proposal,
             active_tab_get,
             active_tab_set,
-            browser_backend::browser_automation_snapshot,
-            browser_backend::browser_automation_start_screencast,
-            browser_backend::browser_automation_stop_screencast,
-            browser_backend::browser_automation_navigate,
-            browser_backend::browser_automation_reload,
-            browser_backend::browser_automation_navigate_history,
-            browser_backend::browser_automation_mouse,
-            browser_backend::browser_automation_insert_text,
-            browser_backend::browser_automation_key,
             human_browser::human_browser_sync,
             human_browser::human_browser_destroy,
             human_browser::human_browser_hide_all,

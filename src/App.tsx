@@ -358,7 +358,6 @@ import type { PublicationBinding } from "./lib/publication";
 import { useNativeWebOverlayRegion } from "./hooks/useNativeWebOverlayRegion";
 import { useQmuxEvents } from "./hooks/useQmuxEvents";
 import type {
-  BrowserOverlayMode,
   BrowserOverlaySize,
   BrowserOverlayState,
   CloseGroupContinuation,
@@ -5026,7 +5025,6 @@ function MainApp() {
           artifactId,
           reloadNonce: (current[paneId]?.reloadNonce ?? 0) + 1,
           sandbox: effectiveSandbox,
-          mode: effectiveSandbox ? "webkit" : (current[paneId]?.mode ?? "webkit"),
           size: current[paneId]?.size ?? null,
           fullWidth: current[paneId]?.fullWidth ?? false,
         },
@@ -5073,7 +5071,6 @@ function MainApp() {
         artifactId: null,
         reloadNonce: (current[target.paneId]?.reloadNonce ?? 0) + 1,
         sandbox: true,
-        mode: "webkit",
         size: current[target.paneId]?.size ?? null,
         fullWidth: current[target.paneId]?.fullWidth ?? false,
       },
@@ -5216,7 +5213,6 @@ function MainApp() {
           artifactId: prev?.artifactId ?? null,
           reloadNonce: prev?.reloadNonce ?? 0,
           sandbox: prev?.sandbox ?? false,
-          mode: prev?.mode ?? "webkit",
           size: prev?.size ?? null,
           fullWidth: prev?.fullWidth ?? false,
         },
@@ -5306,46 +5302,6 @@ function MainApp() {
     });
   }
 
-  function setBrowserOverlayMode(
-    paneId: string,
-    mode: BrowserOverlayMode,
-    currentUrl?: string | null,
-  ) {
-    setBrowserOverlayByPane((current) => {
-      const prev = current[paneId];
-      if (!prev || (prev.sandbox && mode === "agent")) {
-        return current;
-      }
-      const transferableUrl = (() => {
-        if (!currentUrl) {
-          return null;
-        }
-        try {
-          const parsed = new URL(currentUrl);
-          return parsed.protocol === "http:" || parsed.protocol === "https:"
-            ? parsed.href
-            : null;
-        } catch {
-          return null;
-        }
-      })();
-      const nextUrl = mode === "webkit" && transferableUrl ? transferableUrl : prev.url;
-      return {
-        ...current,
-        [paneId]: {
-          ...prev,
-          mode,
-          url: nextUrl,
-          artifactId: nextUrl === prev.url ? prev.artifactId : null,
-          reloadNonce:
-            mode === "webkit" && nextUrl !== prev.url
-              ? prev.reloadNonce + 1
-              : prev.reloadNonce,
-        },
-      };
-    });
-  }
-
   function setHumanBrowserLocation(paneId: string, nextUrl: string) {
     let normalized: string;
     try {
@@ -5361,7 +5317,6 @@ function MainApp() {
       const previous = current[paneId];
       if (
         !previous?.open ||
-        previous.mode !== "webkit" ||
         previous.sandbox ||
         previous.url === normalized
       ) {
@@ -5526,7 +5481,7 @@ function MainApp() {
       return;
     }
     const overlay = browserOverlayByPaneRef.current[activeBrowserOwnerId];
-    if (overlay?.open && overlay.mode === "webkit" && !overlay.sandbox) {
+    if (overlay?.open && !overlay.sandbox) {
       void reloadHumanBrowser(activeBrowserOwnerId).catch((err) => {
         setError(err instanceof Error ? err.message : String(err));
       });
@@ -18879,7 +18834,6 @@ function MainApp() {
           /> : undefined}
           reloadNonce={activeBrowserOverlay.reloadNonce}
           sandbox={activeBrowserOverlay.sandbox}
-          mode={activeBrowserOverlay.mode}
           bodyFontId={settings.bodyFontId}
           initialPreviewScroll={browserPreviewScrollFor(
             browserPreviewScrollByOwnerRef.current,
@@ -18908,9 +18862,6 @@ function MainApp() {
             void openBrowserOverlayExternally(activeBrowserOwnerId, currentUrl);
           }}
           onClose={() => closeActiveBrowserOverlay(activeBrowserOwnerId)}
-          onModeChange={(mode, currentUrl) =>
-            setBrowserOverlayMode(activeBrowserOwnerId, mode, currentUrl)
-          }
           onResize={(size) => setBrowserOverlaySize(activeBrowserOwnerId, size)}
           onFullWidthChange={(fullWidth) =>
             setBrowserOverlayFullWidth(activeBrowserOwnerId, fullWidth)

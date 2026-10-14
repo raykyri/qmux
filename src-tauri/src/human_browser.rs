@@ -581,7 +581,7 @@ fn create_webview(
 
     // Install before page/router scripts capture the native History methods.
     // This compatibility shim belongs only to external WebKit documents, never
-    // the privileged app webview or Chromium automation browser.
+    // the privileged app webview.
     #[cfg(target_os = "macos")]
     let builder = builder.initialization_script(include_str!("human_browser_history.js"));
 

@@ -21,7 +21,6 @@ function overlay(overrides: Partial<BrowserOverlayState> = {}): BrowserOverlaySt
     open: true,
     reloadNonce: 1,
     sandbox: false,
-    mode: "webkit",
     size: null,
     ...overrides,
   };
