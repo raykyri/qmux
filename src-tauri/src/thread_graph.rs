@@ -892,17 +892,17 @@ pub fn migrate_record_to_storage_root(
     let record_is_current = record.storage_root == destination_root
         && Path::new(&record.snapshot_path) == destination_path;
 
-    if let Some(graph) = read_snapshot(&destination_root, &record.id)? {
-        validate_snapshot_thread_id(&graph, &record.id, &destination_path)?;
-        if record_is_current {
-            return Ok(false);
-        }
-        update_record_storage(record, destination_root, destination_path);
-        return Ok(true);
-    }
-
+    // Migration is metadata-only once the record points at global storage.
+    // Reading here reparses the entire conversation archive on every launch;
+    // current snapshots are loaded (and validated) when a consumer needs them.
     if record_is_current {
         return Ok(false);
+    }
+
+    if let Some(graph) = read_snapshot(&destination_root, &record.id)? {
+        validate_snapshot_thread_id(&graph, &record.id, &destination_path)?;
+        update_record_storage(record, destination_root, destination_path);
+        return Ok(true);
     }
 
     if let Some(graph) = read_snapshot(&record.storage_root, &record.id)? {
@@ -970,9 +970,10 @@ fn read_snapshot_from_disk(
         }
     };
     let serialized_bytes = raw.len();
-    serde_json::from_str::<ThreadGraph>(&raw)
-        .map(|graph| Some((graph, serialized_bytes)))
-        .map_err(|err| format!("invalid thread graph {}: {err}", path.display()))
+    let graph = serde_json::from_str::<ThreadGraph>(&raw)
+        .map_err(|err| format!("invalid thread graph {}: {err}", path.display()))?;
+    validate_snapshot_thread_id(&graph, thread_id, &path)?;
+    Ok(Some((graph, serialized_bytes)))
 }
 
 pub fn write_snapshot(storage_root: &str, graph: &ThreadGraph) -> Result<(), String> {
@@ -2427,6 +2428,57 @@ mod tests {
         }
 
         fs::remove_dir_all(worktree).unwrap();
+    }
+
+    #[test]
+    fn snapshot_read_rejects_a_different_thread_identity() {
+        let root = temp_worktree("qmux-thread-graph-wrong-identity");
+        let agent = sample_agent(root.display().to_string());
+        ThreadStore::new(root.clone())
+            .replace_agent_branch_turns(&agent, &[sample_turn("agent-1", "turn-1", "user", 0)])
+            .unwrap();
+        let root_string = root.display().to_string();
+        fs::copy(
+            snapshot_path(&root_string, "thread-1"),
+            snapshot_path(&root_string, "thread-other"),
+        )
+        .unwrap();
+
+        let err = read_snapshot(&root_string, "thread-other").unwrap_err();
+        assert!(err.contains("expected thread-other"), "{err}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn current_record_migration_does_not_read_snapshot() {
+        let root = temp_worktree("qmux-thread-graph-already-migrated");
+        let agent = sample_agent(root.display().to_string());
+        let mut record = thread_record_for_agent(&agent, "branch-1", &root);
+        let path = snapshot_path(&record.storage_root, &record.id);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"invalid JSON: defer validation until requested").unwrap();
+
+        assert!(!migrate_record_to_storage_root(&mut record, &root).unwrap());
+        assert!(read_snapshot(&record.storage_root, &record.id).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn migration_rejects_invalid_destination_without_repointing_record() {
+        let legacy_root = temp_worktree("qmux-thread-graph-invalid-legacy");
+        let global_root = temp_worktree("qmux-thread-graph-invalid-global");
+        let agent = sample_agent(legacy_root.display().to_string());
+        let mut record = thread_record_for_agent(&agent, "branch-1", &legacy_root);
+        let path = snapshot_path(&global_root.display().to_string(), &record.id);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"invalid JSON").unwrap();
+
+        assert!(migrate_record_to_storage_root(&mut record, &global_root).is_err());
+        assert_eq!(record.storage_root, legacy_root.display().to_string());
+
+        fs::remove_dir_all(legacy_root).unwrap();
+        fs::remove_dir_all(global_root).unwrap();
     }
 
     #[test]
