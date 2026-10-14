@@ -2576,6 +2576,11 @@ fn list_agent_turn_queue(
     state.agent_queued_turns(&agent_id)
 }
 
+#[tauri::command(async)]
+fn composer_snapshot(state: tauri::State<'_, AppState>) -> Result<state::ComposerSnapshot, String> {
+    state.composer_snapshot()
+}
+
 // Async so it runs off the main thread: building the picker reads the head of
 // up to 30 transcript files (and walks the Codex sessions tree), which froze
 // the UI for the duration when run as a synchronous command.
@@ -4202,6 +4207,7 @@ fn main() {
             remove_research_tree,
             remove_research_branch,
             list_agent_turn_queue,
+            composer_snapshot,
             list_agent_transcripts,
             set_agent_transcript,
             group_create,

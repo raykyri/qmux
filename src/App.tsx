@@ -1,3 +1,4 @@
+import { afterStartupPaint, loadInitialWorkspace, reconcileStartupArtifacts, reconcileStartupDrafts, startupResearchPane } from "./lib/startupHydration";
 import RemoteLinkContextMenu from "./components/RemoteLinkContextMenu";
 import { useRemoteFilePreviews } from "./hooks/useRemoteFilePreviews";
 import RemotePreviewStatus from "./components/RemotePreviewStatus";
@@ -561,19 +562,17 @@ import {
   retryResearchNode,
   forkAgent,
   getConversationHistorySnapshot,
-  getActiveTab,
   getPaneSplits,
-  getLauncherAdapterPreference,
   getOpenRouterKey,
   setOpenRouterKey,
   openRouterChatCompletion,
   getAgentDraft,
+  getComposerSnapshot,
   getThreadGraph,
   getGlobalTaskLauncherHotkey,
   openGlobalTaskLauncher,
   getShowHideShortcut,
   activatePane,
-  getRuntimeConfig,
   probeAgentAdapters,
   getUseLoginShell,
   getResearchLaunchInstruction,
@@ -592,7 +591,6 @@ import {
   listSavedPrompts,
   listAgentTranscripts,
   listAgentTurnQueue,
-  listGlobalDrafts,
   listHomeTurnHistory,
   launchConversationHistory,
   createGlobalDraft,
@@ -606,7 +604,6 @@ import {
   listPublications,
   listResearchActivity,
   listRecentActivity,
-  listResearchFolders,
   listResearchTrees,
   setResearchFolders,
   appendJournalEntry as persistNewJournalEntry,
@@ -2037,7 +2034,12 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
   // Application-global prompt drafts (the home Drafts rail). Backend-owned;
   // hydrated at boot and kept fresh by drafts.changed events.
-  const [globalDrafts, setGlobalDrafts] = useState<GlobalDraft[]>([]);
+  const [globalDrafts, setGlobalDraftsState] = useState<GlobalDraft[]>([]);
+  const globalDraftsRevisionRef = useRef(0);
+  const setGlobalDrafts = useCallback((next: SetStateAction<GlobalDraft[]>) => {
+    globalDraftsRevisionRef.current += 1;
+    setGlobalDraftsState(next);
+  }, []);
   // Per-agent hook-event history. It backs only the "copy transcript as JSON"
   // export — nothing renders it — so it lives outside React state: hooks fire on
   // every tool call of a busy agent, and putting each one through setState was a
@@ -2139,6 +2141,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // cell can render as the drop target while dragging a card between splits.
   const [queueDropTargetAgentId, setQueueDropTargetAgentId] = useState<string | null>(null);
   const [draftsByAgent, setDraftsByAgentState] = useState<Record<string, string>>({});
+  const startupDraftOverridesRef = useRef<Map<string, string> | null>(new Map());
   const [activePaneId, setActivePaneIdState] = useState<string | null>(null);
   const activePaneIdRef = useRef(activePaneId);
   activePaneIdRef.current = activePaneId;
@@ -3092,6 +3095,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   } | null>(null);
   const [userNotifications, setUserNotifications] = useState<UserNotificationItem[]>([]);
   const [notificationLog, setNotificationLog] = useState<NotificationLogEntry[]>([]);
+  const notificationLogRevisionRef = useRef(0);
   const [notificationPermission, setNotificationPermission] =
     useState<NotificationPermissionInfo | null>(null);
   const [notificationPermissionBusy, setNotificationPermissionBusy] = useState(false);
@@ -3181,6 +3185,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // the durable list (oldest first); this mirror is hydrated at startup and kept
   // current by artifact.added/removed events.
   const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([]);
+  const startupArtifactOverridesRef = useRef<Map<string, ArtifactInfo | null> | null>(new Map());
   // The last tray removal, held for the undo footer until it times out or the
   // user restores it.
   const [artifactUndo, setArtifactUndo] = useState<ArtifactInfo | null>(null);
@@ -6192,6 +6197,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // is there when the user returns to the tab, while the disk write is debounced
   // (clearing flushes at once so a sent/emptied draft never lingers in state.json).
   function setAgentDraft(agentId: string, draft: string) {
+    startupDraftOverridesRef.current?.set(agentId, draft);
     const nextDrafts = { ...draftsByAgentRef.current };
     if (draft) {
       nextDrafts[agentId] = draft;
@@ -7574,14 +7580,21 @@ function MainApp({ onReady }: { onReady?: () => void }) {
 
   useEffect(() => {
     let cancelled = false;
+    let cancelSecondary: (() => void) | undefined;
+    let restoreHiddenResearch: (() => Promise<void>) | undefined;
+    const initialGlobalDraftsRevision = globalDraftsRevisionRef.current;
+    const initialNotificationRevision = notificationLogRevisionRef.current;
+    const initialResearchNavRevision = researchNavRefreshSeqRef.current;
+    const initialResearchDetailRevision = researchDetailRequestSeqRef.current;
+    const initialSidebarMode = sidebarModeRef.current;
+    const initialResearchScope = localStorage.getItem(RESEARCH_FOLDER_SCOPE_KEY);
 
     // Everything the first paint doesn't need, hydrated detached after the
-    // window is revealed so startup is gated only by the pane/group/agent
-    // snapshot. Settings, per-agent queues, and drafts are small map lookups and
-    // apply within milliseconds. Turns and graphs are intentionally absent:
+    // workspace is usable. Settings, queues, and drafts use a small number of
+    // snapshots rather than IPC per historical agent. Turns and graphs are absent:
     // the surface-driven hydration effect loads only the agents the user can
     // currently see instead of copying the workspace's complete history.
-    async function hydrateSecondaryFast(existingAgents: AgentInfo[]) {
+    async function hydrateSecondaryFast() {
       try {
         const [
           storedOpenRouterKey,
@@ -7589,9 +7602,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           storedWorktreeLocation,
           storedResearchLaunchInstruction,
           storedResearchSdkHarness,
-          queueEntries,
-          draftEntries,
-          storedGlobalDrafts,
+          composers,
         ] =
           await Promise.all([
             getOpenRouterKey().catch(() => ""),
@@ -7599,27 +7610,11 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             getWorktreeLocation().catch((): AppSettings["worktreeLocation"] | null => null),
             getResearchLaunchInstruction().catch((): string | null => null),
             getResearchSdkHarness().catch((): boolean | null => null),
-            // Per-agent fetches are individually guarded so one failed
-            // draft/queue read just falls back to empty for that agent.
-            Promise.all(
-              existingAgents.map(
-                async (agent) =>
-                  [
-                    agent.id,
-                    await listAgentTurnQueue(agent.id).catch((): QueuedTurn[] => []),
-                  ] as const,
-              ),
-            ),
-            Promise.all(
-              existingAgents.map(
-                async (agent) =>
-                  [
-                    agent.id,
-                    await getAgentDraft(agent.id).catch((): string | null => null),
-                  ] as const,
-              ),
-            ),
-            listGlobalDrafts().catch((): GlobalDraft[] => []),
+            getComposerSnapshot().catch(() => ({
+              queues: {} as Record<string, QueuedTurn[]>,
+              drafts: {} as Record<string, string>,
+              globalDrafts: [] as GlobalDraft[],
+            })),
           ]);
         if (cancelled) {
           return;
@@ -7670,16 +7665,16 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         // boot-time disk state, and clobbering a live draft would erase text
         // mid-composition (and then persist the stale value).
         replaceQueuedTurnsByAgent({
-          ...Object.fromEntries(queueEntries),
+          ...composers.queues,
           ...queuedTurnsByAgentRef.current,
         });
-        setGlobalDrafts(storedGlobalDrafts);
-        const restoredDrafts = {
-          ...Object.fromEntries(
-            draftEntries.filter((entry): entry is [string, string] => Boolean(entry[1])),
-          ),
-          ...draftsByAgentRef.current,
-        };
+        if (globalDraftsRevisionRef.current === initialGlobalDraftsRevision) {
+          setGlobalDrafts(composers.globalDrafts);
+        }
+        const restoredDrafts = reconcileStartupDrafts(
+          composers.drafts, draftsByAgentRef.current, startupDraftOverridesRef.current ?? new Map(),
+        );
+        startupDraftOverridesRef.current = null;
         draftsByAgentRef.current = restoredDrafts;
         setDraftsByAgentState(restoredDrafts);
       } catch (err) {
@@ -7691,39 +7686,17 @@ function MainApp({ onReady }: { onReady?: () => void }) {
 
     async function boot() {
       try {
-        const [
-          runtimeConfig,
-          preferredLauncherAdapterId,
-          preferredActiveTabId,
-          existingGroups,
-          existingPanes,
-          existingPaneSplits,
-          existingAgents,
-          existingResearchTrees,
-          existingResearchActivity,
-          existingRecentActivity,
-          existingResearchFolders,
-          existingPublications,
-          existingArtifacts,
-          existingNotificationLog,
-        ] = await Promise.all([
-          getRuntimeConfig(),
-          getLauncherAdapterPreference().catch(() => null),
-          getActiveTab().catch(() => null),
-          listGroups().catch((): GroupInfo[] => []),
-          listPanes(),
-          getPaneSplits().catch((): PaneSplitInfo[] => []),
-          listAgents(),
-          listResearchTrees(true).catch((): ResearchTreeSummary[] => []),
-          listResearchActivity().catch((): ResearchNode[] => []),
-          listRecentActivity()
-            .then(normalizeRecentActivityPage)
-            .catch(() => ({ items: [], nextCursor: null })),
-          listResearchFolders().catch(emptyResearchFolderState),
-          listPublications().catch((): PublicationBinding[] => []),
-          artifactList().catch((): ArtifactInfo[] => []),
-          getNotificationLog().catch((): unknown => null),
-        ]);
+        const {
+          config: runtimeConfig,
+          launcherAdapterId: preferredLauncherAdapterId,
+          activeTabId: preferredActiveTabId,
+          groups: existingGroups,
+          panes: existingPanes,
+          splits: existingPaneSplits,
+          agents: existingAgents,
+          researchTrees: existingResearchTrees,
+          researchFolders: existingResearchFolders,
+        } = await loadInitialWorkspace();
         if (cancelled) {
           return;
         }
@@ -7739,14 +7712,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         );
         setAgents(existingAgents);
         setAgentsHydrated(true);
-        setArtifacts(existingArtifacts);
-        const partitionedResearchTrees = partitionResearchTrees(existingResearchTrees);
-        setResearchTrees(partitionedResearchTrees.active);
-        setArchivedResearchTrees(partitionedResearchTrees.archived);
-        setResearchActivity(existingResearchActivity);
-        recentActivityItemsRef.current = existingRecentActivity.items;
-        setRecentActivityItems(existingRecentActivity.items);
-        setRecentActivityCursor(existingRecentActivity.nextCursor ?? null);
+        if (researchNavRefreshSeqRef.current === initialResearchNavRevision) {
+          setResearchTrees((current) => reconcileResearchTreeSummaries(current, existingResearchTrees));
+        }
         // Adopt the backend-owned grouping. One-time migration: earlier builds
         // kept folders in localStorage. If the backend has none yet but a
         // localStorage copy survives, push it up once and clear the local key so
@@ -7773,28 +7741,37 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             localStorage.removeItem(RESEARCH_FOLDERS_STORAGE_KEY);
           }
         }
-        setNotificationLog(normalizeNotificationLog(existingNotificationLog));
-        setPublicationBindings(existingPublications);
-        void hydrateSecondaryFast(existingAgents);
         const savedResearchTreeId = localStorage.getItem(ACTIVE_RESEARCH_TREE_KEY);
         const restoredResearchScope = resolveResearchScope(
           localStorage.getItem(RESEARCH_FOLDER_SCOPE_KEY),
           groupsForScope(existingGroups, "research"),
         );
-        const allResearchTrees = [
-          ...partitionedResearchTrees.active,
-          ...partitionedResearchTrees.archived,
-        ];
-        const researchTreeToRestore = savedResearchTreeId
-          ? sidebarModeRef.current === "research"
-            ? treeForResearchScope(
-                allResearchTrees,
-                restoredResearchScope,
-                savedResearchTreeId,
-              )
-            : allResearchTrees.find((tree) => tree.id === savedResearchTreeId) ?? null
-          : null;
+        // Restore only the selected document, including an archived selection;
+        // the rest of the archive belongs to background navigation hydration.
+        let researchTreeToRestore = savedResearchTreeId ? { id: savedResearchTreeId } : null;
+        const selectionIsCurrent = () => !cancelled &&
+          researchDetailRequestSeqRef.current === initialResearchDetailRevision &&
+          localStorage.getItem(RESEARCH_FOLDER_SCOPE_KEY) === initialResearchScope;
         const restoreResearchSelection = async () => {
+          if (!selectionIsCurrent()) return;
+          // Choose the Research stage before loading any document. A missing,
+          // out-of-folder, or invalidated response must never expose a terminal
+          // from the Terminal sidebar underneath the Research sidebar.
+          if (initialSidebarMode === "research" && sidebarModeRef.current === "research") {
+            const pane = startupResearchPane(
+              localStorage.getItem(ACTIVE_RESEARCH_PANE_KEY), existingPanes, existingGroups, restoredResearchScope,
+            );
+            activeResearchPaneIdRef.current = pane?.id ?? null;
+            setActiveResearchPaneId(pane?.id ?? null);
+            if (pane) {
+              activePaneIdRef.current = pane.id;
+              setActivePaneIdState(pane.id);
+              setActiveSurface("pane");
+            } else {
+              localStorage.removeItem(ACTIVE_RESEARCH_PANE_KEY);
+              setActiveSurface("research");
+            }
+          }
           if (!researchTreeToRestore || cancelled) {
             if (savedResearchTreeId) {
               localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
@@ -7811,29 +7788,54 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             }
             return;
           }
+          activeResearchTreeIdRef.current = researchTreeToRestore.id;
+          setActiveResearchTreeId(researchTreeToRestore.id);
+          const eventVersion = researchTreeEventVersionRef.current.get(researchTreeToRestore.id) ?? 0;
           try {
-            const detail = await getResearchTree(researchTreeToRestore.id);
-            if (!cancelled) {
+            let detail = await getResearchTree(researchTreeToRestore.id);
+            if (!selectionIsCurrent() || removedResearchTreeIdsRef.current.has(researchTreeToRestore.id)) return;
+            if ((researchTreeEventVersionRef.current.get(researchTreeToRestore.id) ?? 0) !== eventVersion) {
+              scheduleResearchTreeRecovery(researchTreeToRestore.id);
+              return;
+            }
+            if (initialSidebarMode === "research" &&
+                !workspaceIsInResearchScope(detail.tree.workspaceId, restoredResearchScope)) {
+              // Match normal folder restoration: prefer another active document
+              // in the restored folder, otherwise show Research home.
+              researchTreeToRestore = treeForResearchScope(existingResearchTrees, restoredResearchScope, null);
+              activeResearchTreeIdRef.current = researchTreeToRestore?.id ?? null;
+              setActiveResearchTreeId(researchTreeToRestore?.id ?? null);
+              setActiveResearchDetail(null);
+              setActiveResearchDetailError(null);
+              activeResearchPaneIdRef.current = null;
+              setActiveResearchPaneId(null);
+              localStorage.removeItem(ACTIVE_RESEARCH_PANE_KEY);
+              if (sidebarModeRef.current === "research") setActiveSurface("research");
+              if (!researchTreeToRestore) {
+                localStorage.removeItem(ACTIVE_RESEARCH_TREE_KEY);
+                return;
+              }
+              const fallbackVersion = researchTreeEventVersionRef.current.get(researchTreeToRestore.id) ?? 0;
+              detail = await getResearchTree(researchTreeToRestore.id);
+              if (!selectionIsCurrent() || removedResearchTreeIdsRef.current.has(researchTreeToRestore.id)) return;
+              if ((researchTreeEventVersionRef.current.get(researchTreeToRestore.id) ?? 0) !== fallbackVersion) {
+                scheduleResearchTreeRecovery(researchTreeToRestore.id);
+                return;
+              }
+            }
+            {
+              const summary = researchSummaryFromDetail(detail);
+              const adoptSummary = (current: ResearchTreeSummary[]) => current.some(tree => tree.id === summary.id)
+                ? current : [...current, summary];
+              if (summary.archivedAt) setArchivedResearchTrees(adoptSummary);
+              else setResearchTrees(adoptSummary);
+              activeResearchTreeIdRef.current = researchTreeToRestore.id;
               setActiveResearchTreeId(researchTreeToRestore.id);
               localStorage.setItem(ACTIVE_RESEARCH_TREE_KEY, researchTreeToRestore.id);
               setActiveResearchDetail((current) =>
                 reconcileResearchTreeDetail(current, detail),
               );
-              const restoredResearchPaneId = localStorage.getItem(ACTIVE_RESEARCH_PANE_KEY);
-              const restoredResearchPane = existingPanes.find(
-                (pane) =>
-                  pane.id === restoredResearchPaneId &&
-                  existingGroups.find((group) => group.id === pane.groupId)?.scope === "research" &&
-                  workspaceIsInResearchScope(pane.groupId, restoredResearchScope),
-              );
-              if (sidebarModeRef.current === "research" && restoredResearchPane) {
-                activeResearchPaneIdRef.current = restoredResearchPane.id;
-                setActiveResearchPaneId(restoredResearchPane.id);
-                activePaneIdRef.current = restoredResearchPane.id;
-                setActivePaneIdState(restoredResearchPane.id);
-                setActiveSurface("pane");
-              } else if (sidebarModeRef.current === "research") {
-                setActiveSurface("research");
+              if (sidebarModeRef.current === "research" && activeSurfaceRef.current === "research") {
                 if (
                   researchDocumentIsVisible(
                     researchTreeToRestore.id,
@@ -7846,7 +7848,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                     .then(() => {
                       setResearchTrees((current) =>
                         current.map((tree) =>
-                          tree.id === researchTreeToRestore.id
+                          tree.id === detail.tree.id
                             ? { ...tree, hasUnseenUpdate: false, hasUnseenFailure: false }
                             : tree,
                         ),
@@ -7857,6 +7859,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               }
             }
           } catch (err) {
+            if (!selectionIsCurrent() || !researchTreeToRestore) return;
             // Mirror selectResearchTree's failure path when booting into
             // Research mode: keep the selection and surface the error inside
             // the document (which has a working Retry) — silently dropping
@@ -7888,7 +7891,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           lastTerminalTabIdRef.current = nextActivePaneId;
           setLastActiveGroupId(fallbackPane.groupId);
           activeTabPersistenceReadyRef.current = true;
-          await restoreResearchSelection();
+          if (initialSidebarMode === "research") await restoreResearchSelection();
+          else restoreHiddenResearch = restoreResearchSelection;
           return;
         }
 
@@ -7902,7 +7906,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           setActivePaneIdState(null);
           lastTerminalTabIdRef.current = "";
           activeTabPersistenceReadyRef.current = true;
-          await restoreResearchSelection();
+          if (initialSidebarMode === "research") await restoreResearchSelection();
+          else restoreHiddenResearch = restoreResearchSelection;
         }
       } catch (err) {
         if (!cancelled) {
@@ -7911,17 +7916,48 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       }
     }
 
+    function hydrateSecondary() {
+      if (cancelled) return;
+      void hydrateSecondaryFast();
+      void restoreHiddenResearch?.();
+      void refreshResearchNavigation(() => !cancelled).catch((err) => console.error("failed to load research navigation", err));
+      void listPublications().then((bindings) => {
+        if (cancelled) return;
+        // A publication created/updated while this request ran wins.
+        setPublicationBindings((current) => [
+          ...current,
+          ...bindings.filter(binding => !current.some(live => live.publicationId === binding.publicationId)),
+        ]);
+      }).catch((err) => console.error("failed to load publications", err));
+      void artifactList().then((snapshot) => {
+        if (cancelled) return;
+        const overrides = startupArtifactOverridesRef.current ?? new Map();
+        startupArtifactOverridesRef.current = null;
+        setArtifacts(reconcileStartupArtifacts(snapshot, overrides));
+      }).catch((err) => {
+        startupArtifactOverridesRef.current = null;
+        console.error("failed to load artifacts", err);
+      });
+      void getNotificationLog().then((log) => {
+        if (!cancelled && notificationLogRevisionRef.current === initialNotificationRevision) {
+          setNotificationLog(normalizeNotificationLog(log));
+        }
+      }).catch((err) => console.error("failed to load notification history", err));
+    }
+
     // Replace the startup screen with the hydrated interface (or its error
     // banner). A cancelled effect leaves readiness to the next mount.
     void boot().finally(() => {
       if (!cancelled) {
         onReady?.();
         void markAppInterfaceReady().catch(() => undefined);
+        cancelSecondary = afterStartupPaint(hydrateSecondary);
       }
     });
 
     return () => {
       cancelled = true;
+      cancelSecondary?.();
     };
   }, []);
 
@@ -8236,6 +8272,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             )
           : [],
       );
+      for (const id of removedIds) startupArtifactOverridesRef.current?.set(id, null);
+      startupArtifactOverridesRef.current?.set(artifact.id, artifact);
       setArtifacts((current) =>
         [
           ...current.filter(
@@ -8249,6 +8287,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     if (event.type === "artifact.removed") {
       const id = event.payload.id;
       if (typeof id === "string") {
+        startupArtifactOverridesRef.current?.set(id, null);
         setArtifacts((current) => current.filter((entry) => entry.id !== id));
       }
     }
@@ -8343,7 +8382,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     setResearchTrees((current) => clearResearchTreeAttention(current, treeId));
     setArchivedResearchTrees((current) => clearResearchTreeAttention(current, treeId));
   }, []);
-  const refreshResearchNavigation = useCallback(async (): Promise<
+  const refreshResearchNavigation = useCallback(async (isCurrent: () => boolean = () => true): Promise<
     ResearchTreeSummary[] | null
   > => {
     // Bump-and-check like every other refetch here (agents, panes, groups,
@@ -8368,7 +8407,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         listResearchActivity(),
         listRecentActivity().then(normalizeRecentActivityPage),
       ]);
-      if (researchNavRefreshSeqRef.current !== requestSeq) {
+      if (!isCurrent() || researchNavRefreshSeqRef.current !== requestSeq) {
         return null;
       }
       const partitioned = partitionResearchTrees(trees);
@@ -10432,6 +10471,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   }, []);
 
   const handleNotificationLogChanged = useCallback((event: QmuxEvent) => {
+    notificationLogRevisionRef.current += 1;
     setNotificationLog(normalizeNotificationLog(event.payload));
   }, []);
 
@@ -10451,6 +10491,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     );
   }, []);
   const adoptNotificationLog = useCallback((value: unknown) => {
+    notificationLogRevisionRef.current += 1;
     setNotificationLog(normalizeNotificationLog(value));
   }, []);
   const handleMarkNotificationRead = useCallback((id: string) => {
@@ -10796,6 +10837,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         void refreshAgentTurnQueue(restoredAgent.id).catch(() => undefined);
         void getAgentDraft(restoredAgent.id)
           .then((draft) => {
+            startupDraftOverridesRef.current?.set(restoredAgent.id, draft ?? "");
             const nextDrafts = { ...draftsByAgentRef.current };
             if (draft) {
               nextDrafts[restoredAgent.id] = draft;

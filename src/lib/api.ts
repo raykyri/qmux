@@ -717,6 +717,14 @@ export function listAgentTurnQueue(agentId: string) {
   return invoke<QueuedTurn[]>("list_agent_turn_queue", { agentId });
 }
 
+export function getComposerSnapshot() {
+  return invoke<{
+    queues: Record<string, QueuedTurn[]>;
+    drafts: Record<string, string>;
+    globalDrafts: GlobalDraft[];
+  }>("composer_snapshot");
+}
+
 export function listGlobalDrafts() {
   return invoke<GlobalDraft[]>("list_global_drafts");
 }

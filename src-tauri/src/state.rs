@@ -330,6 +330,14 @@ pub struct AppState {
     inner: Arc<AppStateInner>,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerSnapshot {
+    queues: HashMap<String, Vec<QueuedTurn>>,
+    drafts: HashMap<String, String>,
+    global_drafts: Vec<GlobalDraft>,
+}
+
 struct AppStateInner {
     config: QmuxConfig,
     pane_tokens: Mutex<HashMap<String, String>>,
@@ -6292,6 +6300,30 @@ impl AppState {
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
         Ok(model.agent_drafts.get(agent_id).cloned())
+    }
+
+    /// One small snapshot instead of two IPC calls for every historical agent.
+    pub fn composer_snapshot(&self) -> Result<ComposerSnapshot, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(ComposerSnapshot {
+            queues: model
+                .agent_turn_queues
+                .iter()
+                .filter(|(id, queue)| model.agents.contains_key(*id) && !queue.is_empty())
+                .map(|(id, queue)| (id.clone(), queue.iter().cloned().collect()))
+                .collect(),
+            drafts: model
+                .agent_drafts
+                .iter()
+                .filter(|(id, _)| model.agents.contains_key(*id))
+                .map(|(id, draft)| (id.clone(), draft.clone()))
+                .collect(),
+            global_drafts: model.global_drafts.clone(),
+        })
     }
 
     pub fn interface_draft(&self, key: &str) -> Result<Option<String>, String> {

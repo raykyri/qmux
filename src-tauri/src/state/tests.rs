@@ -8391,3 +8391,33 @@ fn startup_failed_preflight_quit_does_not_overwrite_unreadable_session() {
     assert!(path.is_dir());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn startup_composer_snapshot_batches_only_existing_agents_and_preserves_queue_order() {
+    let root = temp_workspace();
+    let state = AppState::new(test_config(root.clone()));
+    state.insert_agent(sample_agent("agent-1")).unwrap();
+    state.insert_agent(sample_agent("empty-agent")).unwrap();
+    state.set_agent_draft("agent-1", "draft".into()).unwrap();
+    state
+        .set_agent_draft("missing-agent", "orphan".into())
+        .unwrap();
+    state.enqueue_agent_turn("agent-1", "first".into()).unwrap();
+    state
+        .enqueue_agent_turn("agent-1", "second".into())
+        .unwrap();
+    state
+        .enqueue_agent_turn("missing-agent", "orphan".into())
+        .unwrap();
+    state.create_global_draft("global".into()).unwrap();
+    let snapshot = state.composer_snapshot().unwrap();
+    assert_eq!(snapshot.drafts.len(), 1);
+    assert_eq!(snapshot.drafts.get("agent-1").unwrap(), "draft");
+    assert_eq!(snapshot.queues.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&snapshot.queues["agent-1"]).unwrap(),
+        serde_json::to_value(state.agent_queued_turns("agent-1").unwrap()).unwrap()
+    );
+    assert_eq!(snapshot.global_drafts.len(), 1);
+    std::fs::remove_dir_all(root).unwrap();
+}
