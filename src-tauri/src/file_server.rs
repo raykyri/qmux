@@ -1138,12 +1138,14 @@ fn render_codex_inline_visualization_page(
 /// sandboxed iframe whose canvas is transparent, so UA-default dark-scheme text would
 /// float over whatever backdrop the app has — white-on-white in practice. Translucent
 /// grays handle the accents in both themes, and the file CSP already allows inline
-/// styles.
+/// styles. Paint the root as well as the body so WebKit uses the page background
+/// for the canvas exposed during rubber-band scrolling.
 const MARKDOWN_PAGE_CSS: &str = "\
 __QMUX_FONT_FACE__\
 :root { color-scheme: light dark; }\
-body { margin: 0; font-family: __QMUX_BODY_FONT__; font-variant-ligatures: no-common-ligatures; line-height: 1.6; background: #ffffff; color: #1f2328; }\
-@media (prefers-color-scheme: dark) { body { background: #1e2227; color: #e2e6ea; } }\
+html, body { background: #ffffff; color: #1f2328; }\
+body { margin: 0; font-family: __QMUX_BODY_FONT__; font-variant-ligatures: no-common-ligatures; line-height: 1.6; }\
+@media (prefers-color-scheme: dark) { html, body { background: #1e2227; color: #e2e6ea; } }\
 main { max-width: 48rem; margin: 0 auto; padding: 2rem 1.5rem 4rem; }\
 h1, h2 { border-bottom: 1px solid rgba(127, 127, 127, 0.3); padding-bottom: 0.3em; }\
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; background: rgba(127, 127, 127, 0.15); padding: 0.1em 0.3em; border-radius: 4px; }\
