@@ -1307,7 +1307,7 @@ header + .turn-blocks {
   align-items: center;
   gap: 10px;
   margin: 8px 0;
-  padding: 10px 11px;
+  padding: 8px 11px;
   border: 1px solid var(--surface-border-subtle);
   border-radius: var(--radius-md);
   color: var(--text-primary);
@@ -1359,7 +1359,7 @@ header + .turn-blocks {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
 }
 
 .turn-visualization-attachment-copy strong,
@@ -1370,6 +1370,7 @@ header + .turn-blocks {
 }
 
 .turn-visualization-attachment-copy strong {
+  font-size: calc(13px + var(--transcript-font-delta, 0px));
   font-weight: 580;
 }
 

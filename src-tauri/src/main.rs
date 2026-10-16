@@ -1349,7 +1349,7 @@ async fn browser_open_codex_inline_visualization(
 
 /// Resolve and open an absolute HTML-fragment path from the current Codex
 /// `visualize` content-reference contract. The transcript path is untrusted:
-/// it must resolve beneath this pane's own roots or qmux's durable designs
+/// it must resolve beneath this pane's own roots or qmux's configured workspace
 /// directory before it receives an exact preview grant.
 #[tauri::command(async)]
 async fn browser_open_codex_visualization_reference(
@@ -1374,9 +1374,8 @@ async fn browser_open_codex_visualization_reference(
         if pane_roots.is_empty() {
             return Err("local visualization references are unavailable for this pane".to_string());
         }
-        let designs_root = state.config().workspace_root.join("designs");
         let path = file_server::resolve_codex_visualization_reference(
-            &designs_root,
+            &state.config().workspace_root,
             &pane_roots,
             std::path::Path::new(path.trim()),
         )?;

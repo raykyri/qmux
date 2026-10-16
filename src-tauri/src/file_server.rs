@@ -442,11 +442,11 @@ pub fn resolve_codex_inline_visualization(
 
 /// Resolves an absolute path carried by the current Codex visualization
 /// content-reference contract. Ordinary pane roots cover the attached
-/// checkout and temporary output; qmux's durable designs directory is added
-/// explicitly because it sits inside private workspace metadata that must not
-/// become a general pane file root.
+/// checkout and temporary output; qmux's configured workspace directory also
+/// accepts explicitly referenced fragments. This only authorizes an exact-file
+/// preview grant, never a general pane root or access to neighboring files.
 pub fn resolve_codex_visualization_reference(
-    designs_root: &Path,
+    workspace_root: &Path,
     pane_roots: &[PathBuf],
     reference: &Path,
 ) -> Result<PathBuf, String> {
@@ -461,7 +461,7 @@ pub fn resolve_codex_visualization_reference(
         return Err("Codex visualization references must target an HTML fragment".to_string());
     }
     let mut allowed_roots = pane_roots.to_vec();
-    allowed_roots.push(designs_root.to_path_buf());
+    allowed_roots.push(workspace_root.to_path_buf());
     resolve_under_roots(reference, &allowed_roots)
         .filter(|path| path.is_file())
         .ok_or_else(|| "Codex visualization is outside this pane's approved roots".to_string())
@@ -2091,7 +2091,8 @@ mod tests {
             "qmux-fs-visualization-reference-{}",
             std::process::id()
         ));
-        let designs = base.join("workspace-metadata/designs");
+        let workspace = base.join("workspaces");
+        let designs = workspace.join("designs");
         let pane_root = base.join("pane");
         let outside = base.join("outside");
         for directory in [&designs, &pane_root, &outside] {
@@ -2105,19 +2106,51 @@ mod tests {
         let secret = outside.join("secret.html");
         std::fs::write(&secret, "<div>secret</div>").unwrap();
 
+        let shared = workspace.join("markdown-style-mockups/markdown-styles.html");
+        std::fs::create_dir_all(shared.parent().unwrap()).unwrap();
+        std::fs::write(&shared, "<div>shared workspace fragment</div>").unwrap();
         let pane_roots = vec![pane_root.clone()];
         assert_eq!(
-            resolve_codex_visualization_reference(&designs, &pane_roots, &durable).unwrap(),
+            resolve_codex_visualization_reference(&workspace, &pane_roots, &shared).unwrap(),
+            std::fs::canonicalize(&shared).unwrap()
+        );
+        // Authorization applies to the named HTML file, not arbitrary metadata.
+        let metadata = workspace.join("state.json");
+        std::fs::write(&metadata, "{}").unwrap();
+        assert!(resolve_codex_visualization_reference(&workspace, &pane_roots, &metadata).is_err());
+        let directory = workspace.join("directory.html");
+        std::fs::create_dir_all(&directory).unwrap();
+        assert!(
+            resolve_codex_visualization_reference(&workspace, &pane_roots, &directory).is_err()
+        );
+        assert!(
+            resolve_codex_visualization_reference(
+                &workspace,
+                &pane_roots,
+                &workspace.join("../outside/secret.html")
+            )
+            .is_err()
+        );
+        #[cfg(unix)]
+        {
+            let escape = workspace.join("escape.html");
+            std::os::unix::fs::symlink(&secret, &escape).unwrap();
+            assert!(
+                resolve_codex_visualization_reference(&workspace, &pane_roots, &escape).is_err()
+            );
+        }
+        assert_eq!(
+            resolve_codex_visualization_reference(&workspace, &pane_roots, &durable).unwrap(),
             std::fs::canonicalize(&durable).unwrap()
         );
         assert_eq!(
-            resolve_codex_visualization_reference(&designs, &pane_roots, &temporary).unwrap(),
+            resolve_codex_visualization_reference(&workspace, &pane_roots, &temporary).unwrap(),
             std::fs::canonicalize(&temporary).unwrap()
         );
-        assert!(resolve_codex_visualization_reference(&designs, &pane_roots, &secret).is_err());
+        assert!(resolve_codex_visualization_reference(&workspace, &pane_roots, &secret).is_err());
         assert!(
             resolve_codex_visualization_reference(
-                &designs,
+                &workspace,
                 &pane_roots,
                 Path::new("relative.html")
             )
@@ -2125,7 +2158,7 @@ mod tests {
         );
         assert!(
             resolve_codex_visualization_reference(
-                &designs,
+                &workspace,
                 &pane_roots,
                 &pane_root.join("chart.svg")
             )

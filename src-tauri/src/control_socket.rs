@@ -1546,10 +1546,11 @@ pub(crate) struct ResolvedBrowserTarget {
 }
 
 /// Resolve a browser-overlay target for `pane_id`: either a loopback http(s)
-/// URL (returned as-is, unsandboxed) or a path under the pane's file roots
-/// (minted into a token-bearing file-server URL and sandboxed). Shared by the
-/// control-socket `browser.open` path and the trusted GUI command that opens
-/// local file links from transcript markdown.
+/// URL (returned as-is, unsandboxed), a path under the pane's file roots, or an
+/// HTML file accepted by the visualization-reference policy. Files receive
+/// sandboxed token-bearing URLs; workspace HTML gets an exact-file token only.
+/// Shared by the control-socket `browser.open` path and the trusted GUI command
+/// that opens local file links from transcript markdown.
 pub(crate) fn resolve_browser_target(
     state: &AppState,
     authed_pane: &str,
@@ -1585,16 +1586,32 @@ pub(crate) fn resolve_browser_target(
     };
 
     let roots = state.pane_file_roots(authed_pane);
-    let canonical = crate::file_server::resolve_under_roots(&requested, &roots)
-        .ok_or_else(|| format!("'{target}' was not found"))?;
+    let (canonical, visualization_reference) =
+        if let Some(path) = crate::file_server::resolve_under_roots(&requested, &roots) {
+            (path, false)
+        } else {
+            // Empty roots also identify remote panes: never interpret their
+            // paths against the local workspace directory.
+            if roots.is_empty() {
+                return Err(format!("'{target}' was not found"));
+            }
+            let path = crate::file_server::resolve_codex_visualization_reference(
+                &state.config().workspace_root,
+                &roots,
+                &requested,
+            )
+            .map_err(|_| format!("'{target}' was not found"))?;
+            (path, true)
+        };
     let port = state
         .file_server_port()
         .ok_or_else(|| "the file server is not running".to_string())?;
-    let token = if crate::file_server::is_executable_preview_path(&canonical) {
-        state.exact_file_preview_token(authed_pane, &canonical)?
-    } else {
-        state.pane_file_token(authed_pane)?
-    };
+    let token =
+        if visualization_reference || crate::file_server::is_executable_preview_path(&canonical) {
+            state.exact_file_preview_token(authed_pane, &canonical)?
+        } else {
+            state.pane_file_token(authed_pane)?
+        };
     Ok(ResolvedBrowserTarget {
         url: crate::file_server::file_url(port, &token, &canonical),
         sandbox: true,
