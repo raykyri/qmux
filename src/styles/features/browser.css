@@ -245,9 +245,8 @@
 }
 
 .file-match-menu .menu-item {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* Remote preview controls use shared Button chrome; this is only their layout. */

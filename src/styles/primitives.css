@@ -154,6 +154,11 @@
   color: var(--danger-fg-muted);
 }
 
+.menu-item:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
 .menu-item.is-danger:hover:not(:disabled),
 .menu-item.is-danger.is-highlighted {
   background: var(--danger-bg-strong);
