@@ -27,6 +27,9 @@ interface LeftSidebarRestorePlacementInput {
   leftSidebarCollapsed: boolean;
   researchHeaderOwnsRestore: boolean;
   splitRightPaneMode: boolean;
+  /** Nested full-width bands with a docked transcript. They place the control
+   * on that cell the same way a flat top/bottom stack does. */
+  dockedTranscriptCells?: boolean;
   activePaneId?: string | null;
   visibleRightBarPaneIds: readonly string[];
 }
@@ -39,6 +42,7 @@ export function leftSidebarRestorePlacement({
   leftSidebarCollapsed,
   researchHeaderOwnsRestore,
   splitRightPaneMode,
+  dockedTranscriptCells = false,
   activePaneId,
   visibleRightBarPaneIds,
 }: LeftSidebarRestorePlacementInput): LeftSidebarRestorePlacement {
@@ -51,7 +55,7 @@ export function leftSidebarRestorePlacement({
   if (visibleRightBarPaneIds.length === 0) {
     return { kind: "floating" };
   }
-  if (!splitRightPaneMode) {
+  if (!splitRightPaneMode && !dockedTranscriptCells) {
     return { kind: "turn-pane-header" };
   }
   const paneId =

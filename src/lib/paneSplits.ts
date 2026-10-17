@@ -1355,6 +1355,124 @@ export function canToggleTurnSidebar(
   activePaneHasTurnSidebar: boolean,
   splitRightPaneMode: boolean,
   splitTurnSidebarCount: number,
+  /** Full-width leaves in a nested split that have a transcript. They dock a
+   * right pane, so a shell sibling can still collapse and restore it. Column
+   * panes do not count: they have no docked bar. */
+  dockedFullWidthSidebarCount = 0,
 ) {
-  return activePaneHasTurnSidebar || (splitRightPaneMode && splitTurnSidebarCount > 0);
+  return (
+    activePaneHasTurnSidebar ||
+    (splitRightPaneMode && splitTurnSidebarCount > 0) ||
+    dockedFullWidthSidebarCount > 0
+  );
+}
+
+/** The pane's horizontal edges are the stage's. A leaf reaches this only by
+ * descending through vertical branches; any horizontal ancestor gives it a
+ * column. Exact equality, not a tolerance: a near-full column is still a
+ * column. */
+export function splitRectSpansStageWidth(rect: SplitRect): boolean {
+  return (
+    rect.leftFraction === 0 &&
+    rect.leftPx === 0 &&
+    rect.widthFraction === 1 &&
+    rect.widthPx === 0
+  );
+}
+
+/** The pane's top edge is the stage's top edge. */
+export function splitRectStartsAtStageTop(rect: SplitRect): boolean {
+  return rect.topFraction === 0 && rect.topPx === 0;
+}
+
+/** Full-stage-width leaves, in layout order (top to bottom for a vertical
+ * root). Flat top/bottom stacks are all full width and keep their own
+ * transcript path; callers that dock nested bands must skip that mode. */
+export function fullWidthSplitPaneIds(layout: PaneSplitLayout): string[] {
+  const paneIds: string[] = [];
+  for (const [paneId, rect] of layout.panes) {
+    if (splitRectSpansStageWidth(rect)) {
+      paneIds.push(paneId);
+    }
+  }
+  return paneIds;
+}
+
+function subtreeRightEdgeIsTranscript(
+  node: PaneSplitNode,
+  paneIdsWithTranscript: ReadonlySet<string>,
+): boolean {
+  if (node.kind === "pane") {
+    return paneIdsWithTranscript.has(node.paneId);
+  }
+  // A row's right edge is one column. That column does not span the stage, so
+  // it has no docked transcript for the divider cover to meet.
+  if (node.axis === "horizontal") {
+    return false;
+  }
+  return (
+    node.children.length > 0 &&
+    node.children.every((child) => subtreeRightEdgeIsTranscript(child, paneIdsWithTranscript))
+  );
+}
+
+export interface TranscriptStripDivider {
+  path: string;
+  index: number;
+  rect: SplitRect;
+}
+
+/** Horizontal gutters whose both sides show a docked transcript for their
+ * whole height, and whose branch itself spans the stage. The cover paints the
+ * right-pane color across the transcript strip only. A gutter against a
+ * column row or a full-width shell stays uncovered so it does not sit on that
+ * terminal's resize handle. Flat stacks cover gutters with their own path. */
+export function transcriptStripDividers(
+  split: PaneSplitInfo,
+  layout: PaneSplitLayout,
+  paneIdsWithTranscript: ReadonlySet<string>,
+): TranscriptStripDivider[] {
+  const root = paneSplitRootNode(split);
+  const covers: TranscriptStripDivider[] = [];
+  for (const divider of layout.dividers) {
+    // Branch axis "vertical" means the children are stacked, so the divider
+    // itself is a horizontal line.
+    if (divider.axis !== "vertical") {
+      continue;
+    }
+    const branch = layout.branches.get(divider.path);
+    if (!branch || !splitRectSpansStageWidth(branch.rect)) {
+      continue;
+    }
+    const node = splitNodeAtPath(root, divider.path);
+    const above = node?.children[divider.index];
+    const below = node?.children[divider.index + 1];
+    if (!above || !below) {
+      continue;
+    }
+    if (
+      subtreeRightEdgeIsTranscript(above, paneIdsWithTranscript) &&
+      subtreeRightEdgeIsTranscript(below, paneIdsWithTranscript)
+    ) {
+      covers.push({ path: divider.path, index: divider.index, rect: divider.rect });
+    }
+  }
+  return covers;
+}
+
+/** Column count for a shell spawned by splitting a pane. A full-width pane
+ * docked beside a transcript reports the inset grid. The new shell does not
+ * keep that inset: a sideways split dissolves the band, and a vertical split
+ * adds a shell with no transcript of its own. Scaling the inset grid would
+ * birth the PTY at the wrong width and resize it on the first layout. */
+export function splitSpawnColumns(
+  sourceCols: number,
+  stageCols: number,
+  scale: number,
+  sourceReservesTranscriptStrip: boolean,
+  axis: PaneSplitAxis,
+): number {
+  const base =
+    sourceReservesTranscriptStrip && stageCols > 0 ? stageCols : sourceCols;
+  return axis === "horizontal" ? Math.floor(base * scale) : base;
 }

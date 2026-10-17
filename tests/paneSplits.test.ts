@@ -12,6 +12,7 @@ import {
   canSplitPaneInTree,
   canToggleTurnSidebar,
   detachPaneFromSplitMemberships,
+  fullWidthSplitPaneIds,
   joinPaneSplit,
   normalizePaneSplitsForPanes,
   paneAtStagePoint,
@@ -33,7 +34,11 @@ import {
   splitNodePaneIds,
   splitRectOffsets,
   splitRectPixels,
+  splitRectSpansStageWidth,
+  splitRectStartsAtStageTop,
+  splitSpawnColumns,
   togglePaneSplitAxis,
+  transcriptStripDividers,
   withPaneSplitAxis,
 } from "../src/lib/paneSplits";
 import type { PaneInfo, PaneSplitInfo, PaneSplitNode } from "../src/types";
@@ -337,6 +342,10 @@ test("split transcript controls remain available from a shell sibling", () => {
   assert.equal(canToggleTurnSidebar(false, true, 0), false);
   assert.equal(canToggleTurnSidebar(false, false, 1), false);
   assert.equal(canToggleTurnSidebar(true, false, 0), true);
+  // A nested full-width band docks a transcript. A shell sibling can toggle
+  // it. A column-only split passes a zero docked count and stays unavailable.
+  assert.equal(canToggleTurnSidebar(false, false, 0, 1), true);
+  assert.equal(canToggleTurnSidebar(false, false, 2, 0), false);
 });
 
 test("normalizePaneSplitsForPanes prunes split intent for missing panes and anchors", () => {
@@ -1051,6 +1060,112 @@ test("paneSplitLayout gives unequal nested fractions the leftover pixels", () =>
   assert.equal(b.height, 744);
   assert.equal(c.top, 752);
   assert.equal(c.height, 248);
+});
+
+test("full-width nested bands dock and column leaves do not", () => {
+  const stackedUnderColumns = paneSplitLayout(
+    nestedSplit(
+      branchNode("vertical", [
+        branchNode("horizontal", [paneNode("b", 0.5), paneNode("c", 0.5)], 0.4),
+        paneNode("a", 0.6),
+      ]),
+    ),
+    GUTTER,
+  );
+  assert.deepEqual(fullWidthSplitPaneIds(stackedUnderColumns), ["a"]);
+  const a = stackedUnderColumns.panes.get("a");
+  const b = stackedUnderColumns.panes.get("b");
+  assert.ok(a && b);
+  assert.equal(splitRectSpansStageWidth(a), true);
+  assert.equal(splitRectSpansStageWidth(b), false);
+  assert.equal(splitRectStartsAtStageTop(a), false);
+  assert.equal(splitRectStartsAtStageTop(b), true);
+
+  const twoBands = paneSplitLayout(
+    nestedSplit(
+      branchNode("vertical", [
+        paneNode("d", 0.25),
+        branchNode("horizontal", [paneNode("b", 0.5), paneNode("c", 0.5)], 0.35),
+        paneNode("a", 0.4),
+      ]),
+    ),
+    GUTTER,
+  );
+  assert.deepEqual(fullWidthSplitPaneIds(twoBands), ["d", "a"]);
+  assert.equal(splitRectStartsAtStageTop(twoBands.panes.get("d")!), true);
+
+  const columnsOnly = paneSplitLayout(
+    nestedSplit(
+      branchNode("horizontal", [
+        branchNode("vertical", [paneNode("a", 0.5), paneNode("b", 0.5)], 0.5),
+        paneNode("c", 0.5),
+      ]),
+    ),
+    GUTTER,
+  );
+  assert.deepEqual(fullWidthSplitPaneIds(columnsOnly), []);
+});
+
+test("transcript gutter covers join full-width transcript bands only", () => {
+  const split = nestedSplit(
+    branchNode("vertical", [
+      paneNode("top", 0.25),
+      branchNode("horizontal", [paneNode("left", 0.5), paneNode("right", 0.5)], 0.25),
+      paneNode("mid", 0.25),
+      paneNode("bottom", 0.25),
+    ]),
+  );
+  const layout = paneSplitLayout(split, GUTTER);
+  const withTranscript = new Set(["top", "mid", "bottom", "left"]);
+  const covers = transcriptStripDividers(split, layout, withTranscript);
+  // top|columns and columns|mid meet a column row. mid|bottom is the only
+  // gutter with a transcript on both sides.
+  assert.deepEqual(
+    covers.map((cover) => cover.index),
+    [2],
+  );
+  assert.equal(covers[0]?.path, "");
+  const stage = { width: 1000, height: 800 };
+  const pixels = splitRectPixels(covers[0]!.rect, stage);
+  assert.ok(pixels.width > 500, "the cover's divider spans the stage");
+  assert.equal(pixels.height, GUTTER);
+
+  const columnSplit = nestedSplit(
+    branchNode("horizontal", [
+      branchNode("vertical", [paneNode("a", 0.5), paneNode("b", 0.5)], 0.5),
+      paneNode("c", 0.5),
+    ]),
+  );
+  assert.deepEqual(
+    transcriptStripDividers(columnSplit, paneSplitLayout(columnSplit, GUTTER), new Set(["a", "b"])),
+    [],
+  );
+
+  const shellBetween = nestedSplit(
+    branchNode("vertical", [
+      paneNode("top", 0.34),
+      paneNode("shell", 0.33),
+      paneNode("bottom", 0.33),
+    ]),
+  );
+  const shellLayout = paneSplitLayout(shellBetween, GUTTER);
+  assert.equal(
+    transcriptStripDividers(shellBetween, shellLayout, new Set(["top", "bottom"])).length,
+    0,
+  );
+  assert.equal(
+    transcriptStripDividers(shellBetween, shellLayout, new Set(["top", "shell", "bottom"])).length,
+    2,
+  );
+});
+
+test("a sideways split of an inset full-width pane sizes the new shell from the stage", () => {
+  assert.equal(splitSpawnColumns(80, 120, 0.5, true, "horizontal"), 60);
+  assert.equal(splitSpawnColumns(80, 120, 0.5, false, "horizontal"), 40);
+  // The new shell under a docked band has no transcript, so it takes the
+  // whole stage width rather than the inset grid it was split from.
+  assert.equal(splitSpawnColumns(80, 120, 0.5, true, "vertical"), 120);
+  assert.equal(splitSpawnColumns(80, 120, 0.5, false, "vertical"), 80);
 });
 
 test("paneAtStagePoint distinguishes nested panes a single axis cannot", () => {

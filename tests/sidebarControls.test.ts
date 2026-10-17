@@ -44,6 +44,27 @@ test("uses the first visible split right bar when the active pane has none", () 
   );
 });
 
+test("places the left restore on a nested full-width transcript cell", () => {
+  assert.deepEqual(
+    placement({
+      splitRightPaneMode: false,
+      dockedTranscriptCells: true,
+      activePaneId: "column",
+      visibleRightBarPaneIds: ["full-width"],
+    }),
+    { kind: "split-turn-pane", paneId: "full-width" },
+  );
+  assert.deepEqual(
+    placement({
+      splitRightPaneMode: false,
+      dockedTranscriptCells: true,
+      activePaneId: "full-width",
+      visibleRightBarPaneIds: ["full-width", "lower"],
+    }),
+    { kind: "split-turn-pane", paneId: "full-width" },
+  );
+});
+
 test("keeps the standalone and research placements for layouts without a right bar", () => {
   assert.deepEqual(placement({ visibleRightBarPaneIds: [] }), { kind: "floating" });
   assert.deepEqual(placement({ researchHeaderOwnsRestore: true }), {

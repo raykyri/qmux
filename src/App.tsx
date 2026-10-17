@@ -409,7 +409,11 @@ import {
   splitFractions,
   splitRectOffsets,
   splitRectPixels,
+  fullWidthSplitPaneIds,
+  splitRectStartsAtStageTop,
+  splitSpawnColumns,
   togglePaneSplitAxis,
+  transcriptStripDividers,
 } from "./lib/paneSplits";
 import type { SplitDivider, SplitRect } from "./lib/paneSplits";
 import {
@@ -3274,6 +3278,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     : false;
   const rightBarCollapsedRef = useRef(rightBarCollapsed);
   rightBarCollapsedRef.current = rightBarCollapsed;
+  // Pane ids whose terminals are currently inset by a docked full-width
+  // transcript. Split spawning reads this so a new shell is born at the width
+  // it will actually occupy.
+  const reservedDockedTurnPaneIdsRef = useRef(new Set<string>());
   const paneById = useMemo(
     () => new Map(panes.map((pane) => [pane.id, pane])),
     [panes],
@@ -3436,17 +3444,18 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const splitLayoutActive = Boolean(activePaneSplit && activePaneSplit.paneIds.length > 1);
   const activeSplitAxis = paneSplitAxis(activePaneSplit);
   const activeSplitNested = paneSplitIsNested(activePaneSplit);
-  // The inline transcript strip only exists for a plain top/bottom stack: it
-  // reserves one full-height column on the right and slices it by each pane's
-  // vertical fraction, which has no meaning once panes sit side by side. A
-  // nested layout therefore takes the same path column splits already do —
-  // transcripts move to the expanded overlay and the artifact tray hosts on the
-  // stage — leaving that geometry untouched.
+  // The inline transcript strip for a plain top/bottom stack reserves one
+  // full-height column on the right and slices it by each pane's vertical
+  // fraction. That column has no meaning once panes sit side by side, so
+  // column splits and the side-by-side bands of a nested layout keep their
+  // transcripts in the expanded overlay. A nested leaf whose own rect is the
+  // full stage width is the exception: its row has the same right edge, and it
+  // docks a transcript in that band alone.
   const splitRightPaneMode =
     splitLayoutActive && activeSplitAxis === "vertical" && !activeSplitNested;
-  // A split whose transcripts cannot dock as inline cells, so they live in the
-  // stage-covering expanded overlay instead. Column splits have always been in
-  // this mode; nested layouts join them.
+  // A split whose transcripts cannot all dock as one strip. Column splits have
+  // always been in this mode. Nested layouts stay in it too, and additionally
+  // dock whichever leaves span the stage width.
   const splitOverlayTranscriptMode = splitLayoutActive && !splitRightPaneMode;
   const activeSplitFractions = useMemo(
     () => (activePaneSplit ? splitFractions(activePaneSplit) : []),
@@ -5741,6 +5750,15 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         .map((pane, index) => turnPaneSurfaceForPane(pane, index))
         .filter((surface) => surface.hasTurnSidebar)
     : [];
+  // Nested leaves that already span the stage. Flat top/bottom stacks stay on
+  // splitTurnPaneSurfaces so their fraction geometry is untouched.
+  const fullWidthPaneIds =
+    !splitRightPaneMode && activeSplitLayout
+      ? new Set(fullWidthSplitPaneIds(activeSplitLayout))
+      : null;
+  const dockedTurnPaneSurfaces = fullWidthPaneIds
+    ? splitOverlayTurnPaneSurfaces.filter((surface) => fullWidthPaneIds.has(surface.pane.id))
+    : [];
   const splitTurnPaneSurfaceByPaneId = new Map(
     splitTurnPaneSurfaces.map((surface) => [surface.pane.id, surface]),
   );
@@ -5752,13 +5770,45 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         ? [activeTurnPaneSurface]
         : [];
   const activePaneHasTurnSidebar = Boolean(activeTurnPaneSurface?.hasTurnSidebar);
-  const activePaneCanToggleTurnSidebar =
-    !splitOverlayTranscriptMode &&
-    canToggleTurnSidebar(
-      activePaneHasTurnSidebar,
-      splitRightPaneMode,
-      splitTurnPaneSurfaces.length,
-    );
+  const splitTranscriptExpanded = Boolean(
+    activePaneSplit &&
+      paneSplitFlagIsEnabled(splitTranscriptExpandedByPane, activePaneSplit.paneIds),
+  );
+  const activeTranscriptExpanded = splitLayoutActive
+    ? splitTranscriptExpanded && splitOverlayTurnPaneSurfaces.length > 0
+    : Boolean(activePane && activePaneHasTurnSidebar && transcriptExpandedByPane[activePane.id]);
+  const activeTranscriptVisibleExpanded =
+    activeTranscriptExpanded && (splitOverlayTranscriptMode || !rightBarCollapsed);
+  // Hold the inset while the overlay covers the stage. Dropping it for the
+  // duration of expand would resize the PTY, and a full-screen TUI clears on
+  // SIGWINCH. Collapsing the bar does release it: that resize is the point.
+  const dockedTranscriptReserved = !rightBarCollapsed && dockedTurnPaneSurfaces.length > 0;
+  const mountedDockedTurnPaneSurfaces =
+    dockedTranscriptReserved && !activeTranscriptVisibleExpanded ? dockedTurnPaneSurfaces : [];
+  reservedDockedTurnPaneIdsRef.current = new Set(
+    dockedTranscriptReserved ? dockedTurnPaneSurfaces.map((surface) => surface.pane.id) : [],
+  );
+  const dockedTrayHostPaneId =
+    mountedDockedTurnPaneSurfaces.find((surface) => {
+      const rect = activeSplitLayout?.panes.get(surface.pane.id);
+      return Boolean(rect && splitRectStartsAtStageTop(rect));
+    })?.pane.id ?? null;
+  const dockedTranscriptGutterRects =
+    mountedDockedTurnPaneSurfaces.length > 0 && activePaneSplit && activeSplitLayout
+      ? transcriptStripDividers(
+          activePaneSplit,
+          activeSplitLayout,
+          new Set(mountedDockedTurnPaneSurfaces.map((surface) => surface.pane.id)),
+        )
+      : [];
+  const activePaneCanToggleTurnSidebar = canToggleTurnSidebar(
+    // A column pane's own transcript is overlay-only. It must not advertise a
+    // docked bar when no full-width leaf actually has one.
+    splitOverlayTranscriptMode ? false : activePaneHasTurnSidebar,
+    splitRightPaneMode,
+    splitTurnPaneSurfaces.length,
+    splitOverlayTranscriptMode ? dockedTurnPaneSurfaces.length : 0,
+  );
   const visibleRightBarSurfaces = rightBarCollapsed ? [] : visibleTurnPaneSurfaces;
   const hasVisibleRightBar = visibleRightBarSurfaces.length > 0;
   const researchSidebarRestoreInHeader =
@@ -5769,8 +5819,12 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     leftSidebarCollapsed,
     researchHeaderOwnsRestore: researchSidebarRestoreInHeader,
     splitRightPaneMode,
+    dockedTranscriptCells: mountedDockedTurnPaneSurfaces.length > 0,
     activePaneId: activePane?.id,
-    visibleRightBarPaneIds: visibleRightBarSurfaces.map((surface) => surface.pane.id),
+    visibleRightBarPaneIds: (splitRightPaneMode
+      ? visibleRightBarSurfaces
+      : mountedDockedTurnPaneSurfaces
+    ).map((surface) => surface.pane.id),
   });
   const floatingLeftSidebarRestoreVisible =
     leftSidebarRestore.kind === "floating";
@@ -5778,6 +5832,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const floatingStageTranscriptExpandVisible =
     splitOverlayTranscriptMode &&
     splitOverlayTurnPaneSurfaces.length > 0 &&
+    // A docked band has its own expand control, and while that band is
+    // collapsed the restore button is what brings it back. The stage button
+    // would sit on top of those and, while collapsed, would only uncollapse.
+    dockedTurnPaneSurfaces.length === 0 &&
     !(
       activePaneSplit &&
       paneSplitFlagIsEnabled(splitTranscriptExpandedByPane, activePaneSplit.paneIds)
@@ -5786,12 +5844,23 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     floatingLeftSidebarRestoreVisible ||
     floatingRestoreButtonVisible ||
     floatingStageTranscriptExpandVisible;
+  // Nested layouts anchor this cluster to the active pane's band. A fixed
+  // top: 8px puts a lower pane's restore control over the top terminal, and
+  // native hit-testing can grant that sibling the keyboard during the click.
+  const floatingRestoreAnchorRect =
+    !splitRightPaneMode && activeSplitLayout && activePane
+      ? (activeSplitLayout.panes.get(activePane.id) ?? null)
+      : null;
+  const floatingRestoreAnchorTop = floatingRestoreAnchorRect
+    ? splitCalc(floatingRestoreAnchorRect.topFraction, floatingRestoreAnchorRect.topPx + 8)
+    : "";
   const floatingPaneRestoreControlsLayoutKey = [
     floatingLeftSidebarRestoreVisible ? "left" : "",
     floatingRestoreButtonVisible ? "right" : "",
     floatingStageTranscriptExpandVisible ? "expand" : "",
     splitRightPaneMode ? activePane?.id : "",
     splitRightPaneMode ? activeTurnPaneSurface?.topFraction : "",
+    floatingRestoreAnchorTop,
   ].join(":");
   // These controls can float over a native terminal. Register the whole group,
   // including the seam between two buttons, so Ghostty cannot capture any part
@@ -5801,15 +5870,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     floatingPaneRestoreControlsLayoutKey,
   );
   const hasGlobalTurnSidebar = hasVisibleRightBar && !splitRightPaneMode;
-  const splitTranscriptExpanded = Boolean(
-    activePaneSplit &&
-      paneSplitFlagIsEnabled(splitTranscriptExpandedByPane, activePaneSplit.paneIds),
-  );
-  const activeTranscriptExpanded = splitLayoutActive
-    ? splitTranscriptExpanded && splitOverlayTurnPaneSurfaces.length > 0
-    : Boolean(activePane && activePaneHasTurnSidebar && transcriptExpandedByPane[activePane.id]);
-  const activeTranscriptVisibleExpanded =
-    activeTranscriptExpanded && (splitOverlayTranscriptMode || !rightBarCollapsed);
   const overlayTurnPaneSurfaces = splitLayoutActive
     ? splitOverlayTurnPaneSurfaces
     : visibleRightBarSurfaces;
@@ -5840,9 +5900,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     focusedAssistantTurn,
     focusedAssistantTurnSurface,
   ]);
-  // A split with no docked right pane (columns, or any nested layout) leaves
-  // PiP and assistant-turn focus following the expanded overlay rather than the
-  // collapsed-bar flag.
+  // Column splits, and the side-by-side bands of a nested layout, have no
+  // docked column, so PiP follows the expanded overlay. A nested full-width
+  // band docks its own transcript, and the same overlay is what covers the
+  // stage when that transcript is expanded.
   const pipRightPaneCollapsed = splitOverlayTranscriptMode ? false : rightBarCollapsed;
   const terminalPipToggleVisible = shouldShowTerminalPipToggle({
     transcriptExpanded: activeTranscriptExpanded,
@@ -5941,7 +6002,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   );
   const nativeBrowserGeometryRevision = activeTranscriptVisibleExpanded
     ? -1
-    : activePaneReservesTurnPaneWidth
+    : activePaneReservesTurnPaneWidth || dockedTranscriptReserved
       ? turnPaneWidth
       : 0;
   const nativeTerminalInputBlocked = Boolean(
@@ -6562,7 +6623,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // The new pane's grid, as a share of the pane it splits — not of the stage,
   // which is wrong for any pane nested inside a branch. Spawning at the wrong
   // grid means the first layout sync resizes a brand new PTY, and a resize
-  // SIGWINCHes full-screen TUIs into a clear and re-layout.
+  // SIGWINCHes full-screen TUIs into a clear and re-layout. A full-width pane
+  // docked beside a transcript is the exception: its cols are the inset grid,
+  // and the new shell will not keep that inset.
   function estimateSplitPaneSize(
     sourcePane: PaneInfo,
     axis: PaneSplitAxis,
@@ -6571,18 +6634,21 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     const stage = estimateInitialPaneSize(false);
     const cols = sourcePane.cols > 0 ? sourcePane.cols : stage.cols;
     const rows = sourcePane.rows > 0 ? sourcePane.rows : stage.rows;
+    const spawnedCols = splitSpawnColumns(
+      cols,
+      stage.cols,
+      scale,
+      reservedDockedTurnPaneIdsRef.current.has(sourcePane.id),
+      axis,
+    );
     if (axis === "horizontal") {
       return {
         rows: clamp(rows, MIN_INITIAL_ROWS, Math.max(MIN_INITIAL_ROWS, stage.rows)),
-        cols: clamp(
-          Math.floor(cols * scale),
-          MIN_INITIAL_COLS,
-          Math.max(MIN_INITIAL_COLS, stage.cols),
-        ),
+        cols: clamp(spawnedCols, MIN_INITIAL_COLS, Math.max(MIN_INITIAL_COLS, stage.cols)),
       };
     }
     return {
-      cols: clamp(cols, MIN_INITIAL_COLS, Math.max(MIN_INITIAL_COLS, stage.cols)),
+      cols: clamp(spawnedCols, MIN_INITIAL_COLS, Math.max(MIN_INITIAL_COLS, stage.cols)),
       rows: clamp(
         Math.floor(rows * scale),
         MIN_INITIAL_ROWS,
@@ -7172,7 +7238,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // absolute maximum. Column splits reserve 200px per pane plus gutters.
   function maxSidebarWidth() {
     const appWidth = appRef.current?.getBoundingClientRect().width ?? window.innerWidth;
-    const reservedTurnPane = hasVisibleRightBar ? turnPaneWidth : 0;
+    const reservedTurnPane =
+      hasVisibleRightBar || dockedTranscriptReserved ? turnPaneWidth : 0;
     const available = Math.floor(
       appWidth - reservedTerminalStageMinWidth - reservedTurnPane,
     );
@@ -7226,8 +7293,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     ...(rightBarCollapsed && activePaneHasTurnSidebar
       ? { "--right-bar-restore-control-offset": "34px" }
       : {}),
-    ...(activePaneReservesTurnPaneWidth ? { "--turn-pane-width": `${turnPaneWidth}px` } : {}),
-    ...(splitRightPaneMode && hasVisibleRightBar
+    ...(activePaneReservesTurnPaneWidth || dockedTranscriptReserved
+      ? { "--turn-pane-width": `${turnPaneWidth}px` }
+      : {}),
+    ...((splitRightPaneMode && hasVisibleRightBar) || dockedTranscriptReserved
       ? { "--inline-turn-pane-width": `${turnPaneWidth}px` }
       : {}),
   } as CSSProperties;
@@ -7260,6 +7329,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const reservedInlineTurnPaneKey = rightBarCollapsed
     ? ""
     : splitTurnPaneSurfaces.map((surface) => surface.pane.id).join("\n");
+  const reservedDockedTurnPaneKey = dockedTranscriptReserved
+    ? dockedTurnPaneSurfaces.map((surface) => surface.pane.id).join("\n")
+    : "";
 
   function splitRectStyle(rect: SplitRect): CSSProperties {
     return { ...splitRectOffsets(rect), right: "auto", bottom: "auto" };
@@ -7287,27 +7359,33 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     const reservedInlineTurnPaneIds = new Set(
       reservedInlineTurnPaneKey ? reservedInlineTurnPaneKey.split("\n") : [],
     );
+    const reservedDockedTurnPaneIds = new Set(
+      reservedDockedTurnPaneKey ? reservedDockedTurnPaneKey.split("\n") : [],
+    );
     activePaneSplit.paneIds.forEach((paneId) => {
       const rect = activeSplitLayout.panes.get(paneId);
       if (!rect) {
         return;
       }
       const style = splitRectStyle(rect);
-      if (reservedInlineTurnPaneIds.has(paneId)) {
-        // Only reachable in splitRightPaneMode — a plain top/bottom stack, where
-        // every pane spans the stage width and gives up the same right-hand
-        // strip. Keep reserving it while the transcript is expanded: the overlay
-        // covers the stage, so the strip is invisible, and holding terminal
-        // geometry constant means expand/collapse never resizes the PTY. A
-        // resize would SIGWINCH full-screen TUIs (Claude Code clears and
-        // re-lays-out on every resize), losing their scroll position.
+      if (reservedInlineTurnPaneIds.has(paneId) || reservedDockedTurnPaneIds.has(paneId)) {
+        // Both sets contain only panes that span the stage width: a flat
+        // top/bottom stack, or a full-width leaf of a nested split. Inset
+        // just that terminal. Keep the inset while the transcript is
+        // expanded: the overlay covers the stage, so the strip is invisible,
+        // and holding terminal geometry constant means expand/collapse never
+        // resizes the PTY. A resize would SIGWINCH full-screen TUIs (Claude
+        // Code clears and re-lays-out on every resize), losing their scroll
+        // position. Column panes are absent from both sets; giving them
+        // width:auto and a stage-right edge would stretch them over their
+        // siblings.
         style.width = "auto";
         style.right = "var(--inline-turn-pane-width)";
       }
       styles.set(paneId, style);
     });
     return styles;
-  }, [activePaneSplit, activeSplitLayout, reservedInlineTurnPaneKey]);
+  }, [activePaneSplit, activeSplitLayout, reservedInlineTurnPaneKey, reservedDockedTurnPaneKey]);
 
   function terminalPaneStyle(paneId: string): CSSProperties | undefined {
     return terminalPaneStyleByPaneId.get(paneId);
@@ -14305,7 +14383,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   }, [config]);
 
   useEffect(() => {
-    if (!hasVisibleRightBar) {
+    if (!hasVisibleRightBar && !dockedTranscriptReserved) {
       return;
     }
 
@@ -14316,7 +14394,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [hasVisibleRightBar]);
+  }, [hasVisibleRightBar, dockedTranscriptReserved]);
 
   // Keep the sidebar within bounds as the window resizes or the turn pane claims
   // space (deps refresh the clamp's view of available width).
@@ -14328,7 +14406,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [hasVisibleRightBar, turnPaneWidth, reservedTerminalStageMinWidth]);
+  }, [hasVisibleRightBar, dockedTranscriptReserved, turnPaneWidth, reservedTerminalStageMinWidth]);
 
   async function updateShowHideShortcut(accelerator: string | null) {
     const request = ++showHideShortcutRequestRef.current;
@@ -15046,6 +15124,54 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     };
   }
 
+  // Top and height only. The cell's right edge and width come from
+  // .turn-pane-split-cell, and an inline left/width would override that.
+  function dockedTurnPaneBandStyle(rect: SplitRect): CSSProperties {
+    const offsets = splitRectOffsets(rect);
+    return { top: offsets.top, height: offsets.height };
+  }
+
+  function renderInlineTurnPaneCell(
+    surface: TurnPaneSurface,
+    style: CSSProperties,
+    hostsArtifactTray: boolean,
+  ) {
+    return (
+      <section
+        key={surface.pane.id}
+        className={`turn-pane turn-pane-split-cell${
+          surface.pane.id === activePane?.id ? " is-active" : ""
+        }${
+          surface.agent && surface.agent.id === queueDropTargetAgentId
+            ? " is-queue-drop-target"
+            : ""
+        }${
+          surface.agent?.id === waitTargetHoverAgentId ? " is-wait-target-preview" : ""
+        }`}
+        data-queue-drop-agent-id={surface.agent?.id}
+        style={style}
+        onPointerDownCapture={() => activateTerminalPane(surface.pane.id)}
+        onFocusCapture={() => {
+          // WebKit re-emits focus on its remembered element whenever the
+          // webview regains first responder — which every right-pane
+          // unmount/layout transition does. Only focus the user caused (a
+          // click or key since the page became focused) may switch the active
+          // pane, or quitting an agent / starting a terminal would yank
+          // activation to whichever sibling last held a composer or resizer.
+          if (userInputSinceWindowFocus()) {
+            activateTerminalPane(surface.pane.id);
+          }
+        }}
+      >
+        {renderTurnPaneResizer()}
+        {renderTurnPaneSurface(surface, false)}
+        {renderArtifactTray(surface, hostsArtifactTray)}
+        {renderAgentDebugPanel(surface)}
+        {renderFloatingTurnPaneControls(surface, false)}
+      </section>
+    );
+  }
+
   function renderFloatingTurnPaneControls(surface: TurnPaneSurface, expanded: boolean) {
     const label = expanded ? "Restore transcript" : "Expand transcript";
     const restoresLeftSidebar =
@@ -15167,7 +15293,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     const style =
       surface && splitRightPaneMode && splitIndex >= 0
         ? { top: splitTrackPosition(surface.topFraction, splitIndex, 8) }
-        : undefined;
+        : floatingRestoreAnchorTop
+          ? { top: floatingRestoreAnchorTop }
+          : undefined;
     const grouped = floatingLeftSidebarRestoreVisible;
 
     return (
@@ -18713,48 +18841,25 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           {activeTurnPaneSurface &&
           !researchSurfaceActive &&
           splitOverlayTranscriptMode &&
-          !activeTranscriptVisibleExpanded
+          !activeTranscriptVisibleExpanded &&
+          !dockedTrayHostPaneId
             ? renderArtifactTray(activeTurnPaneSurface, true, true)
             : null}
           {!activeTranscriptVisibleExpanded && splitRightPaneMode && hasVisibleRightBar
-            ? visibleRightBarSurfaces.map((surface, index) => (
-                <section
-                  key={surface.pane.id}
-                  className={`turn-pane turn-pane-split-cell${
-                    surface.pane.id === activePane?.id ? " is-active" : ""
-                  }${
-                    surface.agent && surface.agent.id === queueDropTargetAgentId
-                      ? " is-queue-drop-target"
-                      : ""
-                  }${
-                    surface.agent?.id === waitTargetHoverAgentId
-                      ? " is-wait-target-preview"
-                      : ""
-                  }`}
-                  data-queue-drop-agent-id={surface.agent?.id}
-                  style={turnPaneSplitCellStyle(surface)}
-                  onPointerDownCapture={() => activateTerminalPane(surface.pane.id)}
-                  onFocusCapture={() => {
-                    // WebKit re-emits focus on its remembered element whenever
-                    // the webview regains first responder — which every
-                    // right-pane unmount/layout transition does. Only focus
-                    // the user caused (a click or key since the page became
-                    // focused) may switch the active pane, or quitting an
-                    // agent / starting a terminal would yank activation to
-                    // whichever sibling last held a composer or resizer.
-                    if (userInputSinceWindowFocus()) {
-                      activateTerminalPane(surface.pane.id);
-                    }
-                  }}
-                >
-                  {renderTurnPaneResizer()}
-                  {renderTurnPaneSurface(surface, false)}
-                  {renderArtifactTray(surface, index === 0)}
-                  {renderAgentDebugPanel(surface)}
-                  {renderFloatingTurnPaneControls(surface, false)}
-                </section>
-              ))
+            ? visibleRightBarSurfaces.map((surface, index) =>
+                renderInlineTurnPaneCell(surface, turnPaneSplitCellStyle(surface), index === 0),
+              )
             : null}
+          {mountedDockedTurnPaneSurfaces.map((surface) => {
+            const rect = activeSplitLayout?.panes.get(surface.pane.id);
+            return rect
+              ? renderInlineTurnPaneCell(
+                  surface,
+                  dockedTurnPaneBandStyle(rect),
+                  surface.pane.id === dockedTrayHostPaneId,
+                )
+              : null;
+          })}
           {!activeTranscriptVisibleExpanded && splitRightPaneMode && hasVisibleRightBar
             ? splitRightPaneDividerOffsets.map((offset, index) => {
                 // The right-pane-colored gutter cover only reads correctly
@@ -18781,6 +18886,14 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                 );
               })
             : null}
+          {dockedTranscriptGutterRects.map((divider) => (
+            <div
+              key={`turn-${activePaneSplit?.id ?? "split"}-${divider.path}-${divider.index}`}
+              className="turn-pane-split-divider turn-pane-inline-split-divider"
+              style={dockedTurnPaneBandStyle(divider.rect)}
+              aria-hidden="true"
+            />
+          ))}
         </div>
       </section>
 
