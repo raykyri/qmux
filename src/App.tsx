@@ -523,6 +523,7 @@ import {
 } from "./lib/settings";
 import {
   acknowledgeAgent,
+  artifactClear,
   artifactList,
   artifactOpenExternal,
   artifactRemove,
@@ -8326,6 +8327,17 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     );
   }
 
+  // Clears the panel's rows only. `artifact.removed` events drop them from the
+  // mirror; a pending single-row undo for this workspace is dismissed so it
+  // cannot put one entry back.
+  function clearGroupArtifacts(groupId: string) {
+    void artifactClear(groupId)
+      .then(() => {
+        setArtifactUndo((current) => (current?.groupId === groupId ? null : current));
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }
+
   // Opens a tray entry, or closes the browser when that entry already owns it.
   // Files go through browserOpenLocalPath, which re-validates the path against
   // the target pane's roots, previews renderable formats with a fresh token URL,
@@ -15601,6 +15613,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         onClose={() =>
           setArtifactTrayClosed(surface.pane.groupId, surface.pane.id, true)
         }
+        onClear={() => clearGroupArtifacts(surface.pane.groupId)}
         onOpen={(artifact) => openArtifact(artifact, surface.pane.id)}
         onOpenExternal={openArtifactExternally}
         onReveal={revealArtifact}

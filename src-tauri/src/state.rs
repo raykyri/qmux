@@ -3528,6 +3528,47 @@ impl AppState {
         Ok(removed)
     }
 
+    /// Drops every artifact-tray entry for `group_id`. This only removes panel
+    /// rows — the files and URLs those entries point at are left untouched.
+    /// Emits `artifact.removed` for each dropped id. An empty group is a no-op.
+    pub fn clear_group_artifacts(&self, group_id: &str) -> Result<Vec<String>, String> {
+        if group_id.is_empty() {
+            return Err("a workspace group is required to clear artifacts".to_string());
+        }
+        let removed = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let mut removed = Vec::new();
+            model.artifacts.retain(|entry| {
+                if entry.group_id.as_deref() == Some(group_id) {
+                    removed.push(entry.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            removed
+        };
+        if removed.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.persist();
+        let mut ids = Vec::with_capacity(removed.len());
+        for artifact in removed {
+            ids.push(artifact.id.clone());
+            self.emit(QmuxEvent::new(
+                "artifact.removed",
+                Some(artifact.pane_id),
+                None,
+                serde_json::json!({ "id": artifact.id }),
+            ));
+        }
+        Ok(ids)
+    }
+
     /// Reinserts a previously removed artifact at its chronological position
     /// (tray undo). A duplicate id is a no-op so a double-undo can't clone rows.
     /// Emits `artifact.added`.

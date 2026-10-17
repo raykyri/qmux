@@ -1091,6 +1091,11 @@ export function artifactRemove(artifactId: string) {
   return invoke<ArtifactInfo>("artifact_remove", { artifactId });
 }
 
+/** Removes every artifact-tray entry in a workspace group. Does not delete files. */
+export function artifactClear(groupId: string) {
+  return invoke<string[]>("artifact_clear", { groupId });
+}
+
 export function artifactRestore(artifact: ArtifactInfo) {
   return invoke<void>("artifact_restore", { artifact });
 }

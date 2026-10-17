@@ -1178,6 +1178,15 @@ fn artifact_remove(
     state.remove_artifact(&artifact_id)
 }
 
+/// Removes every artifact-tray entry in a workspace group. Files are left in place.
+#[tauri::command]
+fn artifact_clear(
+    state: tauri::State<'_, AppState>,
+    group_id: String,
+) -> Result<Vec<String>, String> {
+    state.clear_group_artifacts(&group_id)
+}
+
 /// Reinserts a previously removed artifact (the tray's undo).
 #[tauri::command]
 fn artifact_restore(
@@ -4143,6 +4152,7 @@ fn main() {
             browser_open_codex_visualization_reference,
             artifact_list,
             artifact_remove,
+            artifact_clear,
             artifact_restore,
             artifact_open_external,
             artifact_reveal,

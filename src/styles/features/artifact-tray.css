@@ -48,6 +48,10 @@
 
 .artifact-tray-label {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--accent-color);
   font-size: 10px;
   font-weight: 750;
@@ -57,6 +61,7 @@
 
 .artifact-tray-chrome-button {
   display: inline-flex;
+  flex: none;
   align-items: center;
   justify-content: center;
   width: 16px;
@@ -70,9 +75,19 @@
   cursor: pointer;
 }
 
-.artifact-tray-chrome-button:hover {
+.artifact-tray-chrome-button:hover:not(:disabled) {
   background: var(--chrome-control-bg-hover);
   color: var(--text-strong);
+}
+
+.artifact-tray-chrome-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-shadow);
+}
+
+.artifact-tray-chrome-button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .artifact-tray-body {

@@ -7,6 +7,7 @@ import {
   Image as ImageIcon,
   Minus,
   Paperclip,
+  Trash2,
   Undo2,
   X,
 } from "lucide-react";
@@ -18,6 +19,7 @@ import { IS_MAC } from "../lib/appHelpers";
 import { artifactKind, artifactName } from "../lib/artifacts";
 import { formatRelativeTime } from "../lib/transcriptSessions";
 import type { ArtifactInfo } from "../types";
+import { Button, Dialog, DialogActions, DialogRoot, DialogTitle } from "./ui";
 
 interface ArtifactTrayProps {
   /** The pane whose cell hosts this tray instance. */
@@ -33,6 +35,8 @@ interface ArtifactTrayProps {
   onPositionChange: (position: ArtifactTrayPosition) => void;
   onSetCollapsed: (collapsed: boolean) => void;
   onClose: () => void;
+  /** Drop every entry in this panel. Does not delete files. */
+  onClear: () => void;
   onOpen: (artifact: ArtifactInfo) => void;
   onOpenExternal: (artifact: ArtifactInfo) => void;
   onReveal: (artifact: ArtifactInfo) => void;
@@ -61,6 +65,7 @@ export default function ArtifactTray({
   onPositionChange,
   onSetCollapsed,
   onClose,
+  onClear,
   onOpen,
   onOpenExternal,
   onReveal,
@@ -79,6 +84,13 @@ export default function ArtifactTray({
   // per artifact id. null = fetched but unavailable (source pane gone, file
   // moved); the row falls back to a glyph tile.
   const [thumbUrlById, setThumbUrlById] = useState<Record<string, string | null>>({});
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+
+  useEffect(() => {
+    if (artifacts.length === 0) {
+      setClearConfirmOpen(false);
+    }
+  }, [artifacts.length]);
 
   useEffect(() => {
     const missing = artifacts.filter(
@@ -201,6 +213,17 @@ export default function ArtifactTray({
       <div className="artifact-tray-titlebar" onPointerDown={startDrag}>
         <Paperclip size={11} aria-hidden="true" className="artifact-tray-clip" />
         <span className="artifact-tray-label">Artifacts</span>
+        <button
+          type="button"
+          className="artifact-tray-chrome-button"
+          title="Clear artifacts"
+          aria-label="Clear artifacts"
+          disabled={artifacts.length === 0}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => setClearConfirmOpen(true)}
+        >
+          <Trash2 size={10} aria-hidden="true" />
+        </button>
         <button
           type="button"
           className="artifact-tray-chrome-button"
@@ -330,6 +353,50 @@ export default function ArtifactTray({
           ) : null}
         </div>
       )}
+      {clearConfirmOpen && artifacts.length > 0 ? (
+        <ClearArtifactsDialog
+          count={artifacts.length}
+          titleId={`artifact-clear-dialog-${paneId}`}
+          onDismiss={() => setClearConfirmOpen(false)}
+          onConfirm={() => {
+            setClearConfirmOpen(false);
+            onClear();
+          }}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function ClearArtifactsDialog({
+  count,
+  titleId,
+  onDismiss,
+  onConfirm,
+}: {
+  count: number;
+  titleId: string;
+  onDismiss: () => void;
+  onConfirm: () => void;
+}) {
+  const noun = count === 1 ? "artifact" : "artifacts";
+  return (
+    <DialogRoot onDismiss={onDismiss}>
+      <Dialog aria-labelledby={titleId}>
+        <DialogTitle id={titleId}>
+          {count === 1 ? "Clear this artifact?" : `Clear all ${count} artifacts?`}
+        </DialogTitle>
+        <p>
+          This removes {count === 1 ? "it" : `all ${count} ${noun}`} from the panel. It does not
+          delete any files.
+        </p>
+        <DialogActions>
+          <Button onClick={onDismiss}>Cancel</Button>
+          <Button tone="danger" data-dialog-initial-focus onClick={onConfirm}>
+            Clear artifacts
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </DialogRoot>
   );
 }

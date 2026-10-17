@@ -248,6 +248,59 @@ fn artifact_tray_records_dedupes_caps_and_persists() {
 }
 
 #[test]
+fn clear_group_artifacts_drops_only_that_group_and_keeps_files() {
+    let workspace = temp_workspace();
+    let state = AppState::new(test_config(workspace.clone()));
+    assert!(state.restore_session().is_empty());
+    let mut group = sample_group();
+    group.dir = workspace.display().to_string();
+    group.managed_dir = workspace.join("managed").display().to_string();
+    group.agents.clear();
+    state.insert_group_after(group, None).unwrap();
+
+    let mut other = sample_group_with_id("group-2");
+    other.dir = workspace.display().to_string();
+    other.managed_dir = workspace.join("managed-2").display().to_string();
+    state.insert_group_after(other, Some("group-1")).unwrap();
+
+    state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+    let mut other_pane = sample_pane_runtime("pane-2");
+    other_pane.info.group_id = "group-2".to_string();
+    state.insert_pane(other_pane).unwrap();
+
+    let file = workspace.join("report.html");
+    std::fs::write(&file, "<p>kept</p>").unwrap();
+
+    state
+        .record_artifact("pane-1", Some(file.display().to_string()), None)
+        .unwrap();
+    state
+        .record_artifact("pane-1", None, Some("http://localhost:5173/".to_string()))
+        .unwrap();
+    let kept = state
+        .record_artifact("pane-2", Some(file.display().to_string()), None)
+        .unwrap();
+
+    let cleared = state.clear_group_artifacts("group-1").unwrap();
+    assert_eq!(cleared.len(), 2);
+    let listed = state.list_artifacts().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, kept.id);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "<p>kept</p>");
+
+    // Clearing an already-empty group persists nothing new and leaves the rest.
+    assert!(state.clear_group_artifacts("group-1").unwrap().is_empty());
+    assert!(state.clear_group_artifacts("").is_err());
+    assert_eq!(state.list_artifacts().unwrap().len(), 1);
+
+    let outcome = persistence::load_with_diagnostics(&workspace);
+    assert!(outcome.warning.is_none());
+    assert_eq!(outcome.state.artifacts.len(), 1);
+    assert_eq!(outcome.state.artifacts[0].id, kept.id);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "<p>kept</p>");
+}
+
+#[test]
 fn restore_session_sanitizes_legacy_url_artifacts() {
     let workspace = temp_workspace();
     let state = AppState::new(test_config(workspace.clone()));
