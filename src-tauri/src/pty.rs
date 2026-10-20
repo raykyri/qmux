@@ -4772,7 +4772,7 @@ fn start_reader_thread(
             .list_panes()
             .unwrap_or_default()
             .iter()
-            .any(|pane| pane.id == pane_id && pane.kind == PaneKind::Shell);
+            .any(|pane| pane.id == pane_id && matches!(pane.kind, PaneKind::Shell));
         if (exited_shell
             || state
                 .closing_pane_would_strand_queued_work(&pane_id)
