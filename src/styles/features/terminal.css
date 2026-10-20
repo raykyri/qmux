@@ -101,7 +101,7 @@
   border: 1px solid var(--split-drop-border);
   background: var(--split-drop-bg);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 239, 197, 0.12),
+    var(--shadow-glow-warm),
     0 0 18px var(--split-drop-bg);
   pointer-events: none;
 }
@@ -186,7 +186,7 @@
   top: 50%;
   height: 1px;
   transform: translateY(-0.5px);
-  background: rgba(244, 244, 239, 0.12);
+  background: var(--surface-border-default);
 }
 
 .terminal-split-resizer.is-column::before,
@@ -253,11 +253,11 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid #3a3d3f;
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-lg);
   background: var(--pane-hover-bg);
   padding: 6px 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-md);
 }
 
 /* In the transcript, drop below the pinned session header (40px tall). */
@@ -277,7 +277,7 @@
   /* Prefer 200px but shrink so the whole bar fits a narrow pane. */
   flex: 0 1 200px;
   min-width: 0;
-  border: 1px solid #3a3d3f;
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background: var(--field-bg);
   color: var(--text-strong);
@@ -293,7 +293,7 @@
 .pane-search-count {
   flex: 0 0 auto;
   min-width: 56px;
-  color: #9aa0a3;
+  color: var(--text-activity);
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   text-align: right;
@@ -329,7 +329,7 @@
 
 .pane-search-toggle:hover,
 .pane-search-button:hover:not(:disabled) {
-  background: #2a2f31;
+  background: var(--control-bg-hover);
 }
 
 .pane-search-toggle.is-active {
@@ -339,21 +339,34 @@
 }
 
 .pane-search-button:disabled {
-  color: #5a5f62;
+  color: var(--text-dim);
   cursor: default;
 }
 
 /* Rendered-pane search matches, painted via the CSS Custom Highlight API (names
    registered in lib/transcriptSearch.ts). Colors mirror the terminal's
-   SEARCH_DECORATIONS so find reads the same on both sides of the split. */
+   SEARCH_DECORATIONS so find reads the same on both sides of the split. The
+   dark values match --attention-badge-*; they stay literal because highlight
+   pseudos resolve custom properties unreliably, and the light-appearance rules
+   spell the light --attention-badge-* values the same way. */
 ::highlight(transcript-search-match) {
-  background-color: #665a2b;
-  color: #f4f4ef;
+  background-color: #665a2b; /* highlight-pseudo-literal */
+  color: #f4f4ef; /* highlight-pseudo-literal */
 }
 
 ::highlight(transcript-search-active-match) {
-  background-color: #a8842f;
-  color: #111315;
+  background-color: #a8842f; /* highlight-pseudo-literal */
+  color: #111315; /* highlight-pseudo-literal */
+}
+
+:root[data-appearance="light"] *::highlight(transcript-search-match) {
+  background-color: #f1dfa4; /* highlight-pseudo-literal */
+  color: #4a3a05; /* highlight-pseudo-literal */
+}
+
+:root[data-appearance="light"] *::highlight(transcript-search-active-match) {
+  background-color: #c9962c; /* highlight-pseudo-literal */
+  color: #ffffff; /* highlight-pseudo-literal */
 }
 
 .remote-connection-detail {
