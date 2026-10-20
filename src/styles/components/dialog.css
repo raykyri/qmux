@@ -23,7 +23,7 @@
 
 .confirm-dialog h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: calc(15px + var(--font-ui-size-offset));
   color: var(--text-heading);
 }
 
@@ -58,7 +58,7 @@
 
 .confirm-dialog .rename-dialog-hint {
   color: var(--field-hint-fg);
-  font-size: calc(12px + var(--turn-font-delta, 0px));
+  font-size: calc(12px + var(--turn-font-delta, 0px) + var(--font-ui-size-offset));
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
