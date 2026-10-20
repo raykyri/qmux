@@ -3968,6 +3968,15 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            // Explicit close and the reader's EOF can both capture the same pane.
+            // Keep its original position in the undo history.
+            if model
+                .closed_pane_stack
+                .iter()
+                .any(|snapshot| snapshot.pane.id == pane_id)
+            {
+                return Ok(());
+            }
             // A pane bound to a research node is reclaimed by research lifecycle
             // handling (settlement, cancellation, or failed-launch cleanup), so
             // it must not become a restorable "closed tab". Skipping the
@@ -4081,6 +4090,14 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
+        // Another close path may have captured it while we read scrollback.
+        if model
+            .closed_pane_stack
+            .iter()
+            .any(|entry| entry.pane.id == pane_id)
+        {
+            return Ok(());
+        }
         model.closed_pane_stack.push(snapshot);
         // Drop the oldest closes once past the cap so the stack can't grow unbounded.
         let overflow = model

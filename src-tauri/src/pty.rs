@@ -4764,13 +4764,19 @@ fn start_reader_thread(
         {
             eprintln!("qmux: failed to release fork barrier for exited agent {agent_id}: {err}");
         }
-        // A natural exit normally leaves no undo snapshot (unlike `kill_pane`), but if this
-        // is the group's last pane and the group still has queued turns, removing it would
-        // prune that pending work with no way back. Capture a close snapshot first so it
-        // can be reopened, matching the explicit-close path.
-        if state
-            .closing_pane_would_strand_queued_work(&pane_id)
-            .unwrap_or(false)
+        // A shell closed with Ctrl-D or `exit` belongs in the same undo history
+        // as an explicit close (and remote Ctrl-D). Also preserve queued work
+        // when an agent exit would otherwise prune it. Capture is idempotent
+        // because kill_pane may already have recorded this pane before EOF.
+        let exited_shell = state
+            .list_panes()
+            .unwrap_or_default()
+            .iter()
+            .any(|pane| pane.id == pane_id && pane.kind == PaneKind::Shell);
+        if (exited_shell
+            || state
+                .closing_pane_would_strand_queued_work(&pane_id)
+                .unwrap_or(false))
             && let Err(err) = state.capture_last_closed_pane(&pane_id)
         {
             eprintln!("qmux: failed to capture exited pane {pane_id}: {err}");
@@ -7830,7 +7836,11 @@ mod tests {
 
     #[test]
     fn reader_thread_reaps_and_removes_pane_after_child_exits() {
-        let state = test_state();
+        let state = state_with_disconnected_remote();
+        state
+            .capture_last_closed_pane("pane-offline-resize")
+            .unwrap();
+        state.remove_pane("pane-offline-resize").unwrap();
         let pane = spawn_test_pty(
             &state,
             "pane-exit",
@@ -7847,6 +7857,16 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(20));
         }
+        assert_eq!(
+            state.take_last_closed_pane().unwrap().unwrap().pane.id,
+            pane.id,
+            "the later local shell exit must restore before the remote close"
+        );
+        assert_eq!(
+            state.take_last_closed_pane().unwrap().unwrap().pane.id,
+            "pane-offline-resize"
+        );
+        assert!(state.take_last_closed_pane().unwrap().is_none());
     }
 
     #[test]

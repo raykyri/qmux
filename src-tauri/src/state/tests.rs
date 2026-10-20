@@ -6950,6 +6950,9 @@ fn closed_pane_undo_stack_pops_most_recent_first_and_survives_extra_closes() {
     state.capture_last_closed_pane("pane-1").unwrap();
     state.capture_last_closed_pane("pane-2").unwrap();
     state.capture_last_closed_pane("pane-3").unwrap();
+    // A delayed EOF after an explicit close must neither duplicate that close
+    // nor move it ahead of tabs closed more recently.
+    state.capture_last_closed_pane("pane-1").unwrap();
 
     // Undo reopens them most-recent first.
     assert_eq!(
