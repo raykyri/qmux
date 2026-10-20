@@ -436,7 +436,7 @@
 .journal-tweet-avatar-fallback {
   display: grid;
   place-items: center;
-  color: #fff;
+  color: var(--lightbox-caption-fg);
   font-size: 15px;
   font-weight: 700;
 }
@@ -466,7 +466,7 @@
   width: 15px;
   height: 15px;
   align-self: center;
-  color: #1d9bf0;
+  color: var(--link-external-fg);
 }
 
 .journal-tweet-handle {
@@ -676,8 +676,8 @@ a.journal-tweet-more:hover {
   height: 40px;
   place-items: center;
   border-radius: 50%;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.6);
+  color: var(--lightbox-caption-fg);
+  background: var(--lightbox-caption-bg);
   transform: translate(-50%, -50%);
   pointer-events: none;
 }
