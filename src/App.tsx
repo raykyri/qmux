@@ -65,6 +65,7 @@ import {
   MessageSquareText,
   Minimize2,
   Minus,
+  Moon,
   MoreHorizontal,
   PanelBottomClose,
   PanelBottomOpen,
@@ -79,6 +80,7 @@ import {
   Rows2,
   Settings,
   SquareTerminal,
+  Sun,
   Volume2,
   X,
 } from "lucide-react";
@@ -172,6 +174,7 @@ import {
   type UserNotificationTone,
 } from "./components/UserNotificationStack";
 import { shouldShowTerminalPip, shouldShowTerminalPipToggle } from "./lib/terminalPip";
+import { terminalThemeNameFor } from "./lib/terminalThemeName";
 import TurnOverlay, {
   formatTurnsTranscript,
   type ConversationHistorySegment,
@@ -491,6 +494,7 @@ import {
   type CompletionSoundId,
 } from "./lib/completionSounds";
 import {
+  APPEARANCE_OPTIONS,
   bodyFontStackFor,
   clampConfirmPasteOverChars,
   clampFontSize,
@@ -793,7 +797,6 @@ const JOURNAL_OPEN_KEY = "qmux.journal-open.v1";
 // visible).
 const HOME_HIDDEN_TERMINALS_KEY = "qmux.home-hidden-terminals.v1";
 const HOME_DRAFTS_VISIBLE_KEY = "qmux.home-drafts-visible.v1";
-const WARM_QMUX_TERMINAL_THEME_ID = "qmux-warm";
 // Browser-overlay / link-action owner for a research tree's document. Keyed
 // per tree so an overlay opened from one tree's links doesn't follow the user
 // into another tree (each tree keeps its own overlay, like panes do).
@@ -2782,13 +2785,15 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const terminalNativeFontFamily = nativeFontFamilyFor(settings.fontId);
   const terminalLetterSpacing = letterSpacingFor(settings.fontId);
   const terminalScrollSensitivity = scrollSensitivityFor(settings.mouseWheelSensitivity);
-  // The application color theme only adjusts qmux's built-in terminal palette;
-  // explicitly selected Ghostty themes keep their authored backgrounds.
+  // The application color theme and the light/dark appearance only adjust
+  // qmux's built-in terminal palette; explicitly selected Ghostty themes keep
+  // their authored backgrounds.
   const effectiveThemeId = previewThemeId ?? settings.themeId;
-  const terminalThemeName =
-    effectiveThemeId === DEFAULT_THEME_ID && settings.colorTheme === "orange-blob"
-      ? WARM_QMUX_TERMINAL_THEME_ID
-      : effectiveThemeId;
+  const terminalThemeName = terminalThemeNameFor({
+    themeId: effectiveThemeId,
+    colorTheme: settings.colorTheme,
+    appearance: settings.appearance,
+  });
 
   // Apply the app accent before paint so switching (and restoring) color themes
   // does not flash the default green palette.
@@ -2799,6 +2804,34 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       delete root.dataset.colorTheme;
     };
   }, [settings.colorTheme]);
+
+  // Light/dark is a user choice, independent of the system appearance. The root
+  // attribute drives every token override. The window theme is set from the
+  // same value because it reaches surfaces CSS cannot: window vibrancy, native
+  // scrollbars and form controls, and prefers-color-scheme inside sandboxed
+  // preview iframes. Ghostty panes are unaffected — NativeTerminalPane passes
+  // an explicit theme, so they follow the selected qmux terminal theme rather
+  // than the window's effective appearance.
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.dataset.appearance = settings.appearance;
+    if ("__TAURI_INTERNALS__" in window) {
+      // Best effort: a platform without window theming rejects here, and the
+      // CSS-driven appearance is already applied.
+      void getCurrentWindow()
+        .setTheme(settings.appearance)
+        .catch(() => {});
+    }
+    return () => {
+      delete root.dataset.appearance;
+    };
+  }, [settings.appearance]);
+  const toggleAppearance = useCallback(() => {
+    setSettings((current) => ({
+      ...current,
+      appearance: current.appearance === "light" ? "dark" : "light",
+    }));
+  }, []);
 
   // The selected body font must live at the document root, not only on
   // .app-shell: menus and dialogs are portaled to document.body to escape pane
@@ -15905,6 +15938,22 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             <button
               type="button"
               className="icon-button sidebar-header-button"
+              aria-label={
+                settings.appearance === "light" ? "Switch to dark mode" : "Switch to light mode"
+              }
+              aria-pressed={settings.appearance === "light"}
+              title={settings.appearance === "light" ? "Dark mode" : "Light mode"}
+              onClick={toggleAppearance}
+            >
+              {settings.appearance === "light" ? (
+                <Moon size={14} aria-hidden="true" />
+              ) : (
+                <Sun size={14} aria-hidden="true" />
+              )}
+            </button>
+            <button
+              type="button"
+              className="icon-button sidebar-header-button"
               title={`Collapse left sidebar (${LEFT_SIDEBAR_TOGGLE_SHORTCUT_LABEL})`}
               aria-label="Collapse left sidebar"
               onClick={() => setLeftSidebarCollapsedForActivePane(true)}
@@ -17299,6 +17348,27 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                 }}
               >
                 {COLOR_THEME_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </NativeSelect>
+            </div>
+
+            <div className="settings-row">
+              <label htmlFor="settings-appearance" className="settings-label">
+                Appearance
+              </label>
+              <NativeSelect
+                id="settings-appearance"
+                className="settings-select"
+                value={settings.appearance}
+                onChange={(event) => {
+                  const appearance = event.currentTarget.value as AppSettings["appearance"];
+                  setSettings((current) => ({ ...current, appearance }));
+                }}
+              >
+                {APPEARANCE_OPTIONS.map((option) => (
                   <option key={option.id} value={option.id}>
                     {option.label}
                   </option>
@@ -18970,8 +19040,12 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           columns={activePane.cols}
           rows={activePane.rows}
           theme={
-            themeCatalog?.find((theme) => theme.name === terminalThemeName) ??
-            effectiveTheme
+            // The four built-in qmux variants are deliberately outside the
+            // user-facing catalog, so a lookup for one misses. Passing null
+            // then lets .terminal-pip fall back to the appearance tokens,
+            // which carry those same colors; substituting another catalog
+            // entry would paint a dark preview under the light appearance.
+            themeCatalog?.find((theme) => theme.name === terminalThemeName) ?? null
           }
           fontFamily={terminalFontFamily}
           fontSize={terminalFontSize}
