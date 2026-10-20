@@ -20,8 +20,8 @@
   text-align: center;
 }
 
-.startup-brand { font-size: 28px; font-weight: 600; }
-.startup-content h1 { margin: 0 0 8px; font-size: 18px; font-weight: 500; }
+.startup-brand { font-size: calc(28px + var(--font-ui-size-offset)); font-weight: 600; }
+.startup-content h1 { margin: 0 0 8px; font-size: calc(18px + var(--font-ui-size-offset)); font-weight: 500; }
 .startup-content p { margin: 0; color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
 .startup-progress { width: 220px; }
 
@@ -169,7 +169,7 @@
   color: var(--text-subtle);
   font-family: var(--font-ui);
   /* Same size as the New shell/New agent buttons at the bottom of the sidebar. */
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--turn-font-delta, 0px) + var(--font-ui-size-offset));
   font-weight: 400;
   background: transparent;
   cursor: pointer;
@@ -210,7 +210,7 @@
   padding: 0 4px;
   border-radius: 999px;
   color: var(--text-body-soft);
-  font-size: 9px;
+  font-size: calc(9px + var(--font-ui-size-offset));
   font-variant-numeric: tabular-nums;
   background: var(--surface-fill-medium);
 }
@@ -294,7 +294,7 @@
   min-height: 0;
   width: 100%;
   color: var(--text-tertiary);
-  font-size: 14px;
+  font-size: calc(14px + var(--font-ui-size-offset));
   line-height: 1.4;
   text-align: center;
 }
@@ -323,7 +323,7 @@
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--control-fg-muted);
-  font-size: calc(13px + var(--turn-font-delta, 0px));
+  font-size: calc(13px + var(--turn-font-delta, 0px) + var(--font-ui-size-offset));
   text-align: left;
   cursor: pointer;
   user-select: none;
@@ -536,7 +536,7 @@
   border-radius: 5px;
   color: var(--control-fg-muted);
   cursor: grab;
-  font-size: calc(12px + var(--turn-font-delta, 0px));
+  font-size: calc(12px + var(--turn-font-delta, 0px) + var(--font-ui-size-offset));
   line-height: 1.2;
   user-select: none;
 }
@@ -830,7 +830,7 @@
 
 .pane-tab small {
   color: var(--text-subtle);
-  font-size: calc(12px + var(--turn-font-delta, 0px));
+  font-size: calc(12px + var(--turn-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .pane-tab-status {
@@ -877,7 +877,7 @@
 .pane-tab-path,
 .pane-tab-gitmeta {
   color: var(--placeholder-color);
-  font-size: calc(12px + var(--turn-font-delta, 0px));
+  font-size: calc(12px + var(--turn-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .pane-tab-gitmeta .pane-tab-gitmeta-icon {
@@ -927,7 +927,7 @@
   overflow: auto;
   padding: 6px;
   color: var(--text-body-soft);
-  font-size: 13.5px;
+  font-size: calc(13.5px + var(--font-ui-size-offset));
   user-select: text;
 }
 
@@ -1146,7 +1146,7 @@
   border: 1px solid var(--control-border-hover);
   border-radius: var(--radius-sm);
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: calc(10px + var(--font-ui-size-offset));
   font-weight: 600;
   line-height: 1;
   background: var(--surface-fill-faint);
@@ -1164,7 +1164,7 @@
 .context-menu-shortcut-options > span {
   overflow: visible;
   color: var(--text-faint);
-  font-size: 9px;
+  font-size: calc(9px + var(--font-ui-size-offset));
 }
 
 /* The close affordance is a plain linkified glyph that sits directly over the
@@ -1434,7 +1434,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
 
 .repository-browser-row-copy span {
   color: var(--text-secondary);
-  font-size: calc(12px + var(--turn-font-delta, 0px));
+  font-size: calc(12px + var(--turn-font-delta, 0px) + var(--font-ui-size-offset));
 }
 
 .repository-browser-name {
@@ -1803,7 +1803,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
 
 .settings-header h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: calc(15px + var(--font-ui-size-offset));
   color: var(--text-heading);
 }
 
@@ -1967,7 +1967,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   padding: 4px;
   /* Buttons inherit this; without it they take the 16px UA default. */
   color: var(--text-body-soft);
-  font-size: 13.5px;
+  font-size: calc(13.5px + var(--font-ui-size-offset));
   user-select: none;
 }
 
@@ -2183,7 +2183,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   overflow-wrap: anywhere;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-size: calc(var(--fs-xs) - var(--font-ui-size-offset));
 }
 
 .settings-remote-provider-results {
@@ -2331,7 +2331,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
 .remote-group-option-host {
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-size: calc(var(--fs-xs) - var(--font-ui-size-offset));
 }
 
 .remote-group-option-badge {
@@ -2405,7 +2405,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   background: var(--control-bg);
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-size: calc(var(--fs-xs) - var(--font-ui-size-offset));
   cursor: pointer;
 }
 
@@ -2566,7 +2566,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   overflow: hidden;
   color: var(--control-fg-muted);
   font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-size: calc(var(--fs-xs) - var(--font-ui-size-offset));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3095,7 +3095,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   color: var(--text-secondary);
   /* Sits between --fs-sm and --fs-base so it matches the link-style option
      selectors next to it (which step down to the same size). */
-  font-size: 12.5px;
+  font-size: calc(12.5px + var(--font-ui-size-offset));
   cursor: pointer;
   user-select: none;
 }
@@ -3234,7 +3234,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   border: 0;
   border-radius: var(--radius-lg);
   background: transparent;
-  font-size: 12.5px;
+  font-size: calc(12.5px + var(--font-ui-size-offset));
 }
 
 .command-launcher-adapter-select .launcher-select-trigger:hover,
