@@ -65,6 +65,7 @@ import {
   MessageSquareText,
   Minimize2,
   Minus,
+  Moon,
   MoreHorizontal,
   PanelBottomClose,
   PanelBottomOpen,
@@ -79,6 +80,7 @@ import {
   Rows2,
   Settings,
   SquareTerminal,
+  Sun,
   Volume2,
   X,
 } from "lucide-react";
@@ -491,6 +493,7 @@ import {
   type CompletionSoundId,
 } from "./lib/completionSounds";
 import {
+  APPEARANCE_OPTIONS,
   bodyFontStackFor,
   clampConfirmPasteOverChars,
   clampFontSize,
@@ -2799,6 +2802,23 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       delete root.dataset.colorTheme;
     };
   }, [settings.colorTheme]);
+
+  // Light/dark is a user choice, independent of the system appearance. The root
+  // attribute drives every token override; the Ghostty panes keep qmux's own
+  // dark chrome, so the window theme is deliberately left alone here.
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.dataset.appearance = settings.appearance;
+    return () => {
+      delete root.dataset.appearance;
+    };
+  }, [settings.appearance]);
+  const toggleAppearance = useCallback(() => {
+    setSettings((current) => ({
+      ...current,
+      appearance: current.appearance === "light" ? "dark" : "light",
+    }));
+  }, []);
 
   // The selected body font must live at the document root, not only on
   // .app-shell: menus and dialogs are portaled to document.body to escape pane
@@ -15905,6 +15925,22 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             <button
               type="button"
               className="icon-button sidebar-header-button"
+              aria-label={
+                settings.appearance === "light" ? "Switch to dark mode" : "Switch to light mode"
+              }
+              aria-pressed={settings.appearance === "light"}
+              title={settings.appearance === "light" ? "Dark mode" : "Light mode"}
+              onClick={toggleAppearance}
+            >
+              {settings.appearance === "light" ? (
+                <Moon size={14} aria-hidden="true" />
+              ) : (
+                <Sun size={14} aria-hidden="true" />
+              )}
+            </button>
+            <button
+              type="button"
+              className="icon-button sidebar-header-button"
               title={`Collapse left sidebar (${LEFT_SIDEBAR_TOGGLE_SHORTCUT_LABEL})`}
               aria-label="Collapse left sidebar"
               onClick={() => setLeftSidebarCollapsedForActivePane(true)}
@@ -17299,6 +17335,27 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                 }}
               >
                 {COLOR_THEME_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </NativeSelect>
+            </div>
+
+            <div className="settings-row">
+              <label htmlFor="settings-appearance" className="settings-label">
+                Appearance
+              </label>
+              <NativeSelect
+                id="settings-appearance"
+                className="settings-select"
+                value={settings.appearance}
+                onChange={(event) => {
+                  const appearance = event.currentTarget.value as AppSettings["appearance"];
+                  setSettings((current) => ({ ...current, appearance }));
+                }}
+              >
+                {APPEARANCE_OPTIONS.map((option) => (
                   <option key={option.id} value={option.id}>
                     {option.label}
                   </option>

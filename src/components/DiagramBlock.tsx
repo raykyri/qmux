@@ -39,14 +39,45 @@ type MermaidApi = {
   render: (id: string, text: string) => Promise<{ svg: string }>;
 };
 
+type DocumentAppearance = "dark" | "light";
+
+function documentAppearance(): DocumentAppearance {
+  return typeof document !== "undefined" &&
+    document.documentElement.dataset.appearance === "light"
+    ? "light"
+    : "dark";
+}
+
+// Tracks the app's light/dark toggle (data-appearance on <html>) so diagrams
+// re-render with a matching Mermaid theme instead of keeping the palette they
+// were first drawn with.
+function useDocumentAppearance(): DocumentAppearance {
+  const [appearance, setAppearance] = useState<DocumentAppearance>(documentAppearance);
+  useEffect(() => {
+    if (typeof MutationObserver === "undefined") return;
+    const observer = new MutationObserver(() => setAppearance(documentAppearance()));
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-appearance"],
+    });
+    setAppearance(documentAppearance());
+    return () => observer.disconnect();
+  }, []);
+  return appearance;
+}
+
 let mermaidPromise: Promise<MermaidApi> | null = null;
-function getMermaid(): Promise<MermaidApi> {
+let mermaidTheme: DocumentAppearance | null = null;
+function getMermaid(appearance: DocumentAppearance): Promise<MermaidApi> {
   if (!mermaidPromise) {
-    mermaidPromise = import("mermaid").then((mod) => {
-      const api = mod.default as unknown as MermaidApi;
+    mermaidPromise = import("mermaid").then((mod) => mod.default as unknown as MermaidApi);
+  }
+  return mermaidPromise.then((api) => {
+    if (mermaidTheme !== appearance) {
+      // initialize() replaces the config wholesale, so every option is restated.
       api.initialize({
         startOnLoad: false,
-        theme: "dark",
+        theme: appearance === "light" ? "neutral" : "dark",
         securityLevel: "strict",
         // sanitizeSvg strips <foreignObject>, so labels must render as plain
         // SVG <text> or flowchart node/edge labels are removed entirely.
@@ -55,10 +86,10 @@ function getMermaid(): Promise<MermaidApi> {
         // font changes just like the surrounding Markdown.
         themeVariables: { fontFamily: "var(--font-ui)" },
       });
-      return api;
-    });
-  }
-  return mermaidPromise;
+      mermaidTheme = appearance;
+    }
+    return api;
+  });
 }
 
 type Viz = { renderString: (src: string, options?: { format?: string }) => string };
@@ -173,10 +204,14 @@ function assertRenderedSvgWithinLimits(svg: string): string {
 
 let mermaidSeq = 0;
 
-async function renderDiagram(lang: DiagramLang, code: string): Promise<string> {
+async function renderDiagram(
+  lang: DiagramLang,
+  code: string,
+  appearance: DocumentAppearance,
+): Promise<string> {
   assertDiagramWithinLimits(code);
   if (lang === "mermaid") {
-    const mermaid = await getMermaid();
+    const mermaid = await getMermaid(appearance);
     const id = `qmux-mermaid-${mermaidSeq++}`;
     const { svg } = await mermaid.render(id, code);
     return sanitizeSvg(assertRenderedSvgWithinLimits(svg));
@@ -242,13 +277,14 @@ export default function DiagramBlock({
   const [state, setState] = useState<RenderState>({ status: "loading" });
   const [showSource, setShowSource] = useState(false);
   const inView = useInView(containerRef);
+  const appearance = useDocumentAppearance();
   const source = code.replace(/\n+$/, "");
 
   useEffect(() => {
     if (!inView) return;
     let cancelled = false;
     setState({ status: "loading" });
-    renderDiagram(lang, source)
+    renderDiagram(lang, source, appearance)
       .then((svg) => {
         if (!cancelled) setState({ status: "done", svg });
       })
@@ -261,7 +297,7 @@ export default function DiagramBlock({
     return () => {
       cancelled = true;
     };
-  }, [inView, lang, source]);
+  }, [inView, lang, source, appearance]);
 
   const label = lang === "dot" ? "graphviz" : "mermaid";
 
