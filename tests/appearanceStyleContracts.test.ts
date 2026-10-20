@@ -5,13 +5,6 @@ import test from "node:test";
 
 const stylesDirectory = join(import.meta.dirname, "..", "src", "styles");
 
-// Sheets still carrying raw literals while the appearance sweep lands one
-// surface group at a time. This set must be empty once the sweep is complete.
-const PENDING_SWEEP = new Set([
-  join("features", "agent-debug-panel.css"),
-  join("features", "artifact-tray.css"),
-]);
-
 // Every .css file under src/styles at any depth, so a new sheet is covered
 // without being registered here.
 function styleFilesOutsideTokens(directory = stylesDirectory): string[] {
@@ -24,7 +17,7 @@ function styleFilesOutsideTokens(directory = stylesDirectory): string[] {
       files.push(relative(stylesDirectory, path));
     }
   }
-  return files.filter((file) => file !== "tokens.css" && !PENDING_SWEEP.has(file));
+  return files.filter((file) => file !== "tokens.css");
 }
 
 const COLOR_LITERAL = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(/;

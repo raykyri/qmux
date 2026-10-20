@@ -12,7 +12,7 @@
   border: 1px solid var(--control-border);
   border-radius: 10px;
   background: var(--right-pane-bg);
-  box-shadow: 0 14px 38px rgb(0 0 0 / 38%);
+  box-shadow: var(--shadow-md);
   color: var(--text-primary);
   font-family: var(--font-ui);
   font-size: 10.5px;
@@ -176,7 +176,7 @@
 
 .agent-debug-chip.is-warn,
 .agent-debug-detail.is-warn {
-  color: var(--warning-color, #d6a64a);
+  color: var(--status-warning-fg);
 }
 
 .agent-debug-detail {
@@ -194,7 +194,7 @@
 
 .agent-debug-detail.is-error,
 .agent-debug-result.is-error {
-  color: var(--danger-color, #e06c75);
+  color: var(--status-failed-fg);
 }
 
 .agent-debug-actions {
