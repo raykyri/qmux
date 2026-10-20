@@ -49,9 +49,8 @@ final class QmuxTerminalThemeTests: XCTestCase {
 
     func testLightVariantsStayOutOfTheUserFacingCatalog() throws {
         let data = try XCTUnwrap(QmuxTerminalTheme.catalogJSON.data(using: .utf8))
-        let entries = try XCTUnwrap(
-            try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-        )
+        let parsed = try JSONSerialization.jsonObject(with: data)
+        let entries = try XCTUnwrap(parsed as? [[String: Any]])
         let names = Set(entries.compactMap { $0["name"] as? String })
         XCTAssertTrue(names.contains(QmuxTerminalTheme.defaultName))
         XCTAssertFalse(names.contains(QmuxTerminalTheme.warmName))
