@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS checks and build
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      CI: 'true'
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      QMUX_REQUIRE_FOUNDATION_MODELS: '1'
+      QMUX_BUILD_TARGET: ${{ github.event_name == 'pull_request' && 'aarch64-apple-darwin' || 'universal-apple-darwin' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-build
+
+      - name: Check types, formatting, and all release tests
+        run: npm run verify:release
+
+      - name: Build bundled Linux CLIs
+        run: npm run build:remote-cli
+
+      # Ad-hoc signing needs no credentials. Disable updater artifacts only for
+      # this build; never give PR code access to the production updater key.
+      - name: Build app and DMG without release credentials
+        run: |
+          npm run tauri -- build --target "$QMUX_BUILD_TARGET" \
+            --config '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-"}}}' \
+            -- --locked
+
+      - name: Check bundled architectures
+        run: |
+          app="src-tauri/target/$QMUX_BUILD_TARGET/release/bundle/macos/qmux.app"
+          lipo -verify_arch arm64 "$app/Contents/MacOS/qmux"
+          if [[ "$QMUX_BUILD_TARGET" == universal-apple-darwin ]]; then
+            lipo -verify_arch x86_64 "$app/Contents/MacOS/qmux"
+          fi
+
+      - name: Upload development DMG
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: qmux-development-${{ env.QMUX_BUILD_TARGET }}-${{ github.sha }}
+          path: src-tauri/target/${{ env.QMUX_BUILD_TARGET }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 7

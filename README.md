@@ -141,6 +141,12 @@ npm run build:release
 After testing the draft's DMG, publish it with the command printed by the
 release script.
 
+GitHub Actions runs `verify:release` and builds a development DMG on every PR
+(Apple Silicon) and push to `main` (universal). These artifacts use ad-hoc
+signing, have no updater artifacts, and require no signing secrets. Download
+them from the CI run's artifacts; they are not notarized releases. The workflow
+also supports manual runs and retains artifacts for seven days.
+
 Development:
 
 ```

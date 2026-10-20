@@ -1,0 +1,40 @@
+name: Set up qmux build
+description: Install the shared macOS CI and release toolchain.
+runs:
+  using: composite
+  steps:
+    - name: Select Xcode and check the Foundation Models SDK
+      shell: bash
+      run: |
+        developer_dir=/Applications/Xcode_26.3.app/Contents/Developer
+        test -d "$developer_dir"
+        export DEVELOPER_DIR="$developer_dir"
+        echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
+        sdk="$(xcrun --sdk macosx --show-sdk-path)"
+        test -d "$sdk/System/Library/Frameworks/FoundationModels.framework"
+        xcrun --find xctest
+        xcodebuild -version
+
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      with:
+        node-version: '22.22.3'
+        cache: npm
+
+    - name: Install Rust
+      shell: bash
+      run: |
+        rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+        rustup override set 1.95.0
+        rustup target add aarch64-apple-darwin x86_64-apple-darwin \
+          aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+
+    - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+      with:
+        version: '0.15.2'
+        use-cache: false
+
+    - name: Install build dependencies
+      shell: bash
+      run: |
+        cargo install cargo-zigbuild --version 0.23.4 --locked
+        npm ci
