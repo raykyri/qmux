@@ -34,6 +34,7 @@ export default function ComponentCatalog() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [mediaOpen, setMediaOpen] = useState(false);
   const [segment, setSegment] = useState<"ssh" | "sftp" | "rsync">("ssh");
+  const [checkboxOn, setCheckboxOn] = useState(true);
   const [launcherModel, setLauncherModel] = useState("fable");
   const [launcherEffort, setLauncherEffort] = useState("medium");
   // The catalog renders instead of <App/>, so nothing else sets the root
@@ -157,6 +158,40 @@ export default function ComponentCatalog() {
               { value: "sftp", label: "SFTP" },
             ]}
           />
+        </section>
+        <section style={sectionStyle}>
+          <h2 style={{ margin: 0 }}>Checkbox</h2>
+          <p style={{ margin: 0, color: "var(--text-secondary)" }}>
+            The shared box recipe from primitives.css. Feature sheets retune it through
+            --checkbox-size and --checkbox-glyph-size; the transcript's GFM task lists use a 13px
+            disabled variant.
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14 }}>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <input
+                type="checkbox"
+                className="checkbox-control"
+                checked={checkboxOn}
+                onChange={(event) => setCheckboxOn(event.currentTarget.checked)}
+              />
+              <span>Checked</span>
+            </label>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <input type="checkbox" className="checkbox-control" defaultChecked={false} />
+              <span>Unchecked</span>
+            </label>
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                color: "var(--text-disabled)",
+              }}
+            >
+              <input type="checkbox" className="checkbox-control" defaultChecked disabled />
+              <span>Disabled</span>
+            </label>
+          </div>
         </section>
         <section style={sectionStyle}>
           <h2 style={{ margin: 0 }}>Menu</h2>
