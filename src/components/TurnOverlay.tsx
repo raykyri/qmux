@@ -291,6 +291,8 @@ export default function TurnOverlay({
   const readerCloseRef = useRef<HTMLButtonElement | null>(null);
   const readerScrollRestoreRef = useRef<TranscriptScrollPosition | null>(null);
   const readerModeWasActiveRef = useRef(false);
+  const onFocusAssistantTurnRef = useRef(onFocusAssistantTurn);
+  onFocusAssistantTurnRef.current = onFocusAssistantTurn;
   // Zero-height marker after the last timeline row; see the observer effect below.
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
   const regenerateTitleFromUserMessageRef = useRef(onRegenerateTitleFromUserMessage);
@@ -996,6 +998,47 @@ export default function TurnOverlay({
       }
     }
   }, [focusedAssistantTurnKey, readerMode]);
+
+  // The dimmed stage around the card is the terminal showing through the
+  // reader's scrim. A primary click there closes the reader. The press and
+  // the release both have to land outside the card, so dragging a text
+  // selection out of the response does not dismiss it.
+  useEffect(() => {
+    if (!readerMode) return;
+    const dialog = sidebarRef.current;
+    const scrim = dialog?.closest(".turn-pane.is-reader-mode");
+    if (!dialog || !scrim) return;
+
+    let scrimGesture = false;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      scrimGesture =
+        event.button === 0 &&
+        event.isPrimary &&
+        target instanceof Node &&
+        scrim.contains(target) &&
+        !dialog.contains(target);
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      const dismiss = scrimGesture;
+      scrimGesture = false;
+      if (!dismiss || event.button !== 0) return;
+      const target = event.target;
+      if (!(target instanceof Node) || !scrim.contains(target) || dialog.contains(target)) return;
+      onFocusAssistantTurnRef.current?.(null);
+    };
+    const clearGesture = () => {
+      scrimGesture = false;
+    };
+    scrim.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("pointerup", onPointerUp, true);
+    document.addEventListener("pointercancel", clearGesture, true);
+    return () => {
+      scrim.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("pointerup", onPointerUp, true);
+      document.removeEventListener("pointercancel", clearGesture, true);
+    };
+  }, [readerMode]);
 
   useEffect(() => {
     if (readerModeRequested && focusedAssistantItems.length === 0) {
