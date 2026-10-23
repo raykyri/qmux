@@ -1007,7 +1007,7 @@ export default function TurnOverlay({
     if (!readerMode) return;
     const dialog = sidebarRef.current;
     const scrim = dialog?.closest(".turn-pane.is-reader-mode");
-    if (!dialog || !scrim) return;
+    if (!dialog || !(scrim instanceof HTMLElement)) return;
 
     let scrimGesture = false;
     const onPointerDown = (event: PointerEvent) => {

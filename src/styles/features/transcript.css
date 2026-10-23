@@ -256,6 +256,15 @@
   flex-shrink: 0;
 }
 
+/* Prompt cards stand in for the empty-activity copy. */
+.turn-empty-state:has(> .turn-empty-prompts) > span {
+  display: none;
+}
+
+.turn-empty-state:has(> .turn-empty-prompts) > .turn-empty-prompts {
+  margin-top: 0;
+}
+
 .turn-empty-prompts {
   min-height: 0;
   flex: 0 1 auto;
@@ -279,10 +288,10 @@
 .turn-empty-prompt-card {
   display: flex;
   min-width: 0;
-  min-height: 80px;
+  min-height: 72px;
   flex-direction: column;
-  gap: 5px;
-  padding: 9px 11px 5px;
+  gap: 3px;
+  padding: 8px 11px 0;
   border: 1px solid var(--surface-border-subtle);
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--text-primary) 3%, var(--right-pane-bg));
@@ -305,7 +314,7 @@
 .turn-empty-prompt-card-name {
   overflow: hidden;
   font-size: calc(12px + var(--transcript-font-delta, 0px) + var(--font-ui-size-offset));
-  font-weight: 600;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
