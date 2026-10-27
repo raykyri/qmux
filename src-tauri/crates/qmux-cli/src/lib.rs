@@ -10,6 +10,7 @@ mod hook_delivery;
 mod mcp;
 mod muse;
 mod public_cli;
+pub mod restored_launch;
 mod startup_retry;
 pub mod transcript_stream;
 pub mod file_fetch;
@@ -745,6 +746,30 @@ fn run_agent_exec_with_retry(
     args: Vec<String>,
     retry_startup: bool,
 ) -> Result<(), String> {
+    let restored_command = env::var(restored_launch::COMMAND_ENV).ok();
+    let result = supervise_agent_exec(
+        adapter_id,
+        args,
+        retry_startup,
+        restored_command.as_deref(),
+    );
+    // Preparation can fail before a child or job binding exists. Normal child
+    // exits are reported by the supervisor after its detach/terminal cleanup.
+    if let Err(error) = &result
+        && let Some(message) =
+            restored_launch::failure_message(restored_command.as_deref(), &Err(error.clone()))
+    {
+        eprintln!("{message}");
+    }
+    result
+}
+
+fn supervise_agent_exec(
+    adapter_id: String,
+    args: Vec<String>,
+    retry_startup: bool,
+    restored_command: Option<&str>,
+) -> Result<(), String> {
     if retry_startup
         && (adapter_id != "codex"
             || args.len() != 2
@@ -787,6 +812,9 @@ fn run_agent_exec_with_retry(
     for env in launch.envs {
         command.env(env.key, env.value);
     }
+    // This metadata belongs only to the supervisor, never to the agent or
+    // commands it launches later in the restored session.
+    command.env_remove(restored_launch::COMMAND_ENV);
     // The containing shell is a user principal. The agent process receives the
     // pane token needed by hooks/MCP, but never inherits cross-pane user power.
     if launch.supervised {
@@ -849,7 +877,12 @@ fn run_agent_exec_with_retry(
         );
     }
 
-    if let Some(message) = retry_message {
+    if let Some(message) = retry_message.or_else(|| {
+        // Errors are handled by the caller, including errors during preparation.
+        status.as_ref().ok().and_then(|status| {
+            restored_launch::failure_message(restored_command, &Ok(*status))
+        })
+    }) {
         eprintln!("{message}");
     }
     let status = status?;

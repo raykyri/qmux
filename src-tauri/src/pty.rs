@@ -985,6 +985,22 @@ fn shell_resume_command(state: &AppState, resume: &ShellAgentResume) -> Option<S
         .get(&resume.adapter)
         .ok()?
         .shell_resume_command(&resume.session_id)
+        .map(|command| shell_resume_with_failure_report(&resume.adapter, &command))
+}
+
+fn shell_resume_with_failure_report(adapter: &str, command: &str) -> String {
+    // Codex's supervisor already reports the final failure after its bounded
+    // startup retries. Other adapters keep their existing retry behavior.
+    if adapter == "codex" {
+        return command.to_string();
+    }
+    // A command-scoped environment assignment reaches the injected shell
+    // function's supervisor without persisting in the surviving user shell.
+    format!(
+        "{}={} {command}",
+        qmux_cli::restored_launch::COMMAND_ENV,
+        shell_quote_str(command),
+    )
 }
 
 /// The shell for new panes: `$SHELL` when set (terminal launches), else the
@@ -3439,6 +3455,7 @@ fn scrub_inherited_qmux_context(command: &mut CommandBuilder) {
         "QMUX_AGENT_FUNCTIONS_ERROR",
         "QMUX_ORIGINAL_ZDOTDIR",
         "QMUX_ORIGINAL_BASHRC",
+        qmux_cli::restored_launch::COMMAND_ENV,
     ];
     for key in CONTEXT_KEYS {
         command.env_remove(key);
@@ -7083,6 +7100,39 @@ mod tests {
             command,
             "QMUX_PREPARED_AGENT_ID='agent-42' '/Applications/qmux app/qmux' agent-exec 'codex' 'fork' 'sess'\\''1' 'line one\nline two'"
         );
+    }
+
+    #[test]
+    fn restored_resume_command_reaches_supervisor_without_leaking_into_shell() {
+        let command = format!("probe --resume {}", shell_quote_str("sess'; $(false)"));
+        let wrapped = shell_resume_with_failure_report("claude", &command);
+        for shell in ["/bin/bash", "/bin/zsh"] {
+            if !Path::new(shell).is_file() {
+                continue;
+            }
+            let script = format!(
+                r#"probe() {{ /usr/bin/printenv QMUX_RESTORE_COMMAND; return 7; }}
+{wrapped}
+__qmux_test_status=$?
+if [ "${{QMUX_RESTORE_COMMAND+x}}" = x ]; then exit 99; fi
+exit "$__qmux_test_status"
+"#
+            );
+            let output = Command::new(shell)
+                .args(["-c", &script])
+                .env_remove(qmux_cli::restored_launch::COMMAND_ENV)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(7), "{shell}: {output:?}");
+            assert_eq!(String::from_utf8_lossy(&output.stdout), format!("{command}\n"));
+            assert!(output.stderr.is_empty(), "{shell}: {output:?}");
+        }
+    }
+
+    #[test]
+    fn codex_restore_keeps_its_existing_retry_and_failure_reporting() {
+        let command = "qmux agent-exec --retry-codex-startup codex resume 'session'";
+        assert_eq!(shell_resume_with_failure_report("codex", command), command);
     }
 
     #[test]
