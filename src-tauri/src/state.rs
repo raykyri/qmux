@@ -492,6 +492,7 @@ struct ShellAgentJob {
     info: ShellAgentJobInfo,
     supervisor_pid: u32,
     missing_samples: u8,
+    startup_retry: Option<crate::shell_jobs::CodexStartupFailure>,
 }
 
 #[derive(Default)]
@@ -2082,6 +2083,7 @@ impl AppState {
                 info: info.clone(),
                 supervisor_pid,
                 missing_samples: 0,
+                startup_retry: None,
             },
         );
         Ok(info)
@@ -2094,6 +2096,48 @@ impl AppState {
             .lock()
             .map_err(|_| "shell agent job lock poisoned".to_string())?;
         Ok(jobs.values().map(|job| job.info.clone()).collect())
+    }
+
+    pub fn codex_startup_retry(
+        &self,
+        pane_id: &str,
+        job_id: &str,
+        arm: bool,
+    ) -> Result<bool, String> {
+        let mut jobs = self
+            .inner
+            .shell_agent_jobs
+            .lock()
+            .map_err(|_| "shell agent job lock poisoned")?;
+        let job = jobs
+            .get_mut(job_id)
+            .filter(|job| job.info.pane_id == pane_id)
+            .ok_or("startup retry job does not belong to this pane")?;
+        if arm {
+            job.startup_retry = Some(crate::shell_jobs::CodexStartupFailure::default());
+        }
+        Ok(job
+            .startup_retry
+            .as_ref()
+            .is_some_and(|detector| detector.routing_failure))
+    }
+
+    pub(crate) fn observe_codex_startup_output(&self, pane_id: &str, bytes: &[u8]) {
+        if let Ok(mut jobs) = self.inner.shell_agent_jobs.lock() {
+            for job in jobs.values_mut().filter(|job| job.info.pane_id == pane_id) {
+                if let Some(detector) = job.startup_retry.as_mut() {
+                    detector.feed(bytes);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn finish_codex_startup(&self, pane_id: &str) {
+        if let Ok(mut jobs) = self.inner.shell_agent_jobs.lock() {
+            for job in jobs.values_mut().filter(|job| job.info.pane_id == pane_id) {
+                job.startup_retry = None;
+            }
+        }
     }
 
     pub(crate) fn shell_agent_job_targets(&self) -> Vec<ShellAgentJobTarget> {

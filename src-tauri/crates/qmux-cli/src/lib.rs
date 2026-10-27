@@ -10,6 +10,7 @@ mod hook_delivery;
 mod mcp;
 mod muse;
 mod public_cli;
+mod startup_retry;
 pub mod transcript_stream;
 pub mod file_fetch;
 
@@ -205,10 +206,14 @@ pub fn run_cli_if_requested() -> Result<bool, String> {
             Ok(true)
         }
         "agent-exec" => {
-            let adapter_id = args
+            let mut adapter_id = args
                 .next()
                 .ok_or_else(|| "usage: qmux agent-exec <adapter-id> [args...]".to_string())?;
-            run_agent_exec(adapter_id, args.collect())?;
+            let retry_startup = adapter_id == "--retry-codex-startup";
+            if retry_startup {
+                adapter_id = args.next().ok_or("missing adapter for restored launch")?;
+            }
+            run_agent_exec_with_retry(adapter_id, args.collect(), retry_startup)?;
             Ok(true)
         }
         "agent-detach" => {
@@ -732,6 +737,23 @@ fn resolve_notification_socket_path(
 }
 
 fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
+    run_agent_exec_with_retry(adapter_id, args, false)
+}
+
+fn run_agent_exec_with_retry(
+    adapter_id: String,
+    args: Vec<String>,
+    retry_startup: bool,
+) -> Result<(), String> {
+    if retry_startup
+        && (adapter_id != "codex"
+            || args.len() != 2
+            || args[0] != "resume"
+            || args[1].trim().is_empty()
+            || args[1].starts_with('-'))
+    {
+        return Err("startup retry requires codex resume <session-id>".to_string());
+    }
     let pane_id = env::var("QMUX_PANE_ID")
         .map_err(|_| "QMUX_PANE_ID is not set; run this from a qmux shell pane".to_string())?;
     let cwd = env::current_dir()
@@ -750,7 +772,7 @@ fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
             "adapterId": adapter_id.clone(),
             "paneId": pane_id,
             "cwd": cwd.display().to_string(),
-            "args": args,
+            "args": args.clone(),
             "shellJobId": shell_job_id,
             "supervisorPid": supervisor_pid,
             "preparedAgentId": env::var("QMUX_PREPARED_AGENT_ID").ok(),
@@ -789,19 +811,28 @@ fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
         });
     }
 
-    // Ignore SIGINT/SIGQUIT in the supervisor before spawning so a terminal-generated
-    // signal (delivered to the whole foreground process group during any cooked-mode
-    // window) can't kill us before wait() returns. Surviving the signal is what
-    // guarantees the detach cleanup below always runs.
-    unsafe {
-        libc::signal(libc::SIGINT, libc::SIG_IGN);
-        libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+    // Keep the supervisor alive on SIGINT/SIGQUIT so it can reap and detach the
+    // child. Restored Codex launches also record the signal to cancel backoff.
+    if retry_startup {
+        startup_retry::install_signal_handlers();
+    } else {
+        unsafe {
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+            libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+        }
     }
 
-    let status = command
-        .spawn()
-        .and_then(|mut child| child.wait())
-        .map_err(|err| format!("failed to run agent binary '{}': {err}", launch.binary));
+    let (status, retry_message) = if retry_startup {
+        startup_retry::run(&mut command, &shell_job_id, &args)
+    } else {
+        (
+            command
+                .spawn()
+                .and_then(|mut child| child.wait())
+                .map_err(|err| format!("failed to run agent binary '{}': {err}", launch.binary)),
+            None,
+        )
+    };
 
     // Cleanup belongs to the runner, not the injected shell function. A suspended or
     // backgrounded job can return control to the shell before exiting; detaching here,
@@ -818,6 +849,9 @@ fn run_agent_exec(adapter_id: String, args: Vec<String>) -> Result<(), String> {
         );
     }
 
+    if let Some(message) = retry_message {
+        eprintln!("{message}");
+    }
     let status = status?;
     std::process::exit(exit_code_for_status(status));
 }

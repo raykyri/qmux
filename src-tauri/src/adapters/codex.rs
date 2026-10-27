@@ -192,7 +192,10 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn shell_resume_command(&self, session_id: &str) -> Option<String> {
-        Some(format!("codex resume {}", shell_quote_arg(session_id)))
+        Some(format!(
+            "qmux agent-exec --retry-codex-startup codex resume {}",
+            shell_quote_arg(session_id)
+        ))
     }
 
     fn ingest_notification(
@@ -896,6 +899,9 @@ impl CodexAdapter {
         }
         let event_type = match hook_event.as_str() {
             "SessionStart" => {
+                if let Some(pane_id) = pane_id.as_deref() {
+                    state.finish_codex_startup(pane_id);
+                }
                 if let Some(current) = agent.as_ref() {
                     let session_id = string_field(&notification.payload, "session_id")
                         .or_else(|| string_field(&notification.payload, "sessionId"))

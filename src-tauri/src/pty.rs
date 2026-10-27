@@ -4656,6 +4656,9 @@ fn start_reader_thread(
                     if chunk.is_empty() {
                         continue;
                     }
+                    // Only live bytes from this process tree: restored history
+                    // is replayed elsewhere and cannot trigger startup retries.
+                    state.observe_codex_startup_output(&pane_id, chunk);
                     if first_output && remote.is_some() {
                         first_output = false;
                         record_remote_startup_elapsed(&state, &pane_id, "firstOutput");

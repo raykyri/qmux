@@ -1072,6 +1072,19 @@ fn handle_request_with_peer(
             serde_json::to_value(prepared)
                 .map_err(|err| format!("failed to encode prepared agent launch: {err}"))
         }
+        "agent.startup_retry" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct StartupRetryPayload {
+                job_id: String,
+                arm: bool,
+            }
+            let payload = serde_json::from_value::<StartupRetryPayload>(request.payload)
+                .map_err(|err| format!("invalid startup retry payload: {err}"))?;
+            let routing_failure =
+                state.codex_startup_retry(&authed_pane, &payload.job_id, payload.arm)?;
+            Ok(json!({ "routingFailure": routing_failure }))
+        }
         "agent.detach_pane" => {
             // A shell-launched agent's process has exited while its host shell — and so
             // this pane — lives on. Detach the agent bound to the authenticated pane so
@@ -1462,6 +1475,7 @@ fn ensure_remote_command_allowed(
         // A remote shell or agent may stage one bounded preview file. The remaining
         // agent capabilities retain their existing pane/workspace/lineage checks.
         "browser.open_file" => true,
+        "agent.startup_retry" => has_agent,
         "agent.detach_pane" | "agent.fork" | "mcp.call" | "browser.open" | "cli.call" => has_agent,
         // In particular: never accept pane.write or transcript.append from an
         // SSH-forwarded credential. The latter writes local files and currently

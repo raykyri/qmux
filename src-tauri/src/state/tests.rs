@@ -8380,6 +8380,30 @@ fn stale_shell_job_cleanup_must_match_its_agent() {
 }
 
 #[test]
+fn codex_startup_retry_is_scoped_to_live_job_and_attempt() {
+    let state = AppState::new(test_config(temp_workspace()));
+    state
+        .register_shell_agent_job("job-1".into(), "agent-1".into(), "pane-1".into(), 42)
+        .unwrap();
+    let error = b"Error: account/read failed during TUI bootstrap: account/read failed: workspace routing discovery failed (code -32603)\r\n";
+    // Old output before arming, and output from another pane, cannot qualify.
+    state.observe_codex_startup_output("pane-1", error);
+    assert!(!state.codex_startup_retry("pane-1", "job-1", true).unwrap());
+    state.observe_codex_startup_output("pane-2", error);
+    assert!(!state.codex_startup_retry("pane-1", "job-1", false).unwrap());
+    assert!(state.codex_startup_retry("pane-2", "job-1", true).is_err());
+    state.observe_codex_startup_output("pane-1", error);
+    assert!(state.codex_startup_retry("pane-1", "job-1", false).unwrap());
+    // A retry gets a fresh detector; successful startup disarms it entirely.
+    assert!(!state.codex_startup_retry("pane-1", "job-1", true).unwrap());
+    state.finish_codex_startup("pane-1");
+    state.observe_codex_startup_output("pane-1", error);
+    assert!(!state.codex_startup_retry("pane-1", "job-1", false).unwrap());
+    state.unregister_shell_agent_job("job-1", None, None);
+    assert!(state.codex_startup_retry("pane-1", "job-1", false).is_err());
+}
+
+#[test]
 fn startup_cancel_preserves_saved_panes_even_after_partial_recovery() {
     let root = temp_workspace();
     let saved = PersistedState {

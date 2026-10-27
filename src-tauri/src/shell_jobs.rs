@@ -7,6 +7,41 @@ use std::time::Duration;
 
 const SHELL_JOB_POLL_INTERVAL: Duration = Duration::from_millis(750);
 
+/// A bounded matcher for live output from one armed Codex startup attempt.
+/// Never feed restored scrollback into this detector.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CodexStartupFailure {
+    tail: Vec<u8>,
+    pub routing_failure: bool,
+}
+
+impl CodexStartupFailure {
+    const DIAGNOSTIC: &[u8] = b"Error: account/read failed during TUI bootstrap: account/read failed: workspace routing discovery failed";
+
+    pub fn feed(&mut self, bytes: &[u8]) {
+        if self.routing_failure {
+            return;
+        }
+        // Retain only a diagnostic-length suffix, including matches straddling
+        // arbitrary PTY read boundaries. Codex prints this fatal error as text.
+        self.tail.extend_from_slice(bytes);
+        if self
+            .tail
+            .windows(Self::DIAGNOSTIC.len())
+            .any(|window| window == Self::DIAGNOSTIC)
+        {
+            self.routing_failure = true;
+            self.tail.clear();
+        } else {
+            let discard = self
+                .tail
+                .len()
+                .saturating_sub(Self::DIAGNOSTIC.len() - 1);
+            self.tail.drain(..discard);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ProcessJobSample {
     process_group_id: i32,
@@ -185,6 +220,23 @@ fn parse_process_job_samples(output: &str) -> HashMap<u32, ProcessJobSample> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_bootstrap_failure_matches_every_chunk_boundary() {
+        let diagnostic = CodexStartupFailure::DIAGNOSTIC;
+        for split in 0..=diagnostic.len() {
+            let mut detector = CodexStartupFailure::default();
+            detector.feed(b"\x1b[?25lprevious terminal output\r\n");
+            detector.feed(&diagnostic[..split]);
+            detector.feed(&diagnostic[split..]);
+            assert!(detector.routing_failure, "split {split}");
+        }
+        let mut detector = CodexStartupFailure::default();
+        detector.feed(&vec![b'x'; 64 * 1024]);
+        detector.feed(b"workspace routing discovery failed");
+        assert!(!detector.routing_failure);
+        assert!(detector.tail.len() < diagnostic.len());
+    }
 
     #[test]
     fn classifies_foreground_background_and_stopped_jobs() {
