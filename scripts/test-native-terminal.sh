@@ -25,9 +25,11 @@ export CLANG_MODULE_CACHE_PATH="$task_native_root/module-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$task_native_root/module-cache"
 
 # A separate scratch directory preserves the release archives used by build.rs.
-exec swift test \
+swift test \
   --package-path "$repo_root/src-tauri/swift-terminal" \
   --scratch-path "$task_native_root/swiftpm-tests" \
   --cache-path "$task_native_root/cache" \
   --config-path "$task_native_root/config" \
   --security-path "$task_native_root/security"
+
+bash "$repo_root/scripts/test-native-terminal-resources.sh" "$task_native_root"

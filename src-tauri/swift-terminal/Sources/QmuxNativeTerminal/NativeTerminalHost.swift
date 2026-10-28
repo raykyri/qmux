@@ -641,7 +641,7 @@ final class NativeTerminalHost {
         // Report a dead/not-yet-created surface as failure: the surface only
         // exists after the frontend's first settings round-trip, and Rust
         // callers record successful writes as delivered turns.
-        return pane.view.sendText(text)
+        return pane.view.paste(text: text)
     }
 
     func submit(id: String) -> Bool {

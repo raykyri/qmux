@@ -5,20 +5,16 @@ import Foundation
 @MainActor
 struct HostManagedViewportTests {
     @Test
-    func `view metrics do not publish a premature backend resize`() {
+    func `backend resize callback delivers a changed grid exactly once`() {
         let received = ResizeRecorder()
         let session = InMemoryTerminalSession(write: { _ in }, resize: { received.append($0) })
-        session.updateViewport(TerminalGridMetrics(
-            columns: 40, rows: 12, widthPixels: 640, heightPixels: 384,
-            cellWidthPixels: 16, cellHeightPixels: 32
-        ))
         #expect(received.values.isEmpty)
 
         let userdata = Unmanaged.passUnretained(session).toOpaque()
         InMemoryTerminalSession.receiveResizeCallback(userdata, 40, 12, 640, 384)
         #expect(received.values == [InMemoryTerminalViewport(
             columns: 40, rows: 12, widthPixels: 640, heightPixels: 384,
-            cellWidthPixels: 16, cellHeightPixels: 32
+            cellWidthPixels: 0, cellHeightPixels: 0
         )])
         InMemoryTerminalSession.receiveResizeCallback(userdata, 40, 12, 640, 384)
         #expect(received.values.count == 1)

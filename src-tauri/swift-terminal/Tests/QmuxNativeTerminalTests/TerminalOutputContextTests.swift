@@ -55,7 +55,7 @@ struct TerminalOutputContextTests {
         )
         session.setSurface(UnsafeMutableRawPointer(bitPattern: 1)!)
         defer { registry.remove(paneID) }
-        #expect(session.receive(Data("block".utf8)))
+        session.receive(Data("block".utf8))
         #expect(started.wait(timeout: .now() + 5) == .success)
         #expect(TerminalOutputContext.receive(
             Data("history".utf8), session: session, paneID: paneID
@@ -76,10 +76,21 @@ struct TerminalOutputContextTests {
     @Test
     func `rejected output leaves content generations untouched`() {
         let paneID = "missing-output-\(UUID().uuidString)"
-        let session = InMemoryTerminalSession(write: { _ in }, resize: { _ in })
+        let parsed = OutputObservations()
+        let session = InMemoryTerminalSession(
+            write: { _ in }, resize: { _ in },
+            surfaceWrite: { _, data in
+                parsed.append(String(decoding: data, as: UTF8.self), generation: 0)
+            }
+        )
         #expect(!TerminalOutputContext.receive(
             Data("history".utf8), session: session, paneID: paneID
         ))
+        // Rust retains rejected history for retry. It must not also be
+        // buffered by the new upstream session and replayed twice on attach.
+        session.setSurface(UnsafeMutableRawPointer(bitPattern: 3)!)
+        session.waitForPendingOutput()
+        #expect(parsed.values.isEmpty)
         #expect(TerminalAnnotationContentRegistry.shared.generation(for: paneID) == 0)
     }
 }

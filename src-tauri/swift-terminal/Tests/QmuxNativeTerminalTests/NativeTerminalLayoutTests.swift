@@ -5,6 +5,40 @@ import XCTest
 
 @MainActor
 final class NativeTerminalLayoutTests: XCTestCase {
+    func testApprovedPasteKeepsHostPayloadAndBracketedPaste() async throws {
+        try await Self.withPane { paneID, _ in
+            let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
+            session.receive("\u{1B}[?2004h")
+            await Task.detached { session.waitForPendingOutput() }.value
+            let payload = "qmux-approved 🔹\nsecond line"
+            XCTAssertTrue(NativeTerminalHost.shared.pasteApprovedText(id: paneID, text: payload))
+            let deadline = ProcessInfo.processInfo.systemUptime + 2
+            var pasted = ""
+            repeat {
+                try await Task.sleep(for: .milliseconds(10))
+                pasted = String(decoding: NativeTerminalCallbackRecorder.shared.writes.flatMap { $0 }, as: UTF8.self)
+            } while !pasted.hasSuffix("\u{1B}[201~") && ProcessInfo.processInfo.systemUptime < deadline
+            XCTAssertEqual(pasted.replacingOccurrences(of: "\r", with: "\n"), "\u{1B}[200~" + payload + "\u{1B}[201~")
+        }
+    }
+
+    func testSubmitUsesKittyKeyPressAndRelease() async throws {
+        try await Self.withPane { paneID, _ in
+            let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
+            // Disambiguation, event types, and reporting for every key.
+            session.receive("\u{1B}[>11u")
+            await Task.detached { session.waitForPendingOutput() }.value
+            XCTAssertTrue(NativeTerminalHost.shared.submit(id: paneID))
+            let deadline = ProcessInfo.processInfo.systemUptime + 2
+            var keys = ""
+            repeat {
+                try await Task.sleep(for: .milliseconds(10))
+                keys = String(decoding: NativeTerminalCallbackRecorder.shared.writes.flatMap { $0 }, as: UTF8.self)
+            } while !keys.contains(":3u") && ProcessInfo.processInfo.systemUptime < deadline
+            XCTAssertEqual(keys, "\u{1B}[13u\u{1B}[13;1:3u")
+        }
+    }
+
     func testQueuedLiveQueriesEventuallyReachHostInput() async throws {
         try await Self.withPane { paneID, _ in
             let query = Array("\u{1B}[6n".utf8)
@@ -29,7 +63,9 @@ final class NativeTerminalLayoutTests: XCTestCase {
         try await Self.withPane { paneID, _ in
             let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
             NativeTerminalHost.shared.removePane(id: paneID)
-            XCTAssertFalse(session.receive(Data("stale output".utf8)))
+            XCTAssertFalse(TerminalOutputContext.receive(
+                Data("stale output".utf8), session: session, paneID: paneID
+            ))
             XCTAssertNil(session.readViewportText())
             XCTAssertEqual(TerminalAnnotationContentRegistry.shared.generation(for: paneID), 0)
         }
@@ -40,7 +76,7 @@ final class NativeTerminalLayoutTests: XCTestCase {
             let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
             let started = DispatchSemaphore(value: 0)
             let output = (0..<512).map { "\u{1B}]2;title-\($0)\u{07}" }.joined()
-            let accepted = session.receive(Data(output.utf8), beforeWrite: { started.signal() })
+            let accepted = session.receive(Data(output.utf8), beforeWrite: { started.signal() }, afterWrite: {})
             XCTAssertTrue(accepted)
             XCTAssertEqual(started.wait(timeout: .now() + 5), .success)
             NativeTerminalHost.shared.removePane(id: paneID)
@@ -120,6 +156,7 @@ final class NativeTerminalLayoutTests: XCTestCase {
             newer.revision = 2
             newer.themeName = "Cursor Dark"
             XCTAssertTrue(pane.applySettings(newer))
+            XCTAssertNil(pane.controller.lastConfigurationIssue)
 
             var stale = Self.settings
             stale.revision = 1

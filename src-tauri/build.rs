@@ -115,6 +115,33 @@ fn build_native_terminal_bridge() {
                     continue;
                 }
 
+                // SwiftPM resources are separate from the static archive. Stage
+                // them at a stable path for Tauri's macOS resource mapping,
+                // including builds that use a custom CARGO_TARGET_DIR.
+                let resource_bundle_name = "GhosttyKit_GhosttyTerminal.bundle";
+                let resource_bundle = products.join(resource_bundle_name);
+                assert!(
+                    resource_bundle.is_dir(),
+                    "SwiftPM did not produce {}",
+                    resource_bundle.display()
+                );
+                let staged_bundle = manifest_dir
+                    .join("native-resources")
+                    .join(resource_bundle_name);
+                if !directory_contents_match(&resource_bundle, &staged_bundle).unwrap_or(false) {
+                    if staged_bundle.exists() {
+                        std::fs::remove_dir_all(&staged_bundle).unwrap_or_else(|err| {
+                            panic!("failed to clear {}: {err}", staged_bundle.display())
+                        });
+                    }
+                    copy_package_tree(&resource_bundle, &staged_bundle);
+                }
+                std::fs::write(
+                    native_build_root.join(format!("swift-sdk-{arch}.txt")),
+                    sdk_path.to_string_lossy().as_bytes(),
+                )
+                .expect("failed to record the native terminal SDK for resource verification");
+
                 // Fold the bridge archive's identity into the build-script
                 // output: cargo only relinks the binary when this output
                 // changes, so without it a rebuilt archive with byte-identical
@@ -251,6 +278,28 @@ fn copy_package_tree(source: &Path, destination: &Path) {
             });
         }
     }
+}
+
+/// Avoid rewriting watched Tauri resources when only Rust code changed.
+fn directory_contents_match(source: &Path, destination: &Path) -> std::io::Result<bool> {
+    if !destination.is_dir() {
+        return Ok(false);
+    }
+    let entries = std::fs::read_dir(source)?.collect::<Result<Vec<_>, _>>()?;
+    if entries.len() != std::fs::read_dir(destination)?.count() {
+        return Ok(false);
+    }
+    for entry in entries {
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            if !directory_contents_match(&entry.path(), &target)? {
+                return Ok(false);
+            }
+        } else if !target.is_file() || std::fs::read(entry.path())? != std::fs::read(target)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn native_terminal_sdk_candidates() -> Vec<PathBuf> {

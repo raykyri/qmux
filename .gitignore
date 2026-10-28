@@ -17,6 +17,7 @@ src-tauri/gen/
 # accidentally committed.
 .qmux/
 src-tauri/swift-terminal/.build/
+src-tauri/native-resources/
 
 # Cross-compiled linux-musl qmux-cli binaries produced by
 # scripts/build-remote-cli.sh and copied into the app bundle.

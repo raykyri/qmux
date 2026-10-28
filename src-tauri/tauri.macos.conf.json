@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "native-resources/GhosttyKit_GhosttyTerminal.bundle/": "GhosttyKit_GhosttyTerminal.bundle"
+    }
+  }
+}
