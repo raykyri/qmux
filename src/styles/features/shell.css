@@ -15,15 +15,71 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 20px;
-  max-width: min(560px, 80vw);
-  text-align: center;
+  gap: 28px;
+  max-width: 300px;
+  width: 100%;
 }
 
-.startup-brand { font-size: calc(28px + var(--font-ui-size-offset)); font-weight: 600; }
 .startup-content h1 { margin: 0 0 8px; font-size: calc(18px + var(--font-ui-size-offset)); font-weight: 500; }
 .startup-content p { margin: 0; color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
-.startup-progress { width: 220px; }
+
+.startup-status {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+}
+
+.startup-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.startup-status-label {
+  font-size: calc(14px + var(--font-ui-size-offset));
+  color: var(--text-secondary);
+}
+
+.startup-status-badge {
+  font-size: calc(12px + var(--font-ui-size-offset));
+  color: var(--text-secondary);
+  background: var(--control-border);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.startup-progress-track {
+  width: 100%;
+  height: 3px;
+  background: var(--control-border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.startup-progress-fill {
+  height: 100%;
+  background: var(--text-secondary);
+  border-radius: 2px;
+  transition: width 400ms ease;
+}
+
+.startup-progress-fill.indeterminate {
+  width: 30%;
+  animation: startup-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes startup-indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(333%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-progress-fill { transition-duration: 0.01ms; }
+  .startup-progress-fill.indeterminate { animation-duration: 0.01ms; }
+}
 
 .app-shell {
   position: relative;

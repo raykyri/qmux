@@ -69,24 +69,44 @@ export default function Startup({ loadApp = loadApplication }: { loadApp?: () =>
     {!(ready && (interfaceReady || quickLaunch)) && <main className="startup-screen">
       <div className="titlebar-drag" data-tauri-drag-region />
       <div className="startup-content">
-        <span className="startup-brand">qmux</span>
         <div role={failure ? "alert" : "status"} aria-live="polite">
-          <h1>{progress.quitting ? "Closing qmux…" : failure ? "Couldn’t restore your session" : "Restoring your session…"}</h1>
-          <p>{failure ?? (progress.quitting
-            ? "Your saved session will be kept for the next launch."
-            : progress.phase === "panes"
-              ? `Restoring terminals (${progress.completed} of ${progress.total})`
-              : progress.phase === "ready" ? "Preparing your workspace…" : "Loading your saved workspace…")}</p>
+          {failure
+            ? <>
+              <h1>Couldn’t restore your session</h1>
+              <p>{failure}</p>
+            </>
+            : progress.quitting
+              ? <>
+                <h1>Closing qmux…</h1>
+                <p>Your saved session will be kept for the next launch.</p>
+              </>
+              : <div className="startup-status">
+                <div className="startup-status-row">
+                  <span className="startup-status-label">
+                    {progress.phase === "ready" ? "Preparing workspace" : "Restoring session"}
+                  </span>
+                  {progress.phase === "panes" && progress.total > 0 && (
+                    <span className="startup-status-badge">{progress.completed} / {progress.total}</span>
+                  )}
+                </div>
+                <div className="startup-progress-track">
+                  <div
+                    className={`startup-progress-fill${progress.phase !== "panes" || progress.total === 0 ? " indeterminate" : ""}`}
+                    style={progress.phase === "panes" && progress.total > 0
+                      ? { width: `${(progress.completed / progress.total) * 100}%` }
+                      : undefined}
+                    role="progressbar"
+                    aria-label="Session restoration"
+                    aria-valuenow={progress.phase === "panes" ? progress.completed : undefined}
+                    aria-valuemax={progress.phase === "panes" ? progress.total : undefined}
+                  />
+                </div>
+              </div>
+          }
         </div>
-        {!failure && !progress.quitting && <progress
-          className="startup-progress"
-          aria-label="Session restoration"
-          max={progress.phase === "panes" && progress.total > 0 ? progress.total : undefined}
-          value={progress.phase === "panes" && progress.total > 0 ? progress.completed : undefined}
-        />}
         <Button disabled={progress.quitting} onClick={() => {
           void invoke("startup_quit").catch((err: unknown) => setError(String(err)));
-        }}>Quit qmux</Button>
+        }}>Quit</Button>
       </div>
     </main>}
   </>;
