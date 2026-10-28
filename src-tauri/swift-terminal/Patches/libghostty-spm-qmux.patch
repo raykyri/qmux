@@ -34,7 +34,7 @@ diff --git a/Sources/GhosttyTerminal/Configuration/GhosttyRuntimeResources.swift
 diff --git a/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift b/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift
 --- a/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift
 +++ b/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift
-@@ -36,16 +36,7 @@
+@@ -44,16 +44,7 @@
          let bridge = Unmanaged<TerminalCallbackBridge>
              .fromOpaque(bridgePtr)
              .takeUnretainedValue()
@@ -52,26 +52,147 @@ diff --git a/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swi
 -                && bridge.delegate is any TerminalSurfaceOpenURLDelegate
          }
      }
-@@ -146,10 +137,12 @@
-         // which must not write files as a side effect; a host paste that
-         // finds image or document data materialises it itself
-         // (`UITerminalView.pasteFromPasteboard`).
--        guard let text = TerminalPasteboardContent.text() else {
-+        let text = bridge.pendingPasteText
-+        bridge.pendingPasteText = nil
-+        guard let text else {
-             TerminalDebugLog.log(.input, "clipboard paste read empty")
-             return false
+@@ -185,35 +176,18 @@
+             return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED
          }
--        completeClipboardRequest(surface, text: text, opaquePtr: opaquePtr, confirmed: false)
-+        completeClipboardRequest(surface, text: text, opaquePtr: opaquePtr, confirmed: true)
-         return true
+
+-        guard !wantsListOnly else {
+-            let available = TerminalPasteboardContent.hasText() ? ["text/plain"] : []
+-            TerminalDebugLog.log(.input, "clipboard paste list available=\(available)")
+-            bridge.completeClipboardRead(statePtr: statePtr, contents: [], available: available)
+-            return GHOSTTY_CLIPBOARD_READ_STARTED
+-        }
+-
+-        // Text and file URLs only, through the shared reader: a file copied
+-        // in Finder or Files pastes as its escaped path, not its display
+-        // name. This also serves a program's OSC 52 read, which must not
+-        // write files as a side effect; a host paste that finds image or
+-        // document data materialises it itself
+-        // (`UITerminalView.pasteFromPasteboard`).
+-        let string = TerminalPasteboardContent.text()
+-
+-        let hasText = string.map { !$0.isEmpty } ?? false
+-        let available = listAvailable && hasText ? ["text/plain"] : []
+-
+-        guard let string, hasText else {
+-            TerminalDebugLog.log(.input, "clipboard paste read empty")
+-            return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE
+-        }
+-
+-        TerminalDebugLog.log(
+-            .input,
+-            "clipboard paste read bytes=\(string.utf8.count) lines=\(TerminalInputText.lineCount(in: string))"
++        // qmux owns clipboard approval. Never read or list the system
++        // pasteboard here, including for OSC 52 and Kitty clipboard requests.
++        guard !wantsListOnly else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
++        let string = bridge.pendingPasteText
++        bridge.pendingPasteText = nil
++        guard let string else { return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
++        let content = TerminalClipboardContent(mime: "text/plain", data: Data(string.utf8))
++        bridge.completeClipboardRead(
++            statePtr: statePtr,
++            contents: [content],
++            available: listAvailable ? ["text/plain"] : [],
++            confirmed: true
+         )
+-        let content = TerminalClipboardContent(mime: "text/plain", data: Data(string.utf8))
+-        bridge.completeClipboardRead(statePtr: statePtr, contents: [content], available: available)
+-        TerminalDebugLog.log(.input, "clipboard paste complete")
+         return GHOSTTY_CLIPBOARD_READ_STARTED
      }
+@@ -383,20 +357,18 @@
+ }
+
+ extension TerminalCallbackBridge {
+-    /// Completes a clipboard read from `readClipboard` itself — always
+-    /// `confirmed: false`, since this callback is never told whether the
+-    /// request's type requires confirmation. libghostty diverts into
+-    /// `confirmReadClipboard` on its own when it does.
++    /// Completes a read using the host's exact approved payload.
+     nonisolated fileprivate func completeClipboardRead(
+         statePtr: UnsafeMutableRawPointer,
+         contents: [TerminalClipboardContent],
+-        available: [String]
++        available: [String],
++        confirmed: Bool
+     ) {
+         guard let surface = rawSurface else { return }
+         withClipboardCompletePayload(
+             contents: contents,
+             available: available,
+-            confirmed: false,
++            confirmed: confirmed,
+             remember: false
+         ) { complete in
+             ghostty_surface_complete_clipboard_request(surface, complete, statePtr)
+diff --git a/Sources/GhosttyTerminal/InMemory/InMemoryTerminalPendingOperations.swift b/Sources/GhosttyTerminal/InMemory/InMemoryTerminalPendingOperations.swift
+--- a/Sources/GhosttyTerminal/InMemory/InMemoryTerminalPendingOperations.swift
++++ b/Sources/GhosttyTerminal/InMemory/InMemoryTerminalPendingOperations.swift
+@@ -9,7 +9,15 @@
+ struct InMemoryTerminalPendingOperations {
+     enum Operation {
+         case write(Data)
++        case hostWrite(HostWrite)
+         case processExit(exitCode: UInt32, runtimeMilliseconds: UInt64)
++    }
++
++    struct HostWrite {
++        let data: Data
++        let generation: UInt64
++        let beforeWrite: @Sendable () -> Void
++        let afterWrite: @Sendable () -> Void
+     }
+
+     private struct Entry {
+@@ -34,8 +42,10 @@
+     }
+
+     mutating func append(_ operation: Operation) {
+-        if case let .write(data) = operation {
+-            writeByteCount += data.count
++        switch operation {
++        case let .write(data): writeByteCount += data.count
++        case let .hostWrite(write): writeByteCount += write.data.count
++        case .processExit: break
+         }
+         appendedSequence += 1
+         storage.append(Entry(operation: operation, sequence: appendedSequence))
+@@ -64,8 +74,10 @@
+             head += 1
+             guard let entry else { continue }
+             count -= 1
+-            if case let .write(data) = entry.operation {
+-                writeByteCount -= data.count
++            switch entry.operation {
++            case let .write(data): writeByteCount -= data.count
++            case let .hostWrite(write): writeByteCount -= write.data.count
++            case .processExit: break
+             }
+             retiredSequence = entry.sequence
+             compact()
+@@ -80,6 +92,17 @@
+         var excess = writeByteCount - limit
+         var index = head
+         while excess > 0, index < storage.count {
++            // Host writes belong to the detached surface's generation and
++            // must be discarded whole, with neither annotation hook running.
++            if let entry = storage[index], case let .hostWrite(write) = entry.operation {
++                storage[index] = nil
++                writeByteCount -= write.data.count
++                excess -= write.data.count
++                count -= 1
++                retiredSequence = max(retiredSequence, entry.sequence)
++                index += 1
++                continue
++            }
+             guard let entry = storage[index], case var .write(data) = entry.operation else {
+                 index += 1
+                 continue
 diff --git a/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSession.swift b/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSession.swift
 --- a/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSession.swift
 +++ b/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSession.swift
-@@ -179,6 +179,17 @@
-         )
+@@ -210,6 +210,17 @@
+         })
      }
 
 +    /// Queue only for a live surface, reporting acceptance to an embedding host.
@@ -91,8 +212,32 @@ diff --git a/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSession.swift b/So
 diff --git a/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSurfaceAccess.swift b/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSurfaceAccess.swift
 --- a/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSurfaceAccess.swift
 +++ b/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSurfaceAccess.swift
-@@ -127,6 +127,27 @@
-         return true
+@@ -17,6 +17,7 @@
+     private let tick: Tick
+
+     private var surface: ghostty_surface_t?
++    private var generation: UInt64 = 0
+     /// Prevents the caller from freeing a surface while a C operation uses it.
+     private var activeOperations = 0
+     /// Host output in arrival order, not yet handed to a surface. Each entry
+@@ -73,6 +74,7 @@
+     func setSurface(_ surface: ghostty_surface_t?) {
+         condition.lock()
+         let previous = self.surface
++        generation &+= 1
+         self.surface = nil
+         waitForActiveOperations(ticking: previous)
+         self.surface = surface
+@@ -98,6 +100,7 @@
+             return false
+         }
+
++        generation &+= 1
+         surface = nil
+         waitForActiveOperations(ticking: expectedSurface)
+         condition.unlock()
+@@ -145,6 +148,31 @@
+         backlogChange?()
      }
 
 +    /// The host retains rejected bytes for retry; never buffer them here too.
@@ -103,26 +248,49 @@ diff --git a/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSurfaceAccess.swif
 +        afterWrite: @escaping @Sendable () -> Void
 +    ) -> Bool {
 +        condition.lock()
-+        defer { condition.unlock() }
-+        guard surface != nil else { return false }
-+        let writeGeneration = generation
-+        outputQueue.async { [self] in
-+            withSurface(generation: writeGeneration) { surface in
-+                beforeWrite()
-+                defer { afterWrite() }
-+                write(surface, data)
-+            }
++        guard surface != nil else {
++            condition.unlock()
++            return false
 +        }
++        operations.append(.hostWrite(.init(
++            data: data,
++            generation: generation,
++            beforeWrite: beforeWrite,
++            afterWrite: afterWrite
++        )))
++        scheduleDrain()
++        let backlogChange = takeBacklogChange()
++        condition.unlock()
++        backlogChange?()
 +        return true
 +    }
 +
      func enqueueProcessExit(
          exitCode: UInt32,
          runtimeMilliseconds: UInt64
+@@ -254,5 +282,6 @@
+             condition.unlock()
+             return false
+         }
++        let writeGeneration = generation
+         activeOperations += 1
+         condition.unlock()
+@@ -261,6 +290,11 @@
+         switch operation {
+         case let .write(data):
+             write(surface, data)
++        case let .hostWrite(hostWrite):
++            guard hostWrite.generation == writeGeneration else { return true }
++            hostWrite.beforeWrite()
++            defer { hostWrite.afterWrite() }
++            write(surface, hostWrite.data)
+         case let .processExit(exitCode, runtimeMilliseconds):
+             processExit(surface, exitCode, runtimeMilliseconds)
+         }
 diff --git a/Sources/GhosttyTerminal/InMemory/TerminalCallbackBridge.swift b/Sources/GhosttyTerminal/InMemory/TerminalCallbackBridge.swift
 --- a/Sources/GhosttyTerminal/InMemory/TerminalCallbackBridge.swift
 +++ b/Sources/GhosttyTerminal/InMemory/TerminalCallbackBridge.swift
-@@ -18,5 +18,8 @@
+@@ -18,6 +18,9 @@
      weak var delegate: (any TerminalSurfaceViewDelegate)?
      /// Raw surface pointer for use in C callbacks (e.g. clipboard).
      nonisolated(unsafe) var rawSurface: ghostty_surface_t?
@@ -131,7 +299,8 @@ diff --git a/Sources/GhosttyTerminal/InMemory/TerminalCallbackBridge.swift b/Sou
 +    nonisolated(unsafe) var pendingPasteText: String?
      var onCellSizeChange: ((UInt32, UInt32) -> Void)?
      var onRenderRequest: (() -> Void)?
-@@ -25,7 +28,7 @@
+     var onMouseShape: ((ghostty_action_mouse_shape_e) -> Void)?
+@@ -26,7 +29,7 @@
          self.delegate = delegate
      }
 
@@ -140,12 +309,13 @@ diff --git a/Sources/GhosttyTerminal/InMemory/TerminalCallbackBridge.swift b/Sou
          switch action.tag {
          case GHOSTTY_ACTION_SET_TITLE:
              if let cStr = action.action.set_title.title {
-@@ -162,7 +165,9 @@
+@@ -186,7 +189,9 @@
                  .actions,
                  "callback action=\(TerminalDebugLog.describe(action.tag))"
              )
+-        }
 +            return false
-         }
++        }
 +        return true
      }
 
@@ -305,7 +475,7 @@ diff --git a/Sources/GhosttyTerminal/Platform/Shared/TerminalMainActor.swift b/S
 diff --git a/Sources/GhosttyTerminal/QmuxAnnotationPublic.swift b/Sources/GhosttyTerminal/QmuxAnnotationPublic.swift
 --- /dev/null
 +++ b/Sources/GhosttyTerminal/QmuxAnnotationPublic.swift
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,61 @@
 +import Foundation
 +
 +#if canImport(AppKit) && !canImport(UIKit)
@@ -343,9 +513,8 @@ diff --git a/Sources/GhosttyTerminal/QmuxAnnotationPublic.swift b/Sources/Ghostt
 +        public func pasteApprovedText(_ text: String) -> Bool {
 +            guard let surface else { return false }
 +            core.bridge.pendingPasteText = text
-+            let dispatched = surface.performBindingAction("paste_from_clipboard")
-+            if !dispatched { core.bridge.pendingPasteText = nil }
-+            return dispatched
++            defer { core.bridge.pendingPasteText = nil }
++            return surface.performBindingAction("paste_from_clipboard")
 +        }
 +
 +        /// Selection text and viewport-relative cell geometry. The offset is
@@ -371,7 +540,7 @@ diff --git a/Sources/GhosttyTerminal/QmuxAnnotationPublic.swift b/Sources/Ghostt
 diff --git a/Sources/GhosttyTerminal/Surface/TerminalSurface.swift b/Sources/GhosttyTerminal/Surface/TerminalSurface.swift
 --- a/Sources/GhosttyTerminal/Surface/TerminalSurface.swift
 +++ b/Sources/GhosttyTerminal/Surface/TerminalSurface.swift
-@@ -222,6 +222,8 @@
+@@ -259,6 +259,8 @@
          let text: String
          let offsetStart: UInt32
          let offsetLength: UInt32
@@ -380,7 +549,7 @@ diff --git a/Sources/GhosttyTerminal/Surface/TerminalSurface.swift b/Sources/Gho
      }
 
      public func hasSelection() -> Bool {
-@@ -255,6 +257,8 @@
+@@ -292,6 +294,8 @@
              return SelectionResult(
                  text: "",
                  offsetStart: out.offset_start,
@@ -390,7 +559,7 @@ diff --git a/Sources/GhosttyTerminal/Surface/TerminalSurface.swift b/Sources/Gho
 +                baselinePointY: Double(out.tl_px_y)
              )
          }
-@@ -269,6 +273,8 @@
+@@ -306,6 +310,8 @@
          return SelectionResult(
              text: text,
              offsetStart: out.offset_start,
@@ -411,7 +580,7 @@ diff --git a/Sources/GhosttyTerminal/Surface/TerminalSurfaceCoordinator.swift b/
      var surface: TerminalSurface?
      /// The in-memory session `surface` was handed to at build time. Teardown
      /// must clear that session, not whichever one `configuration` names by
-@@ -203,6 +204,7 @@
+@@ -222,6 +223,7 @@
          surface = newSurface
          surfaceSession = configuration.inMemorySession
          newSurface.setOcclusion(effectiveSurfaceVisible)
@@ -419,7 +588,7 @@ diff --git a/Sources/GhosttyTerminal/Surface/TerminalSurfaceCoordinator.swift b/
          // Wakeups must keep draining while the surface is merely occluded:
          // the app mailbox (titles, pwd, bell, child-exit) only empties in
          // ghostty_app_tick, and a full mailbox blocks the session's write
-@@ -491,6 +493,7 @@
+@@ -523,6 +525,7 @@
      // MARK: - Focus
 
      func setFocus(_ focused: Bool) {
@@ -427,3 +596,15 @@ diff --git a/Sources/GhosttyTerminal/Surface/TerminalSurfaceCoordinator.swift b/
          requestImmediateTick()
          TerminalDebugLog.log(.lifecycle, "focus=\(focused)")
          surface?.setFocus(focused)
+diff --git a/Tests/GhosttyKitTest/Session/InMemoryTerminalPendingOperationsTests.swift b/Tests/GhosttyKitTest/Session/InMemoryTerminalPendingOperationsTests.swift
+--- a/Tests/GhosttyKitTest/Session/InMemoryTerminalPendingOperationsTests.swift
++++ b/Tests/GhosttyKitTest/Session/InMemoryTerminalPendingOperationsTests.swift
+@@ -61,6 +61,8 @@
+         switch operation {
+         case let .write(data)?:
+             String(decoding: data, as: UTF8.self)
++        case let .hostWrite(write)?:
++            String(decoding: write.data, as: UTF8.self)
+         case let .processExit(exitCode, _)?:
+             "exit:\(exitCode)"
+         case nil:

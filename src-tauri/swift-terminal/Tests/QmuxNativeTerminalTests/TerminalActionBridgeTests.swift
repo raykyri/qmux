@@ -5,6 +5,25 @@ import Testing
 @MainActor
 struct TerminalActionBridgeTests {
     @Test
+    func `clipboard callbacks require a host-approved payload and do not list clipboard types`() {
+        let bridge = TerminalCallbackBridge()
+        // No C call can occur: unapproved requests must return before completing.
+        bridge.rawSurface = UnsafeMutableRawPointer(bitPattern: 1)!
+        let userdata = Unmanaged.passUnretained(bridge).toOpaque()
+        let state = UnsafeMutableRawPointer(bitPattern: 2)!
+        let read = terminalControllerReadClipboardCallback(
+            userdata: userdata, clipboard: GHOSTTY_CLIPBOARD_STANDARD,
+            statePtr: state, mimes: nil, mimesLen: 0, listAvailable: false
+        )
+        #expect(read == GHOSTTY_CLIPBOARD_READ_UNAVAILABLE)
+        let list = terminalControllerReadClipboardCallback(
+            userdata: userdata, clipboard: GHOSTTY_CLIPBOARD_STANDARD,
+            statePtr: state, mimes: nil, mimesLen: 0, listAvailable: true
+        )
+        #expect(list == GHOSTTY_CLIPBOARD_READ_UNSUPPORTED)
+    }
+
+    @Test
     func `action bridge reports supported actions without claiming app management`() {
         let bridge = TerminalCallbackBridge()
         var renders = 0

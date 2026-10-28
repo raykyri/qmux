@@ -6,19 +6,23 @@ import XCTest
 @MainActor
 final class NativeTerminalLayoutTests: XCTestCase {
     func testApprovedPasteKeepsHostPayloadAndBracketedPaste() async throws {
-        try await Self.withPane { paneID, _ in
-            let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
-            session.receive("\u{1B}[?2004h")
-            await Task.detached { session.waitForPendingOutput() }.value
-            let payload = "qmux-approved 🔹\nsecond line"
-            XCTAssertTrue(NativeTerminalHost.shared.pasteApprovedText(id: paneID, text: payload))
-            let deadline = ProcessInfo.processInfo.systemUptime + 2
-            var pasted = ""
-            repeat {
-                try await Task.sleep(for: .milliseconds(10))
-                pasted = String(decoding: NativeTerminalCallbackRecorder.shared.writes.flatMap { $0 }, as: UTF8.self)
-            } while !pasted.hasSuffix("\u{1B}[201~") && ProcessInfo.processInfo.systemUptime < deadline
-            XCTAssertEqual(pasted.replacingOccurrences(of: "\r", with: "\n"), "\u{1B}[200~" + payload + "\u{1B}[201~")
+        for bracketed in [false, true] {
+            try await Self.withPane { paneID, _ in
+                let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
+                session.receive(bracketed ? "\u{1B}[?2004h" : "\u{1B}[?2004l")
+                await Task.detached { session.waitForPendingOutput() }.value
+                let payload = "qmux-approved 🔹\nsecond line"
+                let expected = bracketed ? "\u{1B}[200~" + payload + "\u{1B}[201~" : payload
+                XCTAssertTrue(NativeTerminalHost.shared.pasteApprovedText(id: paneID, text: payload))
+                let deadline = ProcessInfo.processInfo.systemUptime + 2
+                var pasted = ""
+                repeat {
+                    try await Task.sleep(for: .milliseconds(10))
+                    pasted = String(decoding: NativeTerminalCallbackRecorder.shared.writes.flatMap { $0 }, as: UTF8.self)
+                        .replacingOccurrences(of: "\r", with: "\n")
+                } while pasted != expected && ProcessInfo.processInfo.systemUptime < deadline
+                XCTAssertEqual(pasted, expected)
+            }
         }
     }
 
