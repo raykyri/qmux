@@ -324,11 +324,11 @@ final class NativeTerminalPane: NSObject,
         // PTY, otherwise a pager repaints into the old primary-screen grid.
     }
 
-    func terminalDidChangeScrollbar(_ metrics: TerminalScrollbarMetrics) {
+    func terminalDidUpdateScrollbar(_ metrics: TerminalScrollbar) {
         let next = TerminalAnnotationScrollbar(
             totalRows: metrics.total,
             offsetRows: metrics.offset,
-            visibleRows: metrics.length
+            visibleRows: metrics.len
         )
         let wasInitialized = annotationScrollbarIsInitialized
         annotationScrollbarIsInitialized = true

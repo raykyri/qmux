@@ -792,7 +792,8 @@ fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool, usize)
             // numeric encoding — terminal mode, not rendering. A TUI that
             // died with application keypad active must not re-latch it onto
             // the fresh surface through replayed history.
-            if next == b'=' || next == b'>' {
+            // DECID (ESC Z) requests a device-identification reply.
+            if next == b'=' || next == b'>' || next == b'Z' {
                 index += 2;
                 continue;
             }
@@ -805,7 +806,9 @@ fn sanitize_scrollback_replay_with_state(bytes: &[u8]) -> (Vec<u8>, bool, usize)
             continue;
         }
 
-        if !alternate_screen {
+        // ENQ requests the configured answerback string. Historical probes
+        // must not become input for the live process.
+        if !alternate_screen && code != 0x05 {
             output.extend_from_slice(&bytes[index..index + prefix_len]);
         }
         index += prefix_len;

@@ -6,11 +6,13 @@ final class NativeTerminalCallbackRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var resizeValues: [(columns: Int32, rows: Int32)] = []
     private var annotationViewportValues: [String] = []
+    private var writeValues: [Data] = []
 
     func reset() {
         lock.lock()
         resizeValues.removeAll()
         annotationViewportValues.removeAll()
+        writeValues.removeAll()
         lock.unlock()
     }
 
@@ -36,6 +38,18 @@ final class NativeTerminalCallbackRecorder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return annotationViewportValues
+    }
+
+    func recordWrite(_ data: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        writeValues.append(data)
+    }
+
+    var writes: [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return writeValues
     }
 }
 
@@ -77,9 +91,11 @@ func nativeTerminalDidChangeAnnotationViewportStub(
 @_cdecl("qmux_native_terminal_did_write")
 func nativeTerminalDidWriteStub(
     _: UnsafePointer<CChar>,
-    _: UnsafePointer<UInt8>,
-    _: Int
-) {}
+    _ bytes: UnsafePointer<UInt8>,
+    _ count: Int
+) {
+    NativeTerminalCallbackRecorder.shared.recordWrite(Data(bytes: bytes, count: count))
+}
 
 @_cdecl("qmux_native_terminal_did_request_search")
 func nativeTerminalDidRequestSearchStub(_: UnsafePointer<CChar>) {}

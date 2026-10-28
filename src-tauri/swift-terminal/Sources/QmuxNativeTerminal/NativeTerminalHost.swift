@@ -242,7 +242,6 @@ final class NativeTerminalHost {
     func removePane(id: String) {
         guard let pane = panes.removeValue(forKey: id) else { return }
         TerminalSessionRegistry.shared.unregister(id)
-        TerminalAnnotationContentRegistry.shared.remove(id)
         if desiredKeyboardOwnerPaneID == id {
             desiredKeyboardOwnerPaneID = nil
         }
@@ -267,6 +266,11 @@ final class NativeTerminalHost {
         pendingPaneFrames.removeValue(forKey: id)
         pendingFitPaneIDs.remove(id)
         layoutRevisionByPaneID.removeValue(forKey: id)
+        // Invalidate queued writes and wait for any active parse before
+        // discarding its annotation generations. Other references may keep
+        // the pane alive after it leaves the view hierarchy.
+        pane.view.controller = nil
+        TerminalAnnotationContentRegistry.shared.remove(id)
         pane.view.removeFromSuperview()
     }
 
@@ -763,12 +767,14 @@ final class NativeTerminalHost {
         webOverlayRegions.removeAll()
         iframeShortcutFallbackActive = false
         browserOverlayOpen = false
-        for pane in panes.values {
+        TerminalSessionRegistry.shared.unregisterAll()
+        for (id, pane) in panes {
             pane.cancelPendingPtyResize()
+            pane.view.controller = nil
+            TerminalAnnotationContentRegistry.shared.remove(id)
             pane.view.removeFromSuperview()
         }
         panes.removeAll()
-        TerminalSessionRegistry.shared.unregisterAll()
         clientDeferredGeometryPaneIDs.removeAll()
         pendingPaneFrames.removeAll()
         pendingFitPaneIDs.removeAll()

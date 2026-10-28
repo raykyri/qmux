@@ -3519,7 +3519,9 @@ pub fn attach_pane(state: &AppState, pane_id: String) -> Result<(), String> {
                     crate::native_terminal::receive(
                         &pane_id,
                         RESTORED_SCROLLBACK_TERMINAL_RESET,
-                        true,
+                        // This generated reset must retain its mode changes;
+                        // it is not historical output and contains no queries.
+                        false,
                     )?;
                 }
             }

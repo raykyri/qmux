@@ -5,6 +5,77 @@ import XCTest
 
 @MainActor
 final class NativeTerminalLayoutTests: XCTestCase {
+    func testQueuedLiveQueriesEventuallyReachHostInput() async throws {
+        try await Self.withPane { paneID, _ in
+            let query = Array("\u{1B}[6n".utf8)
+            let accepted = paneID.withCString { id in
+                query.withUnsafeBufferPointer { bytes in
+                    qmuxNativeTerminalReceive(id, bytes.baseAddress, bytes.count)
+                }
+            }
+            XCTAssertEqual(accepted, 1)
+            // Parsing queues the reply onto Ghostty's separate IO thread.
+            let deadline = ProcessInfo.processInfo.systemUptime + 2
+            while NativeTerminalCallbackRecorder.shared.writes.isEmpty,
+                  ProcessInfo.processInfo.systemUptime < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let replies = NativeTerminalCallbackRecorder.shared.writes
+            XCTAssertTrue(String(decoding: replies.flatMap { $0 }, as: UTF8.self).contains("R"))
+        }
+    }
+
+    func testRemovedPaneRejectsOutputWhileSessionReferenceSurvives() async throws {
+        try await Self.withPane { paneID, _ in
+            let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
+            NativeTerminalHost.shared.removePane(id: paneID)
+            XCTAssertFalse(session.receive(Data("stale output".utf8)))
+            XCTAssertNil(session.readViewportText())
+            XCTAssertEqual(TerminalAnnotationContentRegistry.shared.generation(for: paneID), 0)
+        }
+    }
+
+    func testPaneRemovalDrainsActiveOutputWithMoreActionsThanTheMailboxHolds() async throws {
+        try await Self.withPane { paneID, _ in
+            let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
+            let started = DispatchSemaphore(value: 0)
+            let output = (0..<512).map { "\u{1B}]2;title-\($0)\u{07}" }.joined()
+            let accepted = session.receive(Data(output.utf8), beforeWrite: { started.signal() })
+            XCTAssertTrue(accepted)
+            XCTAssertEqual(started.wait(timeout: .now() + 5), .success)
+            NativeTerminalHost.shared.removePane(id: paneID)
+            XCTAssertNil(session.readViewportText())
+        }
+    }
+
+    func testNativeScrollbarEventsKeepAnnotationViewportInSync() async throws {
+        try await Self.withPane { paneID, _ in
+            let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
+            XCTAssertTrue(NativeTerminalHost.shared.setAnnotationMonitoring(id: paneID, enabled: true))
+            let output = (0..<120).map { "row-\($0)" }.joined(separator: "\r\n")
+            XCTAssertTrue(TerminalOutputContext.receive(
+                Data(output.utf8), session: session, paneID: paneID
+            ))
+            await Task.detached { session.waitForPendingOutput() }.value
+            await Self.waitForPtyResizeFlush()
+            func snapshot() throws -> TerminalAnnotationViewportSnapshot {
+                let json = try XCTUnwrap(NativeTerminalCallbackRecorder.shared.annotationViewports.last)
+                return try JSONDecoder().decode(TerminalAnnotationViewportSnapshot.self, from: Data(json.utf8))
+            }
+            let bottom = try snapshot()
+            XCTAssertTrue(bottom.scrollbarIsInitialized)
+            XCTAssertGreaterThan(bottom.scrollbar.totalRows, bottom.scrollbar.visibleRows)
+            XCTAssertGreaterThan(bottom.scrollbar.offsetRows, 0)
+            XCTAssertEqual(bottom.contentGeneration % 2, 0)
+            XCTAssertTrue(NativeTerminalHost.shared.performAction(id: paneID, action: "scroll_to_top"))
+            await Self.waitForPtyResizeFlush()
+            let top = try snapshot()
+            XCTAssertEqual(top.scrollbar.offsetRows, 0)
+            XCTAssertEqual(top.scrollbar.totalRows, bottom.scrollbar.totalRows)
+            XCTAssertGreaterThan(top.viewportRevision, bottom.viewportRevision)
+        }
+    }
+
     func testClearScreenChordIsOnlyBareCommandK() throws {
         func event(
             _ modifiers: NSEvent.ModifierFlags,
@@ -72,6 +143,7 @@ final class NativeTerminalLayoutTests: XCTestCase {
                         .map { String(format: "line-%03d", $0) }
                         .joined(separator: "\r\n")
                 )
+                await Task.detached { session.waitForPendingOutput() }.value
                 XCTAssertTrue(
                     NativeTerminalHost.shared.performAction(
                         id: paneID,

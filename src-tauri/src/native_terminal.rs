@@ -6,8 +6,18 @@ use crate::events::QmuxEvent;
 use crate::state::AppState;
 
 static APP_STATE: OnceLock<Mutex<Option<AppState>>> = OnceLock::new();
-static REPLAYING_PANES: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
-    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+#[cfg(target_os = "macos")]
+fn prepare_native_output(bytes: &[u8], replay: bool) -> std::borrow::Cow<'_, [u8]> {
+    if replay {
+        // Replies leave Ghostty through its IO thread after parsing returns.
+        // Remove historical requests before enqueueing them instead of using
+        // a timing flag around their eventual callbacks.
+        std::borrow::Cow::Owned(crate::scrollback::sanitize_scrollback_replay(bytes))
+    } else {
+        std::borrow::Cow::Borrowed(bytes)
+    }
+}
+
 #[cfg(target_os = "macos")]
 const MAX_NATIVE_SCROLLBACK_ROWS: u32 = 50_000;
 
@@ -715,16 +725,11 @@ mod imp {
 
     pub fn receive(pane_id: &str, bytes: &[u8], replay: bool) -> Result<(), String> {
         let pane_id_c = cstring(pane_id, "pane id")?;
-        if replay && let Ok(mut panes) = super::REPLAYING_PANES.lock() {
-            panes.insert(pane_id.to_string());
-        }
-        // SAFETY: Swift copies the byte buffer synchronously before returning.
+        let bytes = super::prepare_native_output(bytes, replay);
+        // SAFETY: Swift copies the byte buffer synchronously before queueing it.
         let received = unsafe {
             qmux_native_terminal_receive(pane_id_c.as_ptr(), bytes.as_ptr(), bytes.len()) == 1
         };
-        if replay && let Ok(mut panes) = super::REPLAYING_PANES.lock() {
-            panes.remove(pane_id);
-        }
         if received {
             Ok(())
         } else {
@@ -1520,12 +1525,6 @@ pub extern "C" fn qmux_native_terminal_did_write(
     if bytes.is_null() || bytes_len == 0 {
         return;
     }
-    if REPLAYING_PANES
-        .lock()
-        .is_ok_and(|panes| panes.contains(&pane_id))
-    {
-        return;
-    }
     // SAFETY: Swift keeps the Data buffer alive for the synchronous duration
     // of this callback; copy it before returning across FFI.
     let bytes = unsafe { std::slice::from_raw_parts(bytes, bytes_len) }.to_vec();
@@ -2060,6 +2059,23 @@ mod shortcut_tests {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    #[test]
+    fn replay_queries_are_removed_before_the_async_native_boundary() {
+        let bytes =
+            b"\x1b[31mhistory\x1b[0m\r\n\x1b[6n\x1b[>0c\x1b]11;?\x07\x1bP+q544e\x1b\\\x05\x1bZ";
+        assert_eq!(
+            super::prepare_native_output(bytes, true).as_ref(),
+            b"\x1b[31mhistory\x1b[0m\r\n"
+        );
+        assert_eq!(super::prepare_native_output(bytes, false).as_ref(), bytes);
+    }
+
+    #[test]
+    fn live_terminal_mode_reset_bypasses_replay_sanitizing() {
+        let reset = b"\x18\x1b>\x1b[0m\x1b[?7h\x1b[?1004l\x1b[=0u";
+        assert_eq!(super::prepare_native_output(reset, false).as_ref(), reset);
+    }
+
     #[test]
     fn swift_ghostty_bridge_is_linked() {
         assert!(super::available());

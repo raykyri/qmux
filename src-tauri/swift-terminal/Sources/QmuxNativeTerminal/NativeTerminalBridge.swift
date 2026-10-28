@@ -179,10 +179,9 @@ public func qmuxNativeTerminalReceive(
     // is not serialized behind whatever the main thread is currently doing.
     guard let session = TerminalSessionRegistry.shared.session(for: paneID)
     else { return 0 }
-    let contentRegistry = TerminalAnnotationContentRegistry.shared
-    contentRegistry.beginContentMutation(for: paneID)
-    let received = session.receive(data)
-    contentRegistry.endContentMutation(for: paneID)
+    let received = TerminalOutputContext.receive(
+        data, session: session, paneID: paneID
+    )
     return received ? 1 : 0
 }
 
