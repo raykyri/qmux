@@ -169,6 +169,10 @@ for file in "$dmg" "$archive" "$signature" "$manifest"; do
   fi
 done
 
+if have_notary_creds; then
+  bash "$script_dir/verify-macos-release.sh" "$bundle_root/macos/qmux.app" "$dmg"
+fi
+
 checksums="$bundle_root/SHA256SUMS"
 (cd "$(dirname "$dmg")" && shasum -a 256 "$(basename "$dmg")") >"$checksums"
 (cd "$(dirname "$archive")" && shasum -a 256 "$(basename "$archive")") >>"$checksums"
