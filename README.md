@@ -98,6 +98,7 @@ them in place.
 Prerequisites:
 
 - macOS.
+- Xcode with Swift 6.2 or newer, required by the native terminal dependency.
 - Rust toolchain.
 - Node.js and npm.
 - The agent CLIs you want to use on `PATH`: `claude`, `codex`, `opencode`, `grok`,

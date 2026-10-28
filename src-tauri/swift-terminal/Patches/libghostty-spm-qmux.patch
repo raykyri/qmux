@@ -297,10 +297,10 @@ diff --git a/Sources/GhosttyTerminal/InMemory/TerminalCallbackBridge.swift b/Sou
 +    /// One-shot text supplied by a host-approved paste. Clipboard callbacks
 +    /// consume this instead of reading the system pasteboard again.
 +    nonisolated(unsafe) var pendingPasteText: String?
+     var scrollbar: TerminalScrollbar?
      var onCellSizeChange: ((UInt32, UInt32) -> Void)?
      var onRenderRequest: (() -> Void)?
-     var onMouseShape: ((ghostty_action_mouse_shape_e) -> Void)?
-@@ -26,7 +29,7 @@
+@@ -27,7 +30,7 @@
          self.delegate = delegate
      }
 
@@ -309,7 +309,7 @@ diff --git a/Sources/GhosttyTerminal/InMemory/TerminalCallbackBridge.swift b/Sou
          switch action.tag {
          case GHOSTTY_ACTION_SET_TITLE:
              if let cStr = action.action.set_title.title {
-@@ -186,7 +189,9 @@
+@@ -188,7 +191,9 @@
                  .actions,
                  "callback action=\(TerminalDebugLog.describe(action.tag))"
              )
