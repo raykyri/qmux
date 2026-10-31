@@ -23,6 +23,7 @@ import {
   paneSplitRootNode,
   paneSplitsEqual,
   paneSnapshotForPersistedPaneSplits,
+  rememberActiveSplitPane,
   reservedTerminalStageWidth,
   resizeSplitNodeFractions,
   setPaneSplitFlagEnabled,
@@ -492,12 +493,78 @@ test("cycleTabId skips other panes in the active split", () => {
   assert.equal(cycleTabId(tabIds, "pane-3", -1, paneSplits), "pane-1");
 });
 
-test("cycleTabId enters split panes from the nearest edge", () => {
+test("cycleTabId enters an unvisited split from the nearest edge", () => {
   const tabIds = ["pane-1", "pane-2", "pane-3", "pane-4"];
   const paneSplits = [split(["pane-2", "pane-3"])];
 
   assert.equal(cycleTabId(tabIds, "pane-1", 1, paneSplits), "pane-2");
   assert.equal(cycleTabId(tabIds, "pane-4", -1, paneSplits), "pane-3");
+});
+
+test("cycleTabId restores the last active split pane after cycling away in either direction", () => {
+  const tabIds = ["pane-1", "pane-2", "pane-3", "pane-4", "pane-5"];
+  const paneSplits = [split(["pane-2", "pane-3", "pane-4"])];
+
+  for (const direction of [1, -1] as const) {
+    const remembered = new Map<string, string>();
+    rememberActiveSplitPane(remembered, paneSplits, "pane-3");
+    let activeId: string | null = "pane-3";
+    // A full loop visits both standalone tabs and then restores the middle pane.
+    for (let step = 0; step < 3; step += 1) {
+      activeId = cycleTabId(tabIds, activeId, direction, paneSplits, undefined, remembered);
+      rememberActiveSplitPane(remembered, paneSplits, activeId);
+      if (step < 2) {
+        assert.equal(activeId, direction === 1 ? ["pane-5", "pane-1"][step] : ["pane-1", "pane-5"][step]);
+      }
+    }
+    assert.equal(activeId, "pane-3");
+  }
+});
+
+test("split focus memory tracks the latest selection independently for each split", () => {
+  const tabIds = ["pane-1", "pane-2", "pane-3", "pane-4"];
+  const paneSplits = [
+    split(["pane-1", "pane-2"]),
+    { ...split(["pane-3", "pane-4"]), id: "split-2" },
+  ];
+  const remembered = new Map<string, string>();
+  rememberActiveSplitPane(remembered, paneSplits, "pane-1");
+  rememberActiveSplitPane(remembered, paneSplits, "pane-2");
+  rememberActiveSplitPane(remembered, paneSplits, "pane-3");
+  // Home/research selection must not erase a split's remembered pane.
+  rememberActiveSplitPane(remembered, paneSplits, null);
+
+  assert.equal(cycleTabId(tabIds, "pane-3", 1, paneSplits, undefined, remembered), "pane-2");
+  assert.equal(cycleTabId(tabIds, "pane-2", -1, paneSplits, undefined, remembered), "pane-3");
+});
+
+test("cycleTabId ignores remembered panes that left the split or are not cycle targets", () => {
+  const tabIds = ["pane-1", "pane-2", "pane-3", "pane-4"];
+  const paneSplits = [split(["pane-2", "pane-3"])];
+  for (const stalePaneId of ["removed-pane", "pane-1"]) {
+    const remembered = new Map([["split-1", stalePaneId]]);
+    assert.equal(cycleTabId(tabIds, "pane-1", 1, paneSplits, undefined, remembered), "pane-2");
+    assert.equal(cycleTabId(tabIds, "pane-4", -1, paneSplits, undefined, remembered), "pane-3");
+  }
+  const remembered = new Map([["split-1", "pane-3"]]);
+  assert.equal(
+    cycleTabId(["pane-1", "pane-2", "pane-4"], "pane-1", 1, paneSplits, undefined, remembered),
+    "pane-2",
+  );
+});
+
+test("split focus memory forgets detached panes and dissolved splits", () => {
+  const paneSplits = [split(["pane-1", "pane-2", "pane-3"])];
+  const remembered = new Map<string, string>();
+  rememberActiveSplitPane(remembered, paneSplits, "pane-2");
+  const remainingSplits = detachPaneFromSplitMemberships(paneSplits, "pane-2");
+  rememberActiveSplitPane(remembered, remainingSplits, "pane-2");
+  assert.equal(remembered.size, 0);
+
+  rememberActiveSplitPane(remembered, remainingSplits, "pane-3");
+  assert.equal(remembered.get("split-1"), "pane-3");
+  rememberActiveSplitPane(remembered, [], "pane-3");
+  assert.equal(remembered.size, 0);
 });
 
 test("cycleTabId treats a split as one stop when a sentinel tab is included", () => {
@@ -514,6 +581,9 @@ test("cycleTabId stays put when a split is the only cycle target", () => {
 
   assert.equal(cycleTabId(tabIds, "pane-1", 1, paneSplits), "pane-1");
   assert.equal(cycleTabId(tabIds, "pane-2", -1, paneSplits), "pane-2");
+  const remembered = new Map([["split-1", "pane-1"]]);
+  assert.equal(cycleTabId(tabIds, "pane-2", 1, paneSplits, undefined, remembered), "pane-2");
+  assert.equal(cycleTabId(tabIds, "pane-2", -1, paneSplits, undefined, remembered), "pane-2");
 });
 
 test("movePaneAdjacentToPane moves one pane below a target", () => {

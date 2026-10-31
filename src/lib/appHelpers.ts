@@ -323,6 +323,7 @@ export function cycleTabId(
   direction: -1 | 1,
   paneSplits: PaneSplitInfo[] = [],
   fallbackIndex?: number,
+  lastActivePaneBySplit?: ReadonlyMap<string, string>,
 ): string | null {
   if (tabIds.length === 0) {
     return null;
@@ -343,6 +344,15 @@ export function cycleTabId(
     nextIndex = (nextIndex + direction + tabIds.length) % tabIds.length;
     const nextTabId = tabIds[nextIndex];
     if (!activeSplitPaneIds?.has(nextTabId)) {
+      const nextSplit = paneSplits.find((split) => split.paneIds.includes(nextTabId));
+      const rememberedPaneId = nextSplit && lastActivePaneBySplit?.get(nextSplit.id);
+      if (
+        rememberedPaneId &&
+        nextSplit?.paneIds.includes(rememberedPaneId) &&
+        tabIds.includes(rememberedPaneId)
+      ) {
+        return rememberedPaneId;
+      }
       return nextTabId;
     }
   }

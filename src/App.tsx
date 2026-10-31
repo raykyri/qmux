@@ -400,6 +400,7 @@ import {
   paneSplitLayout,
   paneSplitsEqual,
   paneSnapshotForPersistedPaneSplits,
+  rememberActiveSplitPane,
   reservedTerminalStageWidth,
   resizeSplitNodeFractions,
   setPaneSplitFlagEnabled,
@@ -1883,6 +1884,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const researchSdkHarnessSaveSeqRef = useRef(0);
   const researchSdkHarnessSaveChainRef = useRef<Promise<void>>(Promise.resolve());
   const paneSplitsRef = useRef<PaneSplitInfo[]>([]);
+  const lastActivePaneBySplitRef = useRef(new Map<string, string>());
   const titleGenerationTestSeqRef = useRef(0);
   const activeTabPersistenceReadyRef = useRef(false);
   const appToastTimerRef = useRef<number | null>(null);
@@ -2471,6 +2473,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             activeTranscriptScrollCaptureSlotRef.current.capture();
           }
           activePaneIdRef.current = resolved;
+          rememberActiveSplitPane(lastActivePaneBySplitRef.current, paneSplitsRef.current, resolved);
           activePaneRef.current =
             resolved && resolved !== HOME_TAB_ID
               ? panesRef.current.find((candidate) => candidate.id === resolved)
@@ -2484,6 +2487,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       }
       setActiveSurface("pane");
       activePaneIdRef.current = next;
+      // Record synchronously: a native click-then-shortcut can cycle away before
+      // React commits the clicked pane's selection.
+      rememberActiveSplitPane(lastActivePaneBySplitRef.current, paneSplitsRef.current, next);
       activePaneRef.current =
         next && next !== HOME_TAB_ID
           ? panesRef.current.find((candidate) => candidate.id === next)
@@ -3196,6 +3202,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   }, [exportResearchPane, panes]);
   const [paneSplits, setPaneSplitsState] = useState<PaneSplitInfo[]>([]);
   paneSplitsRef.current = paneSplits;
+  useLayoutEffect(() => {
+    // Also cover restored/backend selections and newly created or changed splits.
+    rememberActiveSplitPane(lastActivePaneBySplitRef.current, paneSplits, activePaneId);
+  }, [activePaneId, paneSplits]);
   const [draggingPaneId, setDraggingPaneId] = useState<string | null>(null);
   const [paneDropTarget, setPaneDropTarget] = useState<PaneDropTarget | null>(null);
   // Shared by every pointer drag that changes a terminal host rectangle. DOM
@@ -13977,6 +13987,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         direction,
         paneSplits,
         fallbackIndex,
+        lastActivePaneBySplitRef.current,
       );
       if (nextTabId) {
         focusTabById(nextTabId);
@@ -14015,6 +14026,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         activeTabId,
         direction,
         paneSplits,
+        undefined,
+        lastActivePaneBySplitRef.current,
       );
       if (!nextTabId || nextTabId === activeTabId) {
         return;

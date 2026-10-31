@@ -1112,6 +1112,24 @@ export function paneSplitForPane(splits: PaneSplitInfo[], paneId: string | null 
   return splits.find((split) => split.paneIds.includes(paneId)) ?? null;
 }
 
+/** Keep session-only focus memory valid as panes close or leave their split. */
+export function rememberActiveSplitPane(
+  lastActivePaneBySplit: Map<string, string>,
+  splits: PaneSplitInfo[],
+  paneId: string | null | undefined,
+) {
+  const splitById = new Map(splits.map((split) => [split.id, split]));
+  for (const [splitId, rememberedPaneId] of lastActivePaneBySplit) {
+    if (!splitById.get(splitId)?.paneIds.includes(rememberedPaneId)) {
+      lastActivePaneBySplit.delete(splitId);
+    }
+  }
+  const activeSplit = paneSplitForPane(splits, paneId);
+  if (activeSplit && paneId) {
+    lastActivePaneBySplit.set(activeSplit.id, paneId);
+  }
+}
+
 export function paneSplitFlagIsEnabled(
   flagsByPane: Readonly<Record<string, boolean>>,
   paneIds: readonly string[],
