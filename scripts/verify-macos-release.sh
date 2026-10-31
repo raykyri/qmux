@@ -14,7 +14,7 @@ dmg="$2"
   exit 1
 }
 
-lipo -verify_arch arm64 x86_64 "$app/Contents/MacOS/qmux"
+lipo "$app/Contents/MacOS/qmux" -verify_arch arm64 x86_64
 codesign --verify --deep --strict --verbose=2 "$app"
 codesign --verify --strict --verbose=2 "$dmg"
 # A valid ad-hoc signature alone is insufficient: require a notarization ticket
