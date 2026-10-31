@@ -48,11 +48,11 @@ test("reveals progress before recovery and gates application effects until ready
   await act(async () => { root.render(h(Startup, { loadApp })); });
   assert.ok(calls.includes("app_window_ready"));
   assert.equal(mounts, 0);
-  assert.match(container.textContent!, /Restoring your session/);
+  assert.match(container.textContent!, /Restoring session/);
   progress = { ...progress, phase: "panes", completed: 2, total: 5 };
   await poll();
-  assert.equal(container.querySelector("progress")?.value, 2);
-  assert.equal(container.querySelector("progress")?.max, 5);
+  assert.equal(container.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow"), "2");
+  assert.equal(container.querySelector('[role="progressbar"]')?.getAttribute("aria-valuemax"), "5");
   progress = { ...progress, phase: "ready" };
   await poll();
   assert.equal(mounts, 1);
