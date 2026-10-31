@@ -36,10 +36,11 @@
 //             behind it: switching modes swaps the sidebar's list and the stage,
 //             selecting a research row opens that document, and a folder expands
 //             and collapses in place.
-//   journal — the Journal tab's feed. Its composer adds entries for real, an
-//             entry's menu deletes one, and the undo bar puts it back. Nothing
-//             is hydrated here, so a pasted URL lands as a link card; the
-//             embedded tweets are the ones the fixture shipped.
+//   journal — the Recent Activity feed (the view id is still "journal"). Its
+//             composer adds entries for real, an entry's menu deletes one, and
+//             the undo bar puts it back. Nothing is hydrated here, so a pasted
+//             URL lands as a link card; the embedded tweets are the ones the
+//             fixture shipped.
 //   research-menus — the research sidebar's right-click menus, one per row,
 //             carrying the app's A and D keycaps. Their items dismiss, like
 //             every other menu here.
@@ -593,12 +594,41 @@ function enhanceQmuxMockup(mockup, replayBoot) {
   // ----------------------------------------------------------------- panes
 
   const PANE_LABELS = {
-    "hide-sidebar": "Hide the sidebar",
-    "show-sidebar": "Show the sidebar",
-    "hide-right": "Hide the transcript",
-    "show-right": "Show the transcript",
-    "expand-transcript": "Expand the transcript",
+    "hide-sidebar": {
+      aria: "Collapse left sidebar",
+      title: "Collapse left sidebar (⇧⌘G)",
+    },
+    "show-sidebar": {
+      aria: "Show left sidebar",
+      title: "Show left sidebar (⇧⌘G)",
+    },
+    "hide-right": {
+      aria: "Collapse right bar",
+      title: "Collapse right bar (⇧⌘L)",
+    },
+    "show-right": {
+      aria: "Show right bar",
+      title: "Show right bar (⇧⌘L)",
+    },
+    "expand-transcript": {
+      aria: "Expand transcript",
+      title: "Expand transcript (⌘⇧E / Ctrl+Shift+E)",
+    },
+    "restore-transcript": {
+      aria: "Restore transcript",
+      title: "Restore transcript (⌘⇧E / Ctrl+Shift+E)",
+    },
   };
+
+  /**
+   * @param {Element} button
+   * @param {keyof typeof PANE_LABELS} key
+   */
+  function applyPaneLabel(button, key) {
+    const label = PANE_LABELS[key];
+    button.setAttribute("aria-label", label.aria);
+    button.setAttribute("title", label.title);
+  }
 
   function createPanes() {
     const foundShell = mockup.querySelector(".app-shell");
@@ -652,9 +682,7 @@ function enhanceQmuxMockup(mockup, replayBoot) {
       for (const button of mockup.querySelectorAll('[data-mock-action="expand-transcript"]')) {
         button.classList.toggle("is-active", expanded);
         button.setAttribute("aria-pressed", String(expanded));
-        const label = expanded ? "Restore the transcript" : "Expand the transcript";
-        button.setAttribute("aria-label", label);
-        button.setAttribute("title", label);
+        applyPaneLabel(button, expanded ? "restore-transcript" : "expand-transcript");
       }
       announce(expanded ? "Transcript expanded." : "Transcript restored.");
     }
@@ -696,12 +724,9 @@ function enhanceQmuxMockup(mockup, replayBoot) {
       if (!button) {
         continue;
       }
-      const label =
-        action === "expand-transcript" && initiallyExpanded
-          ? "Restore the transcript"
-          : PANE_LABELS[/** @type {keyof typeof PANE_LABELS} */ (action)];
-      button.setAttribute("aria-label", label);
-      button.setAttribute("title", label);
+      const labelKey =
+        action === "expand-transcript" && initiallyExpanded ? "restore-transcript" : action;
+      applyPaneLabel(button, /** @type {keyof typeof PANE_LABELS} */ (labelKey));
       if (action === "expand-transcript") {
         // A toggle reports its state from the start, not only once pressed.
         button.classList.toggle("is-active", initiallyExpanded);
@@ -742,8 +767,8 @@ function enhanceQmuxMockup(mockup, replayBoot) {
     // Re-bound so the hoisted setOpen closure sees a non-null trigger.
     const openTrigger = trigger;
     openTrigger.setAttribute("aria-haspopup", "dialog");
-    openTrigger.setAttribute("aria-label", "Open the terminal map");
-    openTrigger.setAttribute("title", "Open the terminal map");
+    openTrigger.setAttribute("aria-label", "Open terminal map");
+    openTrigger.setAttribute("title", "Terminal map");
 
     // One caret menu open at a time, like every other popover here.
     /** @type {HTMLElement | null} */
@@ -1124,11 +1149,11 @@ function enhanceQmuxMockup(mockup, replayBoot) {
   // ---------------------------------------------------------------- panels
 
   const PANEL_LABELS = {
-    "prompt-library": ["Show saved prompts", "Hide saved prompts"],
-    journal: ["Journal", "Hide the journal"],
-    "queue-split": ["Split the queue out of the transcript", "Float the queue over the transcript"],
-    browser: ["Show the browser", "Hide the browser"],
-    artifacts: ["Show the artifact tray", "Hide the artifact tray"],
+    "prompt-library": ["Prompt library", "Prompt library"],
+    journal: ["Journal", "Journal"],
+    "queue-split": ["Split transcript and queue", "Use floating queue"],
+    browser: ["Show browser", "Hide browser"],
+    artifacts: ["Show artifact tray", "Hide artifact tray"],
   };
   const POPOVER_PANELS = ["prompt-library", "journal", "artifacts"];
 
@@ -1221,9 +1246,11 @@ function enhanceQmuxMockup(mockup, replayBoot) {
       const needed =
         splitTarget.classList.contains("is-split") && (!stack || stack.childElementCount === 0);
       if (needed && !empty) {
-        empty = document.createElement("p");
-        empty.className = "queue-empty-state";
-        empty.textContent = "Nothing queued.";
+        empty = document.createElement("div");
+        empty.className = "empty-state turn-empty-state queue-empty-state";
+        const label = document.createElement("span");
+        label.textContent = "No turns queued";
+        empty.append(label);
         (stack ?? splitTarget).before(empty);
       } else if (!needed && empty) {
         empty.remove();
@@ -1244,7 +1271,7 @@ function enhanceQmuxMockup(mockup, replayBoot) {
       const inside = button.closest(`[data-mock-panel="${action}"]`) !== null;
       const labels = PANEL_LABELS[/** @type {keyof typeof PANEL_LABELS} */ (action)];
       if (inside) {
-        const label = action === "browser" ? "Close the browser" : "Close the artifact tray";
+        const label = action === "browser" ? "Hide browser" : "Hide artifact tray";
         button.setAttribute("aria-label", label);
         button.setAttribute("title", label);
         button.addEventListener("click", () => setPanel(action, false));
@@ -1283,20 +1310,43 @@ function enhanceQmuxMockup(mockup, replayBoot) {
     // Filtering for real: the field would otherwise promise a search it does
     // not perform.
     const search = mockup.querySelector(".prompt-library-search");
-    const emptyNote = mockup.querySelector(".prompt-library-empty");
     if (search instanceof HTMLInputElement) {
       search.addEventListener("input", () => {
         const needle = search.value.trim().toLowerCase();
-        let shown = 0;
         for (const item of mockup.querySelectorAll(".prompt-library-item")) {
           const matches = (item.textContent ?? "").toLowerCase().includes(needle);
           item.toggleAttribute("hidden", !matches);
-          shown += matches ? 1 : 0;
         }
-        if (emptyNote instanceof HTMLElement) {
-          emptyNote.hidden = shown > 0;
+        for (const section of mockup.querySelectorAll(".prompt-library-section")) {
+          const visible = [...section.querySelectorAll(".prompt-library-item")].some(
+            (item) => !item.hasAttribute("hidden"),
+          );
+          const note = section.querySelector(":scope > .prompt-library-empty");
+          if (note instanceof HTMLElement) {
+            // An unmatched section says "No matches", the same copy as the app.
+            // A section that still has a row keeps that note hidden.
+            note.hidden = visible;
+          }
         }
       });
+    }
+
+    // The address is an input in the current chrome and was a text node in
+    // older replicas. Write whichever one is on the page.
+    /** @param {Element} address */
+    function browserAddressText(address) {
+      return address instanceof HTMLInputElement ? address.value : address.textContent || "";
+    }
+    /**
+     * @param {Element} address
+     * @param {string} text
+     */
+    function setBrowserAddress(address, text) {
+      if (address instanceof HTMLInputElement) {
+        address.value = text;
+      } else {
+        address.textContent = text;
+      }
     }
 
     // Opening an artifact hands it to the browser overlay while leaving the
@@ -1313,8 +1363,8 @@ function enhanceQmuxMockup(mockup, replayBoot) {
         if (address) {
           // Keep whatever origin the markup rendered rather than hardcoding one
           // here; the address is the data file's to choose.
-          const origin = (address.textContent || "").split("/")[0];
-          address.textContent = `${origin}/${name}`;
+          const origin = browserAddressText(address).split("/")[0];
+          setBrowserAddress(address, `${origin}/${name}`);
         }
         showBrowserPage("default");
         setPanel("browser", true);
@@ -1341,8 +1391,8 @@ function enhanceQmuxMockup(mockup, replayBoot) {
       button.addEventListener("click", () => {
         const address = mockup.querySelector("[data-mock-browser-url]");
         if (address) {
-          const origin = (address.textContent || "").split("/")[0];
-          address.textContent = `${origin}/designs/${file}`;
+          const origin = browserAddressText(address).split("/")[0];
+          setBrowserAddress(address, `${origin}/designs/${file}`);
         }
         showBrowserPage("visualization");
         setPanel("browser", true);
@@ -1927,12 +1977,20 @@ function enhanceQmuxMockup(mockup, replayBoot) {
       return null;
     }
 
-    // Group sections by their rendered name, so a group menu can find the
-    // section it describes (the collapse item reads and flips its state).
+    // Prefer the stable group key. The visible name can be `name@host`, which
+    // no longer matches `data-mock-group-menu`.
+    /** @param {Element} section */
+    function groupKey(section) {
+      if (section instanceof HTMLElement && section.dataset.mockGroup) {
+        return section.dataset.mockGroup;
+      }
+      return section.querySelector(".pane-group-name")?.textContent?.trim() ?? "";
+    }
+
     /** @type {Map<string, Element>} */
     const groupSectionByName = new Map();
     for (const section of mockup.querySelectorAll(".pane-group")) {
-      const name = section.querySelector(".pane-group-name")?.textContent?.trim();
+      const name = groupKey(section);
       if (name && !groupSectionByName.has(name)) {
         groupSectionByName.set(name, section);
       }
@@ -2032,7 +2090,7 @@ function enhanceQmuxMockup(mockup, replayBoot) {
       if (!section) {
         return;
       }
-      const name = section.querySelector(".pane-group-name")?.textContent?.trim() ?? "";
+      const name = groupKey(section);
       const menu = name ? mockup.querySelector(`[data-mock-group-menu="${name}"]`) : null;
       if (menu instanceof HTMLElement) {
         event.preventDefault();
@@ -2043,9 +2101,7 @@ function enhanceQmuxMockup(mockup, replayBoot) {
     // The … button toggles its group's menu, anchored past its corner.
     for (const node of [...mockup.querySelectorAll(".pane-group-menu-button")]) {
       const section = node.closest(".pane-group");
-      const name = section
-        ? section.querySelector(".pane-group-name")?.textContent?.trim() ?? ""
-        : "";
+      const name = section ? groupKey(section) : "";
       const menu = name ? mockup.querySelector(`[data-mock-group-menu="${name}"]`) : null;
       const button = promote(node, "button");
       if (!button || !(menu instanceof HTMLElement)) {
@@ -2174,6 +2230,10 @@ function enhanceQmuxMockup(mockup, replayBoot) {
     /** @param {string} mode */
     function setMode(mode) {
       shell.classList.toggle("is-research-mode", mode === "research");
+      const sidebar = shell.querySelector(".sidebar");
+      if (sidebar) {
+        sidebar.classList.toggle("is-research-mode", mode === "research");
+      }
       for (const list of lists) {
         list.hidden = list.dataset.mockSidebarList !== mode;
       }
@@ -2184,7 +2244,7 @@ function enhanceQmuxMockup(mockup, replayBoot) {
       }
       announce(
         mode === "research"
-          ? "Research mode: the sidebar lists research and the Journal."
+          ? "Research mode: the sidebar lists research and Recent Activity."
           : "Terminal mode: the sidebar lists terminals.",
       );
     }
@@ -2271,7 +2331,11 @@ function enhanceQmuxMockup(mockup, replayBoot) {
       }
       collapse.setAttribute("aria-label", `${name} research`);
       collapse.setAttribute("aria-expanded", String(!folder.classList.contains("is-collapsed")));
-      header.addEventListener("click", () => {
+      header.addEventListener("click", (event) => {
+        const target = event.target;
+        if (target instanceof Element && target.closest(".research-sidebar-menu-trigger")) {
+          return;
+        }
         const collapsed = folder.classList.toggle("is-collapsed");
         collapse.setAttribute("aria-expanded", String(!collapsed));
         announce(`${name} research ${collapsed ? "collapsed" : "expanded"}.`);
@@ -2514,6 +2578,17 @@ function enhanceQmuxMockup(mockup, replayBoot) {
       body.className = link ? "journal-link-url" : "journal-note-text";
       body.textContent = text;
       entry.append(body);
+      const unit = document.createElement("div");
+      unit.className = "recent-activity-unit";
+      const meta = document.createElement("div");
+      meta.className = "activity-metadata";
+      const summary = document.createElement("span");
+      summary.className = "activity-metadata-summary";
+      summary.textContent = link ? "You saved Link" : "You saved Note";
+      const when = document.createElement("time");
+      when.textContent = "just now";
+      meta.append(summary, when);
+      unit.append(meta, entry);
       const template = menuTemplates.get(kind);
       if (template) {
         const menu = /** @type {HTMLElement} */ (template.cloneNode(true));
@@ -2522,8 +2597,13 @@ function enhanceQmuxMockup(mockup, replayBoot) {
         mockup.append(menu);
         wireMenu(menu);
       }
-      // The feed reads newest first, so a new entry lands at the top.
-      feed.prepend(entry);
+      // Newest first, under the current day label and ahead of the older query.
+      const recent = feed.querySelector("[data-mock-recent-activity]");
+      if (recent) {
+        feed.insertBefore(unit, recent);
+      } else {
+        feed.prepend(unit);
+      }
       wireEntry(entry);
       textarea.value = "";
       textarea.focus();

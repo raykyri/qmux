@@ -40,12 +40,13 @@ import {
   FolderPlusIcon,
   GitBranchIcon,
   GlobeIcon,
+  HistoryIcon,
   LayoutDashboardIcon,
   LoaderCircleIcon,
   MessageSquareTextIcon,
+  MinusIcon,
   Minimize2Icon,
   NotebookIcon,
-  NotebookPenIcon,
   PanelBottomCloseIcon,
   PanelBottomOpenIcon,
   PanelLeftCloseIcon,
@@ -54,12 +55,17 @@ import {
   PanelRightOpenIcon,
   PaperclipIcon,
   PencilIcon,
+  PictureInPicture2Icon,
+  PinIcon,
   PlusIcon,
+  RefreshCwIcon,
   RotateCwIcon,
   SettingsIcon,
   SquareCenterlineDashedVerticalIcon,
   SquareTerminalIcon,
   StarIcon,
+  StarOffIcon,
+  SunIcon,
   TerminalIcon,
   Trash2Icon,
   Undo2Icon,
@@ -108,8 +114,8 @@ const MOCKUP_LABEL =
   "queue on the right.";
 
 const RESEARCH_MOCKUP_LABEL =
-  "The qmux desktop window in research mode: a sidebar of starred research, folders, and a " +
-  "Journal tab on the left, and an open research document — its question, answer, and an " +
+  "The qmux desktop window in research mode: a sidebar of starred research, folders, and " +
+  "Recent Activity on the left, and an open research document — its question, answer, and an " +
   "anchored follow-up card — filling the rest of the window.";
 
 // The blocking replay bootstrap activates these hints before the mockup's body
@@ -147,6 +153,15 @@ function PaneTab({ pane }: { pane: MockPane }) {
         <span className={`pane-tab-dot status-${pane.status}`} />
         <span className="pane-tab-content">
           <span className="pane-tab-title">{pane.title}</span>
+          {pane.gitmeta ? (
+            <span className="pane-tab-gitmeta">
+              {pane.gitmeta.location ? (
+                <span className="pane-tab-gitmeta-location">{pane.gitmeta.location}</span>
+              ) : null}
+              {pane.gitmeta.location ? " · " : null}
+              <span className="pane-tab-gitmeta-branch">{pane.gitmeta.branch}</span>
+            </span>
+          ) : null}
         </span>
         {pane.badge ? (
           <span className="pane-tab-meta">
@@ -164,6 +179,7 @@ function PaneGroup({ group }: { group: MockGroup }) {
   return (
     <section
       className={`pane-group has-panes${group.collapsed ? " is-collapsed" : " is-active-group"}`}
+      data-mock-group={group.name}
     >
       <div
         className="pane-group-header"
@@ -173,24 +189,25 @@ function PaneGroup({ group }: { group: MockGroup }) {
             : group.name
         }
       >
-        <span className="pane-group-title">
-          {group.remote ? (
-            <GlobeIcon className="lucide pane-group-folder pane-group-remote-icon" size={13} />
-          ) : (
-            <FolderIcon className="lucide pane-group-folder" size={13} />
-          )}
-          <span className="pane-group-name">{group.name}</span>
-          {group.remote ? (
-            <span className="pane-group-remote-label">{group.remote.label}</span>
-          ) : null}
-          <span className="pane-group-count">{group.panes.length}</span>
-          {group.statuses?.length ? (
-            <span className="pane-group-status-icons">
-              {group.statuses.map((status, index) => (
-                <span key={index} className={`pane-tab-dot status-${status}`} />
-              ))}
+        <span className="pane-group-heading">
+          <span className="pane-group-title">
+            {group.remote ? (
+              <GlobeIcon className="lucide pane-group-folder pane-group-remote-icon" size={13} />
+            ) : (
+              <FolderIcon className="lucide pane-group-folder" size={13} />
+            )}
+            <span className="pane-group-name">
+              {group.remote ? `${group.name}@${group.remote.label}` : group.name}
             </span>
-          ) : null}
+            <span className="pane-group-count">{group.panes.length}</span>
+            {group.statuses?.length ? (
+              <span className="pane-group-status-icons">
+                {group.statuses.map((status, index) => (
+                  <span key={index} className={`pane-tab-dot status-${status}`} />
+                ))}
+              </span>
+            ) : null}
+          </span>
         </span>
         <span className="pane-group-aux">
           <span className="control-button pane-group-collapse-button">
@@ -315,6 +332,13 @@ function ResearchFolder({
             </span>
           </span>
         </span>
+        <span
+          className="control-button research-sidebar-menu-trigger"
+          title="Folder actions"
+          aria-label={`Actions for ${name}`}
+        >
+          <EllipsisIcon size={14} />
+        </span>
       </div>
       {ids.map((id) => (
         <ResearchRow key={id} id={id} selected={id === selectedId} member />
@@ -331,14 +355,13 @@ function ResearchSidebarList({ selectedId = DEFAULT_RESEARCH_DOC_ID }: { selecte
       <div
         className="research-sidebar-row journal-sidebar-row"
         data-mock-research-row={JOURNAL_VIEW_ID}
-        data-mock-research-title="Journal"
+        data-mock-research-title="Recent Activity"
         data-mock-research-thread=""
       >
         <span className="control-button research-sidebar-select">
           <span className="research-sidebar-copy">
             <span className="research-sidebar-title">
-              <NotebookPenIcon size={12} className="research-sidebar-doc-icon" />
-              <span className="research-sidebar-title-text">Journal</span>
+              <span className="research-sidebar-title-text">Recent Activity</span>
             </span>
           </span>
         </span>
@@ -368,9 +391,6 @@ function ResearchSidebarList({ selectedId = DEFAULT_RESEARCH_DOC_ID }: { selecte
             />
           ),
         )}
-        {MOCK_RESEARCH_ARCHIVED.map((id) => (
-          <ResearchRow key={id} id={id} selected={id === selectedId} archived />
-        ))}
       </section>
     </>
   );
@@ -466,6 +486,23 @@ function ResearchDocumentView({ id, selected }: { id: string; selected: boolean 
               <footer className="research-answer-meta">
                 {doc.words ? <span>{doc.words}</span> : null}
                 {doc.duration ? <span>{doc.duration}</span> : null}
+                {doc.running ? null : (
+                  <span
+                    className="control-button research-answer-copy"
+                    title={
+                      doc.kind === "conversation"
+                        ? "Copy conversation as Markdown"
+                        : "Copy answer as Markdown"
+                    }
+                    aria-label={
+                      doc.kind === "conversation"
+                        ? "Copy conversation as Markdown"
+                        : "Copy answer as Markdown"
+                    }
+                  >
+                    <CopyIcon size={14} />
+                  </span>
+                )}
                 <span className="control-button research-answer-menu-trigger">
                   <EllipsisIcon size={15} />
                 </span>
@@ -500,9 +537,6 @@ function ResearchDocumentView({ id, selected }: { id: string; selected: boolean 
             <div className="research-followup-composer is-thread">
               <div className="mock-textarea">{RESEARCH_COMPOSER_PLACEHOLDER}</div>
               <div className="research-followup-footer">
-                <div className="research-followup-hint-row">
-                  <small>Continues the thread under this answer</small>
-                </div>
                 <div className="native-input-submit-actions">
                   {/* Thread vs. branch is a property of the submission, so it
                       rides Send as a split control rather than a tab strip
@@ -649,21 +683,55 @@ function JournalView({ selected }: { selected: boolean }) {
             <XIcon size={12} />
           </span>
         </div>
-        <div className="journal-feed" role="feed" aria-label="Journal entries">
-          {feed.map((entry) => (
-            <article
-              key={entry.id}
-              className={`journal-entry is-${entry.kind}`}
-              data-mock-journal-entry={entry.id}
-            >
-              <JournalEntryBody entry={entry} />
-              <span
-                className="control-button journal-entry-menu-trigger"
-                data-mock-journal-menu-trigger
-              >
-                <EllipsisIcon size={13} />
+        <div className="journal-feed" role="feed" aria-label="Recent activity">
+          <h2 className="recent-activity-day-label">Today</h2>
+          <div className="recent-activity-unit" data-mock-recent-activity>
+            <div className="activity-metadata">
+              <span className="activity-metadata-summary">You asked Claude Opus</span>
+              <time>2 hr ago</time>
+            </div>
+            <article className="recent-query-card">
+              <span className="recent-query-open">
+                How does libghostty reflow scrollback when a pane is resized?
+              </span>
+              <span className="recent-query-actions" aria-label="Query actions">
+                <span className="recent-query-action" title="Copy query" aria-label="Copy query">
+                  <CopyIcon size={12} />
+                </span>
+                <span
+                  className="recent-query-action"
+                  title="Open research"
+                  aria-label="Open research"
+                >
+                  <ExternalLinkIcon size={12} />
+                </span>
               </span>
             </article>
+          </div>
+          <h2 className="recent-activity-day-label">Aug 24</h2>
+          {feed.map((entry) => (
+            <div className="recent-activity-unit" key={entry.id}>
+              <div className="activity-metadata">
+                <span className="activity-metadata-summary">
+                  You saved {entry.kind === "note" ? "Note" : entry.kind === "link" ? "Link" : "Post"}
+                </span>
+                <time>
+                  {entry.kind === "note" ? "8 hr ago" : entry.kind === "link" ? "6 hr ago" : "5 hr ago"}
+                </time>
+              </div>
+              <article
+                className={`journal-entry is-${entry.kind}`}
+                data-mock-journal-entry={entry.id}
+              >
+                <JournalEntryBody entry={entry} />
+                <span
+                  className="control-button journal-entry-menu-trigger"
+                  data-mock-journal-menu-trigger
+                >
+                  <EllipsisIcon size={13} />
+                </span>
+              </article>
+            </div>
           ))}
         </div>
       </div>
@@ -692,7 +760,7 @@ function ResearchStage({ selectedId }: { selectedId: string }) {
           <div className="research-breadcrumb" aria-label="Research path">
             <span>
               <span className="control-button" data-mock-research-crumb>
-                {selectedDoc ? selectedDoc.title : "Journal"}
+                {selectedDoc ? selectedDoc.title : "Recent Activity"}
               </span>
             </span>
           </div>
@@ -736,7 +804,7 @@ function ResearchRowMenu({ id }: { id: string }) {
         ) : (
           <>
             <button type="button" role="menuitem" className="control-button" data-mock-context-item>
-              <StarIcon size={13} />
+              {starred ? <StarOffIcon size={13} /> : <StarIcon size={13} />}
               <span>{starred ? "Unstar" : "Star"}</span>
             </button>
             <button type="button" role="menuitem" className="control-button" data-mock-context-item>
@@ -750,7 +818,7 @@ function ResearchRowMenu({ id }: { id: string }) {
                 className="control-button"
                 data-mock-context-item
               >
-                <RotateCwIcon size={13} />
+                <RefreshCwIcon size={13} />
                 <span>Regenerate title</span>
               </button>
             ) : null}
@@ -866,23 +934,59 @@ function Sidebar({ research, mode }: { research: boolean; mode: SidebarMode }) {
   return (
     <aside className={`sidebar is-code-mode${researchMode ? " is-research-mode" : ""}`}>
       <span className="sidebar-header-controls is-grouped">
-        <span className="sidebar-header-button" data-mock-action="open-terminal-map">
+        <span
+          className="sidebar-header-button"
+          title="Conversation history (⇧⌘H)"
+          aria-label="Conversation history"
+        >
+          <HistoryIcon size={14} />
+        </span>
+        <span
+          className="sidebar-header-button"
+          data-mock-action="open-terminal-map"
+          title="Terminal map"
+          aria-label="Open terminal map"
+        >
           <LayoutDashboardIcon size={14} />
         </span>
-        <span className="sidebar-header-button" data-mock-action="hide-sidebar">
+        <span
+          className="sidebar-header-button"
+          title="Light mode"
+          aria-label="Switch to light mode"
+        >
+          <SunIcon size={14} />
+        </span>
+        <span
+          className="sidebar-header-button"
+          data-mock-action="hide-sidebar"
+          title="Collapse left sidebar (⇧⌘G)"
+          aria-label="Collapse left sidebar"
+        >
           <PanelLeftCloseIcon size={14} />
         </span>
       </span>
       <div className="sidebar-mode-toggle" data-mock-mode-toggle>
         <span className={researchMode ? undefined : "is-selected"} data-mock-mode="terminal">
-          <SquareTerminalIcon size={13} />
+          <SquareTerminalIcon size={14} />
           <span>Terminal</span>
         </span>
         <span className={researchMode ? "is-selected" : undefined} data-mock-mode="research">
-          <BookOpenIcon size={13} />
+          <BookOpenIcon size={14} />
           <span>Research</span>
         </span>
       </div>
+      {research ? (
+        <div className="research-folder-switcher">
+          <span className="research-folder-trigger" title="~/code/qmux">
+            <FolderIcon size={13} />
+            <span className="research-folder-trigger-copy">
+              <span className="research-folder-trigger-name">qmux</span>
+              <span className="research-folder-path">~/code/qmux</span>
+            </span>
+            <ChevronDownIcon size={13} />
+          </span>
+        </div>
+      ) : null}
       <nav className="pane-list">
         {research ? (
           <>
@@ -1039,12 +1143,16 @@ function FloatingRestoreControls() {
       <span
         className="icon-button turn-pane-header-button turn-pane-floating-restore-button mock-restore-left"
         data-mock-action="show-sidebar"
+        title="Show left sidebar (⇧⌘G)"
+        aria-label="Show left sidebar"
       >
         <PanelLeftOpenIcon size={14} />
       </span>
       <span
         className="icon-button turn-pane-header-button turn-pane-floating-restore-button mock-restore-right"
         data-mock-action="show-right"
+        title="Show right bar (⇧⌘L)"
+        aria-label="Show right bar"
       >
         <PanelRightOpenIcon size={14} />
       </span>
@@ -1085,7 +1193,7 @@ function MockImageLightbox() {
   );
 }
 
-function TurnPaneHeader() {
+function TurnPaneHeader({ transcriptExpanded = false }: { transcriptExpanded?: boolean }) {
   return (
     <div className="turn-pane-header">
       <div className="turn-pane-session-control">
@@ -1095,6 +1203,8 @@ function TurnPaneHeader() {
         <span
           className="control-button turn-pane-header-button"
           data-mock-action="prompt-library"
+          title="Prompt library"
+          aria-label="Prompt library"
         >
           <BookMarkedIcon size={14} />
         </span>
@@ -1102,36 +1212,72 @@ function TurnPaneHeader() {
           <span
             className="control-button turn-pane-header-button"
             data-mock-action="journal"
+            title="Journal"
+            aria-label="Journal"
           >
             <NotebookIcon size={14} />
             <span className="notification-journal-unread-dot" data-mock-log-unread />
           </span>
         </div>
         <span
+          className="control-button turn-pane-header-button is-active"
+          title="Unpin user message from top of transcripts"
+          aria-label="Unpin user message from top of transcripts"
+        >
+          <PinIcon size={14} />
+        </span>
+        <span
           className="control-button turn-pane-header-button"
           data-mock-action="queue-split"
+          title="Split transcript and queue"
+          aria-label="Split transcript and queue"
         >
           <SquareCenterlineDashedVerticalIcon size={14} />
         </span>
-        <span className="control-button turn-pane-header-button" data-mock-action="browser">
+        <span
+          className="control-button turn-pane-header-button"
+          data-mock-action="browser"
+          title="Show browser"
+          aria-label="Show browser"
+        >
           <GlobeIcon size={14} />
         </span>
         <span
-          className="control-button turn-pane-header-button artifact-tray-toggle"
+          className="control-button turn-pane-header-button artifact-tray-toggle is-active"
           data-mock-action="artifacts"
+          title="Hide artifact tray"
+          aria-label="Hide artifact tray"
         >
           <PaperclipIcon size={14} />
           <span className="artifact-tray-badge">{ARTIFACT_COUNT}</span>
         </span>
         <span
+          className="control-button turn-pane-header-button mock-terminal-pip-toggle"
+          title="Show terminal preview"
+          aria-label="Show terminal picture in picture"
+        >
+          <PictureInPicture2Icon size={14} />
+        </span>
+        <span
           className="control-button turn-pane-header-button"
           data-mock-action="expand-transcript"
+          title={
+            transcriptExpanded
+              ? "Restore transcript (⌘⇧E / Ctrl+Shift+E)"
+              : "Expand transcript (⌘⇧E / Ctrl+Shift+E)"
+          }
+          aria-label={transcriptExpanded ? "Restore transcript" : "Expand transcript"}
         >
           <ExpandIcon className="lucide mock-icon-expand" size={14} />
           <Minimize2Icon className="lucide mock-icon-collapse" size={14} />
         </span>
         <div className="turn-pane-sidebar-controls">
-          <span className="icon-button turn-pane-header-button" data-mock-action="hide-right">
+          <span
+            className="icon-button turn-pane-header-button"
+            data-mock-action="hide-right"
+            title="Collapse right bar (⇧⌘L)"
+            aria-label="Collapse right bar"
+          >
             <PanelRightCloseIcon size={14} />
           </span>
         </div>
@@ -1218,27 +1364,71 @@ function TurnHeader({ label }: { label: string }) {
 // Saved prompts, dropped into the composer on click. The search filters for
 // real — a field that looked like it searched but did not would be worse than
 // no field at all.
-function PromptLibrary() {
+function PromptLibrarySection({
+  label,
+  path,
+  prompts,
+}: {
+  label: string;
+  path?: string;
+  prompts: { name: string; text: string }[];
+}) {
   return (
-    <div className="popover-surface prompt-library-menu" data-mock-panel="prompt-library" hidden>
+    <div className="prompt-library-section" role="group" aria-label={label}>
+      <div className="prompt-library-section-header">
+        <div className="prompt-library-section-heading">
+          <span className="prompt-library-section-label">{label}</span>
+          {path ? (
+            <span className="prompt-library-section-path" title={path}>
+              {path}
+            </span>
+          ) : null}
+        </div>
+        <span
+          className="icon-button prompt-library-icon-button"
+          title={`New ${label.toLowerCase()} prompt`}
+          aria-label={`New ${label} prompt`}
+        >
+          <PlusIcon size={12} />
+        </span>
+      </div>
+      {prompts.map((prompt) => (
+        <div className="prompt-library-item" key={prompt.name}>
+          <span className="prompt-library-item-main" data-mock-prompt={prompt.text}>
+            <span className="prompt-library-item-name">/{prompt.name}</span>
+            <span className="prompt-library-item-text">{prompt.text}</span>
+          </span>
+        </div>
+      ))}
+      <div className="prompt-library-empty" hidden>
+        No matches
+      </div>
+    </div>
+  );
+}
+
+function PromptLibrary() {
+  const globalPrompts = SAVED_PROMPTS.filter((prompt) => prompt.scope === "global");
+  const projectPrompts = SAVED_PROMPTS.filter((prompt) => prompt.scope === "project");
+  return (
+    <div
+      className="popover-surface prompt-library-menu"
+      data-mock-panel="prompt-library"
+      hidden
+      role="menu"
+      aria-label="Prompt library"
+    >
       <input
         className="prompt-library-search"
         type="search"
-        placeholder="Search prompts"
+        placeholder="Search prompts…"
         aria-label="Search saved prompts"
       />
       <div className="prompt-library-list">
-        {SAVED_PROMPTS.map((prompt) => (
-          <div className="prompt-library-item" key={prompt}>
-            <span className="prompt-library-item-main" data-mock-prompt={prompt}>
-              <span className="prompt-library-item-text">{prompt}</span>
-            </span>
-          </div>
-        ))}
+        <PromptLibrarySection label="Global" prompts={globalPrompts} />
+        <div className="prompt-library-divider" role="separator" />
+        <PromptLibrarySection label="Project" path="~/code/qmux" prompts={projectPrompts} />
       </div>
-      <p className="prompt-library-empty" hidden>
-        No prompt matches.
-      </p>
     </div>
   );
 }
@@ -1343,14 +1533,42 @@ function ArtifactTray() {
       <div className="artifact-tray-titlebar">
         <PaperclipIcon className="lucide artifact-tray-clip" size={11} />
         <span className="artifact-tray-label">Artifacts</span>
-        <span className="artifact-tray-chrome-button" data-mock-action="artifacts">
-          <XIcon size={12} />
+        <span
+          className="artifact-tray-chrome-button"
+          title="Clear artifacts"
+          aria-label="Clear artifacts"
+        >
+          <Trash2Icon size={10} />
+        </span>
+        <span
+          className="artifact-tray-chrome-button"
+          title="Collapse artifacts"
+          aria-label="Collapse artifacts"
+        >
+          <MinusIcon size={10} />
+        </span>
+        <span
+          className="artifact-tray-chrome-button"
+          data-mock-action="artifacts"
+          title="Hide artifact tray"
+          aria-label="Hide artifact tray"
+        >
+          <XIcon size={10} />
         </span>
       </div>
       <div className="artifact-tray-body">
         {ARTIFACTS.map((artifact) => (
           <span className="artifact-tray-row" key={artifact.name} data-mock-artifact={artifact.name}>
-            <span className="artifact-tray-name">{artifact.name}</span>
+            <span className="artifact-tray-thumb">
+              {artifact.name === "site/qmux.png" ? (
+                <img src="/qmux.png" alt="" />
+              ) : (
+                <FileTextIcon size={11} />
+              )}
+            </span>
+            <span className="artifact-tray-name" title={artifact.name}>
+              {artifact.name.split("/").pop()}
+            </span>
             <span className="artifact-tray-meta">{artifact.meta}</span>
           </span>
         ))}
@@ -1365,12 +1583,59 @@ function BrowserOverlay() {
   return (
     <div className="browser-overlay" data-mock-panel="browser" hidden>
       <div className="browser-overlay-nav">
-        <span className="browser-overlay-close" data-mock-action="browser">
-          <XIcon size={13} />
+        <span
+          className="icon-button browser-overlay-button browser-overlay-close-button"
+          data-mock-action="browser"
+          title="Hide browser"
+          aria-label="Hide browser"
+        >
+          <XIcon size={14} />
         </span>
-        <span className="browser-overlay-address" data-mock-browser-url>
-          {BROWSER_URL}
+        <div className="browser-overlay-history-controls" role="group" aria-label="Page history">
+          <span className="icon-button browser-overlay-button" title="Go back" aria-label="Go back">
+            <ArrowLeftIcon size={14} />
+          </span>
+          <span
+            className="icon-button browser-overlay-button"
+            title="Go forward"
+            aria-label="Go forward"
+          >
+            <ArrowRightIcon size={14} />
+          </span>
+        </div>
+        <span className="browser-overlay-nav-form">
+          <input
+            className="browser-overlay-url"
+            data-mock-browser-url
+            type="text"
+            readOnly
+            value={BROWSER_URL}
+            aria-label="Address"
+          />
         </span>
+        <div className="browser-overlay-nav-controls">
+          <span
+            className="icon-button browser-overlay-button"
+            title="Expand browser to full width"
+            aria-label="Expand browser to full width"
+          >
+            <ExpandIcon size={14} />
+          </span>
+          <span
+            className="icon-button browser-overlay-button"
+            title="Refresh browser"
+            aria-label="Refresh browser"
+          >
+            <RotateCwIcon size={14} />
+          </span>
+          <span
+            className="icon-button browser-overlay-button"
+            title="Open in external browser"
+            aria-label="Open in external browser"
+          >
+            <ExternalLinkIcon size={14} />
+          </span>
+        </div>
       </div>
       <div className="browser-overlay-page">
         <div className="mock-preview" data-mock-browser-page="default">
@@ -1399,7 +1664,7 @@ function BrowserOverlay() {
           <h4>Recent activity design</h4>
           <p className="mock-preview-figure">Research / Recent activity</p>
           <div className="mock-preview-row">
-            <span className="mock-preview-name">Journal and research feed</span>
+            <span className="mock-preview-name">Recent Activity and research feed</span>
             <span className="mock-preview-pass">preview</span>
           </div>
           <div className="mock-preview-row">
@@ -1720,6 +1985,10 @@ function PaneTabMenu({ pane }: { pane: MockPane }) {
         </button>
         <div className="context-menu-divider" role="separator" />
         <button type="button" role="menuitem" className="control-button" data-mock-context-item>
+          <GitBranchIcon size={13} />
+          <span>Branches and worktrees…</span>
+        </button>
+        <button type="button" role="menuitem" className="control-button" data-mock-context-item>
           <FolderGit2Icon size={13} />
           <span>Open worktree</span>
         </button>
@@ -2025,7 +2294,6 @@ function Composer() {
           <span className="queue-button-group">
             <span className="control-button queue-button queue-button-main">
               <span>Queue</span>
-              <span className="shortcut-hint">⌘↵</span>
             </span>
             <span className="control-button queue-menu-button">
               <ChevronDownIcon size={14} />
@@ -2114,7 +2382,7 @@ export default function AppMockup({
           {features.includes("panels") ? <BrowserOverlay /> : null}
           <div className="turn-pane">
             <div className="turn-sidebar has-header">
-              <TurnPaneHeader />
+              <TurnPaneHeader transcriptExpanded={initialTranscriptExpanded} />
               {features.includes("panels") ? <PromptLibrary /> : null}
               {features.includes("panels") ? <NotificationJournal /> : null}
               <ArtifactTray />

@@ -1002,7 +1002,8 @@ test("the landing page renders the app replica and its own image policy", async 
   assert.match(body, /Based on libghostty/);
   assert.doesNotMatch(body, /Built on libghostty\./);
   assert.match(body, /<strong>Open source<\/strong>/);
-  assert.match(body, /Fully open-source, local-first, non-commercial\./);
+  assert.match(body, /Fully open-source and local-first, under the MIT license\./);
+  assert.match(body, /Antigravity/);
   assert.match(body, /<strong>Artifacts and previews<\/strong>/);
   assert.ok(
     body.indexOf("<strong>Open source</strong>") >
@@ -1067,7 +1068,9 @@ test("the landing page renders the app replica and its own image policy", async 
     /title="autoresearch on GCP builder \(gcp-builder\.us-central1-a\.tdx-1-468104\)"/,
   );
   assert.match(body, /class="lucide pane-group-folder pane-group-remote-icon"/);
-  assert.match(body, /class="pane-group-remote-label">GCP builder<\/span>/);
+  assert.match(body, /data-mock-group="autoresearch"/);
+  assert.match(body, /class="pane-group-name">autoresearch@GCP builder<\/span>/);
+  assert.doesNotMatch(body, /pane-group-remote-label/);
   assert.match(body, /<strong>Managed remote terminals<\/strong>/);
   assert.match(body, /class="turn-image"/);
   assert.match(body, /src="\/qmux\.png"/);
@@ -1095,6 +1098,13 @@ test("the landing page renders the app replica and its own image policy", async 
   // Header panels are rendered in the markup rather than being built at runtime;
   // the artifact tray is the initial view, while transient popovers start closed.
   assert.match(body, /data-mock-panel="prompt-library" hidden/);
+  assert.match(body, /aria-label="Prompt library"/);
+  assert.match(body, /class="prompt-library-section-label">Global</);
+  assert.match(body, /class="prompt-library-section-label">Project</);
+  assert.match(body, /class="prompt-library-section-path" title="~\/code\/qmux"/);
+  assert.match(body, /aria-label="Collapse left sidebar"/);
+  assert.match(body, /aria-label="Open terminal map"/);
+  assert.match(body, /title="Split transcript and queue"/);
   assert.match(body, /data-mock-action="journal"/);
   assert.match(body, /data-mock-panel="journal" hidden/);
   assert.equal((body.match(/data-mock-panel="journal" hidden/g) ?? []).length, 2);
@@ -1138,10 +1148,11 @@ test("the landing page renders the app replica and its own image policy", async 
   assert.match(body, /<span>Split left and right<\/span>/);
   assert.match(body, /<span>Join with terminal below<\/span>/);
   assert.match(body, /<span>Detach from split<\/span>/);
+  assert.match(body, /<span>Branches and worktrees…<\/span>/);
   assert.doesNotMatch(body, /<span>Split terminal<\/span>/);
   // The third replica opens in research mode: the sidebar's second list, the
-  // Journal tab above it, and the stage behind them all ship server-rendered,
-  // so the mode is complete before any script runs.
+  // Recent Activity row above it, and the stage behind them all ship
+  // server-rendered, so the mode is complete before any script runs.
   assert.match(body, /data-mock-features="research journal research-menus"/);
   assert.match(body, /class="app-shell has-turn-sidebar is-research-mode"/);
   assert.match(body, /class="sidebar is-code-mode is-research-mode"/);
@@ -1149,14 +1160,22 @@ test("the landing page renders the app replica and its own image policy", async 
   assert.match(body, /data-mock-sidebar-list="research"/);
   assert.match(body, /data-mock-mode="terminal"/);
   assert.match(body, /data-mock-mode="research"/);
-  assert.equal((body.match(/data-mock-research-row=/g) ?? []).length, 9);
+  assert.equal((body.match(/data-mock-research-row=/g) ?? []).length, 8);
   assert.equal((body.match(/data-mock-research-doc=/g) ?? []).length, 9);
-  assert.match(body, /data-mock-research-row="journal" data-mock-research-title="Journal"/);
+  assert.match(
+    body,
+    /data-mock-research-row="journal" data-mock-research-title="Recent Activity"/,
+  );
   assert.match(body, /class="research-sidebar-starred"/);
   assert.match(body, /class="research-sidebar-folder is-collapsed"/);
   assert.match(body, /class="research-sidebar-unseen">New</);
   assert.match(body, /class="research-sidebar-spinner"/);
-  assert.match(body, /class="research-sidebar-row is-archived"/);
+  assert.doesNotMatch(body, /class="research-sidebar-row is-archived"/);
+  assert.match(body, /class="research-folder-switcher"/);
+  assert.match(body, /aria-label="Switch to light mode"/);
+  assert.match(body, /aria-label="Conversation history"/);
+  assert.match(body, /aria-label="Clear artifacts"/);
+  assert.match(body, /class="pane-tab-gitmeta"/);
   // The open document: breadcrumb, question bubble, the two marked passages,
   // an anchored follow-up card, and the thread composer.
   assert.match(body, /data-mock-research-doc="scrollback-reflow"(?! hidden)/);
@@ -1167,16 +1186,27 @@ test("the landing page renders the app replica and its own image policy", async 
   assert.match(body, /class="mock-research-mark is-anchor"/);
   assert.match(body, /class="control-button research-followup-card is-anchored" style="top:96px"/);
   assert.match(body, /class="research-followup-unread"/);
-  assert.match(body, /Continues the thread under this answer/);
-  assert.match(body, /Ask a follow-up/);
+  assert.doesNotMatch(body, /Continues the thread under this answer/);
+  assert.match(body, /Type your query/);
+  assert.match(body, /2 follow-ups/);
+  assert.match(body, /aria-label="Copy answer as Markdown"/);
   // A run still streaming carries its segment's own terminal and cancel
   // controls, and the sidebar spinner that goes with them.
   assert.match(body, /class="control-button research-segment-action">Cancel</);
-  // The Journal is reachable from the same replica: a composer, an undo bar
-  // that ships closed, and a feed holding a note, a link, and a tweet.
+  // Recent Activity is reachable from the same replica: a composer, an undo bar
+  // that ships closed, a query card, and a feed holding a note, a link, and a tweet.
   assert.match(body, /data-mock-journal-input/);
   assert.match(body, /Add a note or paste a URL/);
   assert.match(body, /data-mock-journal-undo="true" hidden/);
+  assert.match(body, /data-mock-recent-activity/);
+  assert.match(body, /class="recent-activity-day-label">Today</);
+  assert.match(body, /You asked Claude Opus/);
+  assert.match(body, /You saved Note/);
+  assert.match(body, /aria-label="Open research"/);
+  assert.match(body, /class="recent-query-card"/);
+  assert.match(body, /2 min ago/);
+  assert.match(body, /title="web\/landing\/mockupData.ts">mockupData.ts</);
+  assert.doesNotMatch(body, /data-mock-journal-entry="[^"]*"[\s\S]{0,80}recent-query-card/);
   assert.equal((body.match(/data-mock-journal-entry=/g) ?? []).length, 3);
   assert.match(body, /class="journal-entry is-note"/);
   assert.match(body, /class="journal-entry is-link"/);
@@ -1192,7 +1222,7 @@ test("the landing page renders the app replica and its own image policy", async 
   assert.match(body, /class="journal-tweet-stat"/);
   assert.match(body, /class="journal-tweet-verified"/);
   assert.doesNotMatch(body, /journal-tweet-foot/);
-  // The Journal tab is an ordinary research row.
+  // Recent Activity is an ordinary research row, with no notebook icon of its own.
   assert.match(
     body,
     /class="research-sidebar-row journal-sidebar-row"[^>]*>\s*<span class="control-button research-sidebar-select">/,
@@ -1224,8 +1254,8 @@ test("the landing page renders the app replica and its own image policy", async 
   assert.match(body, /Stack, fork, and interleave sessions to get more done faster/);
   assert.match(body, /Scroll back thousands of messages, even across auto-compactions/);
   assert.match(body, /class="composer-slash-token">\/fork</);
-  assert.doesNotMatch(body, /Fork this session/);
-  assert.doesNotMatch(body, /Fork into a new worktree/);
+  assert.match(body, /Fork this session/);
+  assert.match(body, /Fork into a new worktree/);
   assert.match(body, /data-step="5"/);
   // Replay staging is inert unless the pre-paint bootstrap activates it, so the
   // serialized default session remains complete when JavaScript is unavailable.

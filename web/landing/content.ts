@@ -14,7 +14,7 @@ export interface Feature {
 }
 
 export interface SupportedAgent {
-  id: "claude" | "codex" | "opencode" | "grok" | "muse" | "pi" | "cursor" | "devin";
+  id: "claude" | "codex" | "opencode" | "grok" | "muse" | "pi" | "cursor" | "devin" | "antigravity";
   label: string;
 }
 
@@ -28,6 +28,7 @@ export const SUPPORTED_AGENTS: SupportedAgent[] = [
   { id: "pi", label: "Pi" },
   { id: "cursor", label: "Cursor" },
   { id: "devin", label: "Devin" },
+  { id: "antigravity", label: "Antigravity" },
 ];
 
 export const FEATURES: Feature[] = [
@@ -47,11 +48,11 @@ export const FEATURES: Feature[] = [
   {
     name: "Managed remote terminals",
     copy:
-      "Run shells, Claude, and Codex over SSH while tmux keeps the remote process alive through disconnects.",
+      "Run shells and supported agents over SSH; tmux keeps the remote process alive through disconnects.",
   },
   {
     name: "Session forking",
-    copy: "Fork sessions while they're working. Create worktrees with one click.",
+    copy: "Fork sessions while they work, and open a worktree from the tab menu.",
   },
   {
     name: "Based on libghostty",
@@ -79,7 +80,7 @@ export const FEATURES: Feature[] = [
   },
   {
     name: "Built-in browser",
-    copy: "Keep local previews and web pages beside the agent working with them.",
+    copy: "Open normal URLs in the native browser beside the terminal.",
   },
   {
     name: "Keyboard-first",
@@ -87,6 +88,6 @@ export const FEATURES: Feature[] = [
   },
   {
     name: "Open source",
-    copy: "Fully open-source, local-first, non-commercial.",
+    copy: "Fully open-source and local-first, under the MIT license.",
   },
 ];

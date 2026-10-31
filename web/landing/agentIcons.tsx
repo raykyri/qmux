@@ -88,6 +88,14 @@ function CursorMark(props: MarkProps) {
   );
 }
 
+function AntigravityMark(props: MarkProps) {
+  return (
+    <Mark {...props}>
+      <path d="M12 2C12 7.523 7.523 12 2 12c5.523 0 10 4.477 10 10 0-5.523 4.477-10 10-10-5.523 0-10-4.477-10-10Z" />
+    </Mark>
+  );
+}
+
 function DevinMark(props: MarkProps) {
   return (
     <Mark {...props}>
@@ -107,6 +115,7 @@ const MARK_BY_ID = {
   pi: PiMark,
   cursor: CursorMark,
   devin: DevinMark,
+  antigravity: AntigravityMark,
 } as const satisfies Record<(typeof SUPPORTED_AGENTS)[number]["id"], typeof ClaudeMark>;
 
 export function HeroAgents() {

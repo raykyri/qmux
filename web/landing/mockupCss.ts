@@ -12,9 +12,11 @@ export const MOCKUP_CSS = `
 .app-mockup,
 .mini-mockup {
   /* --- tokens.css --- */
-  --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-base: 13px;
+  --font-ui-size-offset: 0.5px;
+  --fs-xs: calc(11px + var(--font-ui-size-offset));
+  --fs-sm: calc(12px + var(--font-ui-size-offset));
+  --fs-base: calc(13px + var(--font-ui-size-offset));
+  --fs-input: calc(15px + var(--font-ui-size-offset));
   --control-h-md: 30px;
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -27,6 +29,7 @@ export const MOCKUP_CSS = `
   --text-secondary: #c4cbc6;
   --text-body-soft: #d9ddd9;
   --text-muted: #8a938e;
+  --text-tertiary: #aab1ad;
   --text-activity: #8f9994;
   --text-faint: #6f7773;
   --text-interactive: #edf0ec;
@@ -57,7 +60,9 @@ export const MOCKUP_CSS = `
   --surface-border-default: rgba(255, 255, 255, 0.12);
   --surface-border-faint: rgba(255, 255, 255, 0.06);
   --surface-fill-subtle: rgba(255, 255, 255, 0.05);
+  --surface-fill-faint: rgba(255, 255, 255, 0.03);
   --surface-fill-hover: rgba(255, 255, 255, 0.06);
+  --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.45);
   --sidebar-switcher-bg: rgba(0, 0, 0, 0.18);
   --sidebar-switcher-hover-bg: rgba(255, 255, 255, 0.045);
   --sidebar-switcher-active-bg: rgba(255, 255, 255, 0.105);
@@ -333,7 +338,7 @@ export const MOCKUP_CSS = `
   border: 0;
   border-radius: 5px;
   color: #818a85;
-  font-size: 13px;
+  font-size: calc(13px + var(--font-ui-size-offset));
   background: transparent;
 }
 
@@ -377,8 +382,15 @@ export const MOCKUP_CSS = `
   padding: 2px 4px 2px 5px;
   border-radius: 5px;
   color: var(--control-fg-muted);
-  font-size: 12px;
+  font-size: calc(12px + var(--font-ui-size-offset));
   line-height: 1.2;
+}
+
+.app-mockup .pane-group-heading {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .app-mockup .pane-group.has-panes .pane-group-header {
@@ -406,21 +418,6 @@ export const MOCKUP_CSS = `
   color: #d6dbd6;
   font-weight: 600;
   letter-spacing: 0.01em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.app-mockup .pane-group-remote-label {
-  min-width: 0;
-  max-width: 86px;
-  overflow: hidden;
-  padding: 1px 5px;
-  border: 1px solid color-mix(in srgb, var(--accent-color) 34%, transparent);
-  border-radius: 999px;
-  color: color-mix(in srgb, var(--accent-color) 76%, var(--text-secondary));
-  font-size: 10px;
-  font-weight: 550;
-  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -500,7 +497,7 @@ export const MOCKUP_CSS = `
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--control-fg-muted);
-  font-size: 13px;
+  font-size: calc(13px + var(--font-ui-size-offset));
   text-align: left;
 }
 
@@ -517,6 +514,18 @@ export const MOCKUP_CSS = `
   min-width: 0;
   flex-direction: column;
   gap: 1px;
+}
+
+.app-mockup .pane-tab-gitmeta {
+  overflow: hidden;
+  color: var(--placeholder-color);
+  font-size: calc(12px + var(--font-ui-size-offset));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-mockup .pane-tab-row.is-selected .pane-tab-gitmeta {
+  color: var(--text-secondary);
 }
 
 .app-mockup .pane-tab-title {
@@ -701,11 +710,11 @@ export const MOCKUP_CSS = `
   padding: 10px 12px;
   color: #e7e7e2;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 14px;
   /* Shell text should read literally; JetBrains Mono's ligatures would fuse
      glyph pairs the terminal renders separately. */
   font-variant-ligatures: none;
-  line-height: 1.5;
+  line-height: 1.2;
   white-space: pre;
 }
 
@@ -718,7 +727,7 @@ export const MOCKUP_CSS = `
 }
 
 .app-mockup .mock-terminal-line {
-  min-height: 1.5em;
+  min-height: 1.2em;
   overflow: hidden;
   text-overflow: clip;
 }
@@ -729,19 +738,6 @@ export const MOCKUP_CSS = `
   height: 1.15em;
   vertical-align: text-bottom;
   background: #f2d37b;
-  animation: mock-cursor-blink 1.1s steps(1, end) infinite;
-}
-
-@keyframes mock-cursor-blink {
-  0%,
-  49% {
-    opacity: 1;
-  }
-
-  50%,
-  100% {
-    opacity: 0;
-  }
 }
 
 .app-mockup .tt-strong {
@@ -846,6 +842,21 @@ export const MOCKUP_CSS = `
   border-radius: var(--radius-md);
   background: var(--chrome-control-bg);
   color: var(--text-secondary);
+}
+
+.app-mockup .turn-pane-header-button.is-active {
+  border-color: var(--accent-color);
+  background: var(--accent-shadow);
+  color: var(--text-strong);
+  box-shadow: var(--shadow-inset);
+}
+
+.app-mockup .mock-terminal-pip-toggle {
+  display: none;
+}
+
+.app-mockup .app-shell.is-transcript-expanded .mock-terminal-pip-toggle {
+  display: inline-flex;
 }
 
 .app-mockup .artifact-tray-badge {
@@ -1065,15 +1076,13 @@ export const MOCKUP_CSS = `
 
 .app-mockup .turn-image {
   display: block;
-  width: 112px;
-  max-width: 100%;
+  width: auto;
   height: auto;
-  max-height: 70px;
-  border: 1px solid var(--surface-border-strong);
-  border-radius: var(--radius-md);
-  background: var(--terminal-pane-bg);
-  object-fit: cover;
-  object-position: top;
+  max-width: min(160px, 100%);
+  max-height: 96px;
+  margin: 2px 0;
+  border: 1px solid var(--surface-border-default);
+  border-radius: 6px;
 }
 
 /* Current Codex visualization references use the desktop app's native
@@ -1087,7 +1096,7 @@ export const MOCKUP_CSS = `
   align-items: center;
   gap: 10px;
   margin: 8px 0;
-  padding: 10px 11px;
+  padding: 8px 11px;
   border: 1px solid var(--surface-border-subtle);
   border-radius: var(--radius-md);
   color: var(--text-primary);
@@ -1129,7 +1138,7 @@ export const MOCKUP_CSS = `
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
 }
 
 .app-mockup .turn-visualization-attachment-copy strong,
@@ -1315,7 +1324,7 @@ export const MOCKUP_CSS = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-muted);
+  color: var(--control-fg-muted);
 }
 
 .app-mockup .composer-menu-popover {
@@ -1706,6 +1715,71 @@ export const MOCKUP_CSS = `
   overscroll-behavior: contain;
 }
 
+.app-mockup .prompt-library-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px;
+  border: 1px dashed transparent;
+  border-radius: var(--radius-md);
+}
+
+.app-mockup .prompt-library-section-header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 5px 1px;
+}
+
+.app-mockup .prompt-library-section-heading {
+  display: flex;
+  align-items: baseline;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 5px;
+}
+
+.app-mockup .prompt-library-section-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-mockup .prompt-library-section-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: calc(10px + var(--font-ui-size-offset));
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-mockup .prompt-library-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  align-self: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.app-mockup .prompt-library-divider {
+  height: 1px;
+  flex: none;
+  margin: 7px 5px;
+  background: var(--surface-divider);
+}
+
 .app-mockup .prompt-library-item {
   position: relative;
   display: flex;
@@ -1715,11 +1789,13 @@ export const MOCKUP_CSS = `
 
 .app-mockup .prompt-library-item-main {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 30px;
-  padding: 5px 9px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 30px 5px 9px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -1729,6 +1805,16 @@ export const MOCKUP_CSS = `
   text-align: left;
 }
 
+.app-mockup .prompt-library-item-name {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--fs-base);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .app-mockup.is-interactive .prompt-library-item-main:hover {
   background: var(--popover-item-hover-bg);
 }
@@ -1736,7 +1822,7 @@ export const MOCKUP_CSS = `
 .app-mockup .prompt-library-item-text {
   display: -webkit-box;
   overflow: hidden;
-  color: #c9cfc9;
+  color: var(--text-secondary);
   font-size: var(--fs-base);
   line-height: 1.35;
   text-overflow: ellipsis;
@@ -1842,6 +1928,26 @@ export const MOCKUP_CSS = `
   background: var(--popover-item-hover-bg);
 }
 
+.app-mockup .artifact-tray-thumb {
+  display: flex;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--surface-divider);
+  border-radius: 4px;
+  background: var(--popover-bg);
+  color: var(--text-muted);
+}
+
+.app-mockup .artifact-tray-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .app-mockup .artifact-tray-name {
   flex: 1 1 auto;
   min-width: 0;
@@ -1860,9 +1966,9 @@ export const MOCKUP_CSS = `
    window and clear of the turn pane. */
 .app-mockup .browser-overlay {
   position: absolute;
-  top: 40px;
+  top: 20px;
   right: calc(var(--turn-pane-width) + 20px);
-  bottom: 30px;
+  height: calc(100% - 70px);
   left: calc(var(--sidebar-width) + 24px);
   z-index: 8;
   display: flex;
@@ -1889,37 +1995,56 @@ export const MOCKUP_CSS = `
   background: var(--chrome-header-bg);
 }
 
-.app-mockup .browser-overlay-close {
+.app-mockup .browser-overlay-button,
+.app-mockup .browser-overlay-close-button {
   display: inline-flex;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   flex: none;
   align-items: center;
   justify-content: center;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-muted);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--chrome-control-bg);
+  color: var(--text-secondary);
 }
 
-.app-mockup.is-interactive .browser-overlay-close:hover {
+.app-mockup.is-interactive .browser-overlay-button:hover {
   background: var(--hover-chrome-bg);
   color: var(--text-strong);
 }
 
-.app-mockup .browser-overlay-address {
+.app-mockup .browser-overlay-history-controls,
+.app-mockup .browser-overlay-nav-controls {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+
+.app-mockup .browser-overlay-nav-controls {
+  gap: 6px;
+}
+
+.app-mockup .browser-overlay-nav-form {
+  display: flex;
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  padding: 4px 9px;
+  align-items: center;
+}
+
+.app-mockup .browser-overlay-url {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 7px 10px;
   border: 1px solid var(--control-border);
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   background: var(--field-bg);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--text-strong);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  outline: none;
 }
 
 .app-mockup .browser-overlay-page {
@@ -2019,14 +2144,14 @@ export const MOCKUP_CSS = `
 .app-mockup .turn-sidebar-input.is-split {
   height: 45%;
   overflow: hidden;
-  padding-top: 10px;
+  padding-top: 0;
   border-top: 1px solid var(--surface-divider);
   background: var(--right-pane-bg);
 }
 
 .app-mockup .turn-sidebar:has(.turn-sidebar-input.is-split) .turn-timeline {
   bottom: 45%;
-  padding-bottom: 14px;
+  padding-bottom: 10px;
 }
 
 .app-mockup .turn-sidebar-input.is-split .native-input {
@@ -2048,10 +2173,14 @@ export const MOCKUP_CSS = `
 
 .app-mockup .queue-empty-state {
   flex: 1 1 auto;
-  display: grid;
-  place-items: center;
-  color: var(--text-muted);
-  font-size: var(--fs-base);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  color: var(--text-tertiary);
+  font-size: calc(14px + var(--font-ui-size-offset));
+  line-height: 1.4;
+  text-align: center;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2067,6 +2196,7 @@ export const MOCKUP_CSS = `
 
 /* The count is a collapsed-group affordance in the app; expanding hides it. */
 .app-mockup .pane-group:not(.is-collapsed) .pane-group-count,
+.app-mockup .pane-group:not(.is-collapsed) .pane-group-status-icons,
 .app-mockup .pane-group:not(.is-collapsed) .mock-icon-expand,
 .app-mockup .pane-group.is-collapsed .mock-icon-collapse {
   display: none;
@@ -2872,13 +3002,73 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
 }
 
 /* Keep the fixed controls where they were while the space around the research
-   list moves inside its own scroll area. */
+   list moves inside its own scroll area. The 14px stack gap collapses with the
+   folder switcher's 6px top margin. */
 .app-mockup .sidebar.is-research-mode .sidebar-mode-toggle {
   margin-bottom: 14px;
 }
 
+.app-mockup .research-folder-switcher {
+  display: none;
+  position: relative;
+  margin: 6px 4px 0;
+}
+
+.app-mockup .sidebar.is-research-mode .research-folder-switcher {
+  display: block;
+}
+
+.app-mockup .research-folder-trigger {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 28px;
+  padding: 6px 8px 7px;
+  border: 1px solid var(--surface-border-subtle);
+  border-radius: 7px;
+  color: var(--control-fg-muted);
+  font-size: calc(13px + var(--font-ui-size-offset));
+  text-align: left;
+  background: var(--surface-fill-faint);
+}
+
+.app-mockup .research-folder-trigger-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.app-mockup .research-folder-trigger-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-interactive);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-mockup .research-folder-path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--placeholder-color);
+  font-size: calc(12px + var(--font-ui-size-offset));
+  font-weight: 400;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-mockup .research-folder-trigger > svg:last-child {
+  flex: none;
+  color: var(--text-subtle);
+}
+
 .app-mockup .sidebar.is-research-mode .pane-list {
-  padding-block: 14px 0;
+  padding-block: 14px;
 }
 
 /* Each mode keeps its own launchers; the shell's class picks one. */
@@ -2911,6 +3101,8 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
 /* The tab is an ordinary research row (same nesting, same metrics); it only
    needs the gap that separates it from the Research heading below. */
 .app-mockup .journal-sidebar-row {
+  width: calc(100% - 14px);
+  margin-inline: 7px;
   margin-bottom: 8px;
 }
 
@@ -2919,8 +3111,9 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  overflow: hidden;
-  padding: 0 7px 5px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 7px 7px 5px;
   /* Reserve the scrollbar whether or not it is needed, so opening a folder
      never shifts the list's icons sideways. */
   scrollbar-gutter: stable;
@@ -3133,7 +3326,7 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
 
 .app-mockup .research-sidebar-folder-count {
   flex: none;
-  margin-left: 0.25em;
+  margin-left: 0.5em;
   color: #747d79;
   font-weight: 500;
   white-space: nowrap;
@@ -3161,7 +3354,7 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
   background: var(--research-workspace-bg);
   /* One size for the answer meta line, the follow-up cards, and the composer,
      so the document's secondary text stays uniform. */
-  --research-meta-font-size: 13px;
+  --research-meta-font-size: calc(13px + var(--font-ui-size-offset));
 }
 
 .app-mockup .app-shell.is-research-mode > .research-workspace {
@@ -3561,7 +3754,17 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
 }
 
 .app-mockup .research-followup-composer .mock-textarea {
-  min-height: 62px;
+  min-height: 96px;
+  font-size: calc(var(--research-meta-font-size) + 0.5px);
+}
+
+.app-mockup .research-answer-copy {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 0;
+  border: 0;
+  color: var(--text-subtle);
+  background: transparent;
 }
 
 .app-mockup .research-followup-footer {
@@ -3592,13 +3795,13 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
 
 .app-mockup .research-followup-composer .native-input-submit-actions .control-button {
   min-height: 26px;
-  padding: 0 8px;
-  font-size: 12.5px;
+  padding: 2px 8px 0;
+  font-size: calc(var(--research-meta-font-size) - 0.5px);
 }
 
 /* The research row and journal entry menus, both action-only. */
 .app-mockup .research-sidebar-menu {
-  width: min(240px, calc(100% - 16px));
+  width: min(200px, calc(100% - 16px));
   padding: 4px;
   user-select: none;
 }
@@ -3643,7 +3846,7 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
   border: 1px solid var(--surface-border-default);
   border-radius: 10px;
   color: var(--placeholder-color);
-  font-size: 13.5px;
+  font-size: calc(13.5px + var(--font-ui-size-offset));
   line-height: 1.45;
   background: var(--content-card-bg);
   resize: none;
@@ -3653,6 +3856,92 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.app-mockup .recent-activity-day-label {
+  margin: 0 0 1px;
+  color: var(--text-subtle);
+  font-size: calc(11px + var(--font-ui-size-offset));
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.app-mockup .recent-activity-unit {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.app-mockup .activity-metadata {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 3px;
+  color: var(--text-subtle);
+  font-size: calc(11.5px + var(--font-ui-size-offset));
+  line-height: 1.35;
+}
+
+.app-mockup .activity-metadata-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-mockup .activity-metadata time {
+  flex: none;
+  white-space: nowrap;
+}
+
+.app-mockup .recent-query-card {
+  position: relative;
+}
+
+.app-mockup .recent-query-open {
+  display: block;
+  padding: 10px 56px 10px 14px;
+  border-radius: 10px;
+  background: var(--content-card-bg);
+  font-size: calc(14px + var(--font-ui-size-offset));
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.app-mockup .recent-query-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--content-card-bg);
+  opacity: 0;
+}
+
+.app-mockup .recent-query-card:hover .recent-query-actions {
+  opacity: 1;
+}
+
+.app-mockup .recent-query-action {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border-radius: 5px;
+  color: var(--text-subtle);
+  background: transparent;
+}
+
+.app-mockup .recent-query-action:hover {
+  color: var(--text-interactive);
+  background: var(--surface-fill-hover);
 }
 
 /* The same surface as the question bubble. */
@@ -4010,7 +4299,7 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
 .app-mockup .journal-tweet-media img {
   display: block;
   width: 100%;
-  max-height: 200px;
+  max-height: 340px;
   border: 1px solid var(--surface-border-subtle);
   border-radius: 10px;
   color: transparent;
@@ -4022,7 +4311,7 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
   margin-top: 8px;
   padding: 8px 10px;
   border: 1px solid var(--surface-border-default);
-  border-radius: 10px;
+  border-radius: 12px;
   transition: background-color var(--transition-fast);
 }
 
@@ -4035,11 +4324,11 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
 }
 
 .app-mockup .journal-tweet-quote-head .journal-tweet-author {
-  font-size: 12.5px;
+  font-size: calc(13px + var(--font-ui-size-offset));
 }
 
 .app-mockup .journal-tweet-quote-head .journal-tweet-handle {
-  font-size: 12px;
+  font-size: calc(12.5px + var(--font-ui-size-offset));
 }
 
 /* ------------------------------------------------------------------ */
@@ -4374,7 +4663,7 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
 @container mockup (max-width: 36rem) {
   /* The session id is the header's most useful text; drop the secondary
      controls before letting it truncate to nothing. */
-  .app-mockup .turn-pane-header-controls > .turn-pane-header-button:nth-child(-n + 4),
+  .app-mockup .turn-pane-header-controls > .turn-pane-header-button:not([data-mock-action="expand-transcript"]):not(.artifact-tray-toggle),
   .app-mockup .turn-pane-header-controls > .notification-journal {
     display: none;
   }
@@ -4628,6 +4917,26 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
   border-radius: var(--radius-md);
 }
 
+.mini-mockup .artifact-tray-thumb {
+  display: flex;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--surface-divider);
+  border-radius: 4px;
+  background: var(--popover-bg);
+  color: var(--text-muted);
+}
+
+.mini-mockup .artifact-tray-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .mini-mockup .artifact-tray-name {
   flex: 1 1 auto;
   min-width: 0;
@@ -4679,7 +4988,7 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
   bottom: 44px;
   z-index: 2;
   box-sizing: border-box;
-  width: 50%;
+  width: min(320px, 100%);
   padding: 4px;
   overflow: hidden;
   border: 0.5px solid var(--control-border);
@@ -4696,14 +5005,24 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
 
 .mini-mockup .composer-slash-option {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(76px, 132px) minmax(0, 1fr);
   gap: 8px;
   align-items: center;
   min-height: 30px;
   padding: 4px 8px;
   border-radius: var(--radius-md);
   color: var(--text-primary);
+  font-family: var(--font-ui);
   font-size: var(--fs-base);
+}
+
+.mini-mockup .composer-slash-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--control-fg-muted);
+  font-size: calc(var(--fs-base) - 1px);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .mini-mockup .composer-slash-option.is-selected {
@@ -4719,7 +5038,7 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
 .mini-mockup .composer-slash-token {
   color: var(--accent-color);
   font-family: var(--font-mono);
-  font-size: calc(var(--fs-base) - 1px);
+  font-size: calc(var(--fs-base) - 1px - var(--font-ui-size-offset));
   font-weight: 500;
   white-space: nowrap;
 }
@@ -4737,8 +5056,8 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
 
 .mini-mockup .mini-composer-text {
   color: var(--text-strong);
-  font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-family: var(--font-ui);
+  font-size: calc(var(--fs-base) + 1px);
 }
 
 .mini-mockup .mini-composer-caret {
@@ -4815,6 +5134,59 @@ html.mock-replay-boot .app-mockup [data-replay-pending],
 .mini-mockup .activity-group-label {
   color: var(--text-activity);
   font-size: 11.5px;
+}
+
+.mini-mockup .turn-jump-to-latest,
+.mini-mockup .turn-message-navigation {
+  position: absolute;
+  bottom: 14px;
+  z-index: 3;
+  opacity: 0;
+  visibility: hidden;
+}
+
+.mini-mockup .turn-jump-to-latest.is-visible,
+.mini-mockup .turn-message-navigation.is-visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.mini-mockup .turn-jump-to-latest {
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 4px 11px 4px 8px;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--popover-bg) 90%, transparent);
+  color: var(--text-body-soft);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  transform: translateX(-50%);
+}
+
+.mini-mockup .turn-message-navigation {
+  right: 11px;
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--popover-bg) 90%, transparent);
+}
+
+.mini-mockup .turn-message-navigation > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  color: var(--text-body-soft);
+}
+
+.mini-mockup .turn-message-navigation > span + span {
+  border-left: 1px solid var(--surface-border-strong);
 }
 
 /* The scrollbar thumb rides high: thousands of messages sit below the fold. */

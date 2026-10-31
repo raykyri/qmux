@@ -92,7 +92,7 @@ function Hero() {
           <p className="research-product-heading">Research in the same window.</p>
           <p className="product-thesis-description">
             Flip the sidebar to Research to ask a question, branch the answer where it gets
-            interesting, and keep the notes and links that led there.
+            interesting, and keep the notes, links, and Recent Activity that led there.
           </p>
         </div>
         {/* The third replica opens in research mode. It lists every terminal tab

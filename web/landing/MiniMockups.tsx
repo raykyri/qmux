@@ -8,14 +8,20 @@
 // stage is aria-hidden behind its caption, and no script touches them.
 import React from "react";
 import {
+  ArrowDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   Columns2Icon,
+  FileTextIcon,
   FolderGit2Icon,
   GitBranchIcon,
   GitForkIcon,
   MessageSquareTextIcon,
+  MinusIcon,
   PanelBottomCloseIcon,
   PanelBottomOpenIcon,
   PaperclipIcon,
+  Trash2Icon,
   XIcon,
 } from "./icons";
 import { ARTIFACTS } from "./mockupData";
@@ -81,6 +87,10 @@ function WorktreesMini() {
           <span>Fork session in split</span>
         </span>
         <div className="context-menu-divider" role="separator" />
+        <span className="context-menu-item">
+          <GitBranchIcon size={13} />
+          <span>Branches and worktrees…</span>
+        </span>
         <span className="context-menu-item is-selected">
           <FolderGit2Icon size={13} />
           <span>Open worktree</span>
@@ -110,14 +120,29 @@ function ArtifactsMini() {
       <div className="artifact-tray-titlebar">
         <PaperclipIcon className="lucide artifact-tray-clip" size={11} />
         <span className="artifact-tray-label">Artifacts</span>
-        <span className="artifact-tray-chrome-button">
-          <XIcon size={12} />
+        <span className="artifact-tray-chrome-button" aria-label="Clear artifacts">
+          <Trash2Icon size={10} />
+        </span>
+        <span className="artifact-tray-chrome-button" aria-label="Collapse artifacts">
+          <MinusIcon size={10} />
+        </span>
+        <span className="artifact-tray-chrome-button" aria-label="Hide artifact tray">
+          <XIcon size={10} />
         </span>
       </div>
       <div className="artifact-tray-body">
         {ARTIFACTS.map((artifact) => (
           <span className="artifact-tray-row" key={artifact.name}>
-            <span className="artifact-tray-name">{artifact.name}</span>
+            <span className="artifact-tray-thumb">
+              {artifact.name === "site/qmux.png" ? (
+                <img src="/qmux.png" alt="" />
+              ) : (
+                <FileTextIcon size={11} />
+              )}
+            </span>
+            <span className="artifact-tray-name" title={artifact.name}>
+              {artifact.name.split("/").pop()}
+            </span>
             <span className="artifact-tray-meta">{artifact.meta}</span>
           </span>
         ))}
@@ -146,12 +171,14 @@ function SlashCommandsMini() {
               <GitForkIcon size={12} strokeWidth={1.75} />
             </span>
             <span className="composer-slash-token">/fork</span>
+            <span className="composer-slash-summary">Fork this session</span>
           </span>
           <span className="composer-slash-option">
             <span className="composer-slash-icon">
               <FolderGit2Icon size={12} strokeWidth={1.75} />
             </span>
             <span className="composer-slash-token">/worktree</span>
+            <span className="composer-slash-summary">Fork into a new worktree</span>
           </span>
         </div>
       </div>
@@ -227,6 +254,18 @@ function KeepWorkingMini() {
           </div>
         </div>
       </div>
+      <span className="turn-jump-to-latest is-visible">
+        <ArrowDownIcon size={12} />
+        Jump to latest
+      </span>
+      <span className="turn-message-navigation is-visible">
+        <span aria-label="Previous message">
+          <ChevronLeftIcon size={14} />
+        </span>
+        <span aria-label="Next message">
+          <ChevronRightIcon size={14} />
+        </span>
+      </span>
       <span className="mini-scrollback-thumb" />
     </div>
   );

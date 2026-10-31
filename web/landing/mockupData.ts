@@ -82,6 +82,8 @@ export interface MockPane {
   status: "idle" | "active" | "attention" | "done";
   selected?: boolean;
   badge?: string;
+  /** Checkout folder and branch, shown when this tab is outside the group baseline. */
+  gitmeta?: { location?: string; branch: string };
 }
 
 // Real projects, with task titles of the shape qmux generates from an agent's
@@ -115,6 +117,7 @@ export const MOCK_GROUPS: MockGroup[] = [
         sessionId: "porffor-codegen-casts",
         title: "render: verify unaligned i16 loads sign-extend before widening",
         status: "done",
+        gitmeta: { location: "cast-fix", branch: "fix/unaligned-i16" },
       },
       {
         sessionId: "porffor-math-hypot",
@@ -1456,12 +1459,32 @@ export const USER_TURN = MOCK_SESSIONS[DEFAULT_SESSION_ID].userTurn;
 // The prompt library's saved prompts, the notification journal's feed, the
 // artifacts the default qmux agent opened, and the address the browser overlay
 // is previewing.
-export const SAVED_PROMPTS = [
-  "Review the diff for correctness bugs only. Skip style.",
-  "Read the existing implementation first, and say what it already handles.",
-  "Write the failing test first, then make it pass.",
-  "Summarise what changed and what is still unmerged.",
-  "Run the failing directory only, and report each failure with the command to reproduce it.",
+export const SAVED_PROMPTS: { name: string; text: string; scope: "global" | "project" }[] = [
+  {
+    name: "review-diff",
+    text: "Review the diff for correctness bugs only. Skip style.",
+    scope: "global",
+  },
+  {
+    name: "read-first",
+    text: "Read the existing implementation first, and say what it already handles.",
+    scope: "global",
+  },
+  {
+    name: "failing-test",
+    text: "Write the failing test first, then make it pass.",
+    scope: "global",
+  },
+  {
+    name: "summarise-unmerged",
+    text: "Summarise what changed and what is still unmerged.",
+    scope: "project",
+  },
+  {
+    name: "failing-directory",
+    text: "Run the failing directory only, and report each failure with the command to reproduce it.",
+    scope: "project",
+  },
 ];
 
 export interface MockNotification {
@@ -1495,17 +1518,17 @@ export interface MockArtifact {
 }
 
 export const ARTIFACTS: MockArtifact[] = [
-  { name: "web/landing/mockupData.ts", meta: "42k" },
-  { name: "web/landing/AppMockup.tsx", meta: "tsx" },
-  { name: "web/landing/mockupCss.ts", meta: "css" },
-  { name: "site/mockup.js", meta: "js" },
-  { name: "site/qmux.png", meta: "png" },
-  { name: "web/server.test.ts", meta: "test" },
-  { name: "dist-site/server.mjs", meta: "267k" },
-  { name: "landing-preview.html", meta: "html" },
-  { name: "session-replay.log", meta: "log" },
-  { name: "mockup.patch", meta: "patch" },
-  { name: "notes-landing-demo.md", meta: "md" },
+  { name: "web/landing/mockupData.ts", meta: "2 min ago" },
+  { name: "web/landing/AppMockup.tsx", meta: "8 min ago" },
+  { name: "web/landing/mockupCss.ts", meta: "14 min ago" },
+  { name: "site/mockup.js", meta: "21 min ago" },
+  { name: "site/qmux.png", meta: "1 hr ago" },
+  { name: "web/server.test.ts", meta: "2 hr ago" },
+  { name: "dist-site/server.mjs", meta: "3 hr ago" },
+  { name: "landing-preview.html", meta: "5 hr ago" },
+  { name: "session-replay.log", meta: "1 day ago" },
+  { name: "mockup.patch", meta: "2 days ago" },
+  { name: "notes-landing-demo.md", meta: "4 days ago" },
 ];
 
 export const BROWSER_URL = "localhost:8787/";
@@ -1589,7 +1612,7 @@ export interface MockResearchDoc {
   /** The answer meta line: word count, then the run's wall time. */
   words?: string;
   duration?: string;
-  /** Header count: "4 in thread · 1 branch". */
+  /** Header chip. Rail cards are branches, so a root plus branch cards is "N follow-ups". */
   thread?: string;
   followups?: MockResearchFollowup[];
 }
@@ -1636,7 +1659,7 @@ export const MOCK_RESEARCH_DOCS: Record<string, MockResearchDoc> = {
     ],
     words: "1,184 words",
     duration: "3m 12s",
-    thread: "4 in thread · 1 branch",
+    thread: "2 follow-ups",
     followups: [
       {
         prompt: "What happens to a selection that spans a row the rewrap moved?",
@@ -1795,7 +1818,7 @@ export const DEFAULT_RESEARCH_DOC_ID = "scrollback-reflow";
 /** The Journal tab's own view id, alongside the document ids above. */
 export const JOURNAL_VIEW_ID = "journal";
 
-export const RESEARCH_COMPOSER_PLACEHOLDER = "Ask a follow-up…";
+export const RESEARCH_COMPOSER_PLACEHOLDER = "Type your query…";
 export const JOURNAL_COMPOSER_PLACEHOLDER = "Add a note or paste a URL…";
 
 export interface MockTweetRun {
