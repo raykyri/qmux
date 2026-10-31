@@ -1,3 +1,17 @@
+diff --git a/Package.swift b/Package.swift
+--- a/Package.swift
++++ b/Package.swift
+@@ -63,8 +63,8 @@
+         ),
+         .binaryTarget(
+             name: "libghostty",
+-            url: "https://github.com/Lakr233/libghostty-spm/releases/download/upstream.0538f7535be0-2/GhosttyKit.xcframework.zip",
+-            checksum: "bb882b33bb859eb0741d32fc8e428f4b4a650da8a756c8da2b0287aa8c260cea"
++            url: "https://github.com/raykyri/qmux/releases/download/ghostty-0538f7535be0-qmux.1/GhosttyKit.xcframework.zip",
++            checksum: "0f7b9d940ae5e1197d61290606ac0dc619376e44988a6a2a83a8a6346ceeeab1"
+         ),
+         .testTarget(
+             name: "GhosttyKitTest",
 diff --git a/Sources/GhosttyTerminal/Configuration/GhosttyRuntimeResources.swift b/Sources/GhosttyTerminal/Configuration/GhosttyRuntimeResources.swift
 --- a/Sources/GhosttyTerminal/Configuration/GhosttyRuntimeResources.swift
 +++ b/Sources/GhosttyTerminal/Configuration/GhosttyRuntimeResources.swift

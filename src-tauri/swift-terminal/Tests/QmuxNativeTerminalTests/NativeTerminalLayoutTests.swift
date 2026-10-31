@@ -255,6 +255,40 @@ final class NativeTerminalLayoutTests: XCTestCase {
         XCTAssertTrue(NativeTerminalCallbackRecorder.shared.resizes.isEmpty)
     }
 
+    func testSplitResizeTrimsBlankRowsBelowSavedCursor() async throws {
+        for saveCursor in ["\u{1b}7", "\u{1b}[?1049h\u{1b}[?1049l"] {
+            try await Self.withPane { paneID, frame in
+                let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
+                // A full-screen program can leave a saved cursor at the bottom
+                // after returning to the shell. Subsequent output may be short.
+                session.receive("\u{1b}[999;1H" + saveCursor + "\u{1b}[H"
+                    + "first line\r\nsecond line\r\nprompt> ")
+                await Task.detached { session.waitForPendingOutput() }.value
+
+                let smaller = CGRect(
+                    x: frame.minX, y: frame.minY,
+                    width: frame.width, height: frame.height / 2
+                )
+                XCTAssertTrue(Self.setLayout(paneID: paneID, frame: smaller, visible: true))
+                await Self.waitForPtyResizeFlush()
+                // zsh redraws its prompt at the cursor after SIGWINCH. If the
+                // resize pushed that cursor into history, this creates a gap.
+                session.receive("\r\u{1b}[Jprompt> ")
+                await Task.detached { session.waitForPendingOutput() }.value
+                let text = try XCTUnwrap(session.readViewportText())
+                XCTAssertEqual(text.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "first line\nsecond line\nprompt>")
+
+                // A saved position in a removed blank row must still restore
+                // safely, clamped to the bottom of the smaller screen.
+                session.receive("\u{1b}8saved")
+                await Task.detached { session.waitForPendingOutput() }.value
+                let restored = try XCTUnwrap(session.readViewportText())
+                XCTAssertEqual(restored.components(separatedBy: "\n").last, "saved")
+            }
+        }
+    }
+
     func testPrimaryScreenPagerRepaintAfterResize() async throws {
         try await Self.withPane { paneID, frame in
             let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))

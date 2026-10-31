@@ -1,0 +1,114 @@
+Ghostty: allow trimming blank rows occupied only by a saved cursor
+
+Applies after the libghostty-spm patch stack to Ghostty
+0538f7535be0cbca6bbe54e6fde654d5c628f1f2.
+
+A saved cursor below the live cursor must not prevent a height reduction
+from trimming unused rows. Otherwise the live cursor can move into
+scrollback, be clamped to row zero, and leave a duplicate prompt separated
+by blank rows when the shell redraws after SIGWINCH.
+
+Apply this patch when rebuilding the native Ghostty XCFramework. qmux
+selects the resulting binary through the Package.swift override in
+libghostty-spm-qmux.patch.
+
+diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -1234,6 +1234,10 @@
+     /// resize/reflow behavior depends on the cursor position.
+     cursor: ?Cursor = null,
+
++    /// A tracked saved cursor follows reflow, but must not keep trailing blank
++    /// rows alive. If its row is trimmed, clamp it to the last retained row.
++    saved_cursor: ?*Pin = null,
++
+     /// Whether the resize may pull rows out of scrollback back into the
+     /// active area. If false, growing rows always appends blank rows at the
+     /// bottom and a column reflow keeps the top of the active area on the
+@@ -2873,7 +2877,7 @@
+                 // behavior because it seemed fine in an ocean of differing behavior
+                 // between terminal apps. I'm completely open to changing it as long
+                 // as resize behavior isn't regressed in a user-hostile way.
+-                const trimmed = self.trimTrailingBlankRows(self.rows - rows);
++                const trimmed = self.trimTrailingBlankRows(self.rows - rows, opts.saved_cursor);
+
+                 // Account for our trimmed rows in the total row cache
+                 self.total_rows -= trimmed;
+@@ -3202,6 +3206,7 @@
+ fn trimTrailingBlankRows(
+     self: *PageList,
+     max: size.CellCountInt,
++    saved_cursor: ?*Pin,
+ ) size.CellCountInt {
+     var trimmed: size.CellCountInt = 0;
+     var invalidated_node: ?*List.Node = null;
+@@ -3218,9 +3223,19 @@
+         // we'd invalidate this pin, as well.
+         const pin_keys = self.tracked_pins.keys();
+         for (pin_keys) |p| {
++            if (p == saved_cursor) continue;
+             if (p.node != row_pin.node or
+                 p.y != row_pin.y) continue;
+             return trimmed;
++        }
++
++        // The saved cursor is a restorable position, not live content. Move
++        // it before retiring this row, including when that frees its page.
++        // The active cursor and all other tracked pins still prevent trimming.
++        if (saved_cursor) |p| {
++            if (p.node == row_pin.node and p.y == row_pin.y) {
++                p.* = p.up(1).?;
++            }
+         }
+
+         // No text, we can trim this row. Because it has
+diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
+--- a/src/terminal/Screen.zig
++++ b/src/terminal/Screen.zig
+@@ -2120,6 +2120,7 @@
+             .y = self.cursor.y,
+             .pin = self.cursor.page_pin,
+         },
++        .saved_cursor = saved_cursor_pin,
+         .pull_scrollback = opts.pull_scrollback,
+     });
+
+diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
+--- a/src/terminal/Terminal.zig
++++ b/src/terminal/Terminal.zig
+@@ -16073,6 +16073,34 @@
+     try t.resize(alloc, .{ .cols = 60, .rows = 30 });
+ }
+
++test "Terminal: resize trims blank rows below saved cursor" {
++    const alloc = testing.allocator;
++    // Include a larger screen so trimming crosses page boundaries.
++    for ([_]u16{ 44, 150 }) |rows| {
++        for ([_]u16{ 1, 16, 34 }) |cursor_row| {
++            for ([_]u16{ 20, 30, rows - 1 }) |saved_row| {
++                var t = try init(testing.io, alloc, .{ .cols = 125, .rows = rows });
++                defer t.deinit(alloc);
++                t.setCursorPos(saved_row + 1, 5);
++                t.saveCursor();
++                t.setCursorPos(cursor_row + 1, 1);
++                try t.printString("prompt> ");
++
++                try t.resize(alloc, .{ .cols = 125, .rows = 21 });
++                try testing.expectEqual(@min(cursor_row, 20), t.screens.active.cursor.y);
++                try testing.expectEqual(8, t.screens.active.cursor.x);
++
++                // Restoring a saved position in a removed blank row must remain
++                // valid, clamped to the last retained row.
++                t.restoreCursor();
++                const scrolled = cursor_row - @min(cursor_row, 20);
++                try testing.expectEqual(@min(saved_row -| scrolled, 20), t.screens.active.cursor.y);
++                try testing.expectEqual(4, t.screens.active.cursor.x);
++            }
++        }
++    }
++}
++
+ test "Terminal: resize with reflow and saved cursor" {
+     const alloc = testing.allocator;
+     const io_impl = testing.io;
