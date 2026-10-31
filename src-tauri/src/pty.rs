@@ -7126,7 +7126,10 @@ exit "$__qmux_test_status"
                 .output()
                 .unwrap();
             assert_eq!(output.status.code(), Some(7), "{shell}: {output:?}");
-            assert_eq!(String::from_utf8_lossy(&output.stdout), format!("{command}\n"));
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                format!("{command}\n")
+            );
             assert!(output.stderr.is_empty(), "{shell}: {output:?}");
         }
     }

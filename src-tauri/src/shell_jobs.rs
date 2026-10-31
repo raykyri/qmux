@@ -33,10 +33,7 @@ impl CodexStartupFailure {
             self.routing_failure = true;
             self.tail.clear();
         } else {
-            let discard = self
-                .tail
-                .len()
-                .saturating_sub(Self::DIAGNOSTIC.len() - 1);
+            let discard = self.tail.len().saturating_sub(Self::DIAGNOSTIC.len() - 1);
             self.tail.drain(..discard);
         }
     }
