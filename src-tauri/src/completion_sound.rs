@@ -199,13 +199,25 @@ impl CompletionSoundState {
 
         if should_track {
             self.working_agent_ids.insert(agent_id.to_string());
-        } else {
+        } else if status != "awaitingPermission" {
+            // A permission prompt sits inside a running tool call, so it does
+            // not end the observed turn: approval can reach Stop without a
+            // Running hook in between (e.g. a late-delivered permission_prompt
+            // Notification overwriting the PostToolUse Running). AwaitingInput
+            // still disarms: it also means "interrupted", which never sounds.
             self.working_agent_ids.remove(agent_id);
         }
 
+        // A failed stop settles Done (queue held) but is not a completion.
+        let failed_stop = event
+            .payload
+            .get("hookEvent")
+            .and_then(|value| value.as_str())
+            == Some("StopFailure");
         if event.event_type != "agent.done"
             || status != "done"
             || !was_working
+            || failed_stop
             || self.research_agent_ids.contains(agent_id)
         {
             return None;
@@ -389,6 +401,40 @@ mod tests {
                 start + Duration::from_secs(1),
             ),
             Some("default".to_string())
+        );
+    }
+
+    /// a permission prompt is mid-turn; a failed stop is not a completion.
+    #[test]
+    fn permission_prompt_keeps_the_turn_armed_and_stop_failure_is_silent() {
+        let start = Instant::now();
+        let mut state = CompletionSoundState::default();
+        state.observe_event_at(&agent_event("agent.running", "a", "running"), start);
+        state.observe_event_at(
+            &agent_event("agent.awaiting_permission", "a", "awaitingPermission"),
+            start + Duration::from_millis(100),
+        );
+        assert_eq!(
+            state.observe_event_at(
+                &agent_event("agent.done", "a", "done"),
+                start + Duration::from_secs(1),
+            ),
+            Some("default".to_string())
+        );
+
+        state.observe_event_at(
+            &agent_event("agent.running", "b", "running"),
+            start + Duration::from_secs(2),
+        );
+        let failed = QmuxEvent::new(
+            "agent.done",
+            None,
+            Some("b".to_string()),
+            json!({ "hookEvent": "StopFailure", "agent": { "status": "done" } }),
+        );
+        assert_eq!(
+            state.observe_event_at(&failed, start + Duration::from_secs(3)),
+            None
         );
     }
 
