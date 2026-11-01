@@ -713,7 +713,13 @@ fn transcript_lifecycle_agent_event(
             "agent.running",
         );
     }
-    if !matches!(agent.status, AgentStatus::Starting | AgentStatus::Running) {
+    // Denying or dismissing a permission prompt can end the turn without a
+    // resolving hook. Its live transcript marker must settle that working
+    // status too, using the same queue and outstanding-send guards below.
+    if !matches!(
+        agent.status,
+        AgentStatus::Starting | AgentStatus::Running | AgentStatus::AwaitingPermission
+    ) {
         return Ok(None);
     }
     // If a normal Stop/idle hook already drained a queued turn, a late transcript
@@ -2658,6 +2664,82 @@ mod tests {
                 .transcript_path
                 .as_deref(),
             Some("/tmp/rotated.jsonl")
+        );
+    }
+
+    #[test]
+    fn transcript_lifecycle_settles_an_agent_stuck_awaiting_permission() {
+        for (event, expected) in [
+            (
+                TranscriptLifecycleEvent::Interrupted,
+                AgentStatus::AwaitingInput,
+            ),
+            (TranscriptLifecycleEvent::TurnCompleted, AgentStatus::Done),
+        ] {
+            let state = test_state();
+            state
+                .insert_agent(sample_agent(AgentStatus::AwaitingPermission))
+                .unwrap();
+            let emitted =
+                transcript_lifecycle_agent_event(&state, "agent-1", "/tmp/session.jsonl", event)
+                    .unwrap()
+                    .expect("permission wait should settle");
+            assert_eq!(state.agent("agent-1").unwrap().unwrap().status, expected);
+            assert_eq!(
+                emitted.payload["agent"]["status"],
+                serde_json::to_value(expected).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn permission_interruption_keeps_queued_work_held() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::AwaitingPermission))
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "follow-up".to_string())
+            .unwrap();
+        let emitted = transcript_lifecycle_agent_event(
+            &state,
+            "agent-1",
+            "/tmp/session.jsonl",
+            TranscriptLifecycleEvent::Interrupted,
+        )
+        .unwrap()
+        .unwrap();
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(emitted.event_type, "agent.interrupted");
+        assert_eq!(agent.status, AgentStatus::AwaitingInput);
+        assert!(agent.paused);
+        assert_eq!(state.agent_queued_turns("agent-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn permission_completion_does_not_resettle_an_outstanding_queued_send() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::AwaitingPermission))
+            .unwrap();
+        state
+            .record_agent_send(
+                "agent-1",
+                "already drained".to_string(),
+                AgentSendSource::QueuedTurn,
+            )
+            .unwrap();
+        let emitted = transcript_lifecycle_agent_event(
+            &state,
+            "agent-1",
+            "/tmp/session.jsonl",
+            TranscriptLifecycleEvent::TurnCompleted,
+        )
+        .unwrap();
+        assert!(emitted.is_none());
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::AwaitingPermission
         );
     }
 
