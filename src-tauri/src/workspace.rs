@@ -273,6 +273,63 @@ impl AgentStatus {
     }
 }
 
+/// States a caller can block on with `agent.wait` (control API / `qmux agent
+/// wait`) or `wait_for_children` (MCP). One predicate for both, so "done"
+/// cannot mean one thing on the CLI and another to an orchestrating agent.
+/// Queue dependency waits use their own predicate: failure must hold dependents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentWaitUntil {
+    Settled,
+    Input,
+    Permission,
+    Done,
+    Failed,
+    Exited,
+}
+
+impl AgentWaitUntil {
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "settled" => Self::Settled,
+            "input" => Self::Input,
+            "permission" => Self::Permission,
+            "done" => Self::Done,
+            "failed" => Self::Failed,
+            "exited" => Self::Exited,
+            _ => return None,
+        })
+    }
+
+    /// Whether `agent` (None = removed) satisfies the wait. "done" means the
+    /// agent's work is over: finished (Done/Idle) *or* Failed. A failed agent
+    /// never reaches Done on its own, so treating it as unfinished turned a
+    /// CLI `--until done` into a guaranteed timeout (up to 10 min); callers
+    /// read `agent.status` to tell success from failure, and `--until failed`
+    /// still selects failure alone.
+    pub fn satisfied_by(self, agent: Option<&AgentInfo>) -> bool {
+        let Some(agent) = agent else {
+            return matches!(self, Self::Settled | Self::Done | Self::Exited);
+        };
+        let exited = agent.pane_id.is_none();
+        match self {
+            Self::Exited => exited,
+            Self::Settled => {
+                exited || agent.status.is_at_rest() || agent.status == AgentStatus::Failed
+            }
+            Self::Done => {
+                exited
+                    || matches!(
+                        agent.status,
+                        AgentStatus::Done | AgentStatus::Idle | AgentStatus::Failed
+                    )
+            }
+            Self::Input => agent.status == AgentStatus::AwaitingInput,
+            Self::Permission => agent.status == AgentStatus::AwaitingPermission,
+            Self::Failed => agent.status == AgentStatus::Failed,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupRequest {
@@ -3968,6 +4025,33 @@ mod tests {
 
         assert!(scratch.is_file());
         assert!(managed_dir.join(".qmux/group.json").is_file());
+    }
+
+    /// control `agent.wait` and MCP `wait_for_children` share one
+    /// predicate; "done" completes for a Failed agent that still has a pane
+    /// (remote session ended, spawn failure) instead of timing out.
+    #[test]
+    fn wait_predicate_is_shared_and_done_includes_failed() {
+        let failed = sample_agent("a", Some("pane-1"), AgentStatus::Failed);
+        let running = sample_agent("a", Some("pane-1"), AgentStatus::Running);
+        let input = sample_agent("a", Some("pane-1"), AgentStatus::AwaitingInput);
+        let exited = sample_agent("a", None, AgentStatus::Running);
+        let done = AgentWaitUntil::parse("done").unwrap();
+        assert!(done.satisfied_by(Some(&failed)));
+        assert!(done.satisfied_by(Some(&exited)));
+        assert!(done.satisfied_by(None));
+        assert!(!done.satisfied_by(Some(&running)));
+        assert!(!done.satisfied_by(Some(&input)));
+        let settled = AgentWaitUntil::parse("settled").unwrap();
+        assert!(settled.satisfied_by(Some(&input)));
+        assert!(!settled.satisfied_by(Some(&running)));
+        assert!(
+            AgentWaitUntil::parse("failed")
+                .unwrap()
+                .satisfied_by(Some(&failed))
+        );
+        assert!(!AgentWaitUntil::parse("failed").unwrap().satisfied_by(None));
+        assert!(AgentWaitUntil::parse("bogus").is_none());
     }
 
     fn sample_agent(id: &str, pane_id: Option<&str>, status: AgentStatus) -> AgentInfo {

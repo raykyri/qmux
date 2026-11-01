@@ -127,7 +127,7 @@ qmux agent wait <agent-id> --until settled --timeout 2m
 qmux agent read <agent-id> --source transcript --turns 6
 ```
 
-Wait states are `settled`, `input`, `permission`, `done`, `failed`, and `exited`. Inspect `agent get` and `agent read` after a timeout or a request for input before choosing the next action.
+Wait states are `settled`, `input`, `permission`, `done`, `failed`, and `exited`. `--until done` completes when an agent finishes or fails; inspect the returned `agent.status` to distinguish success from failure. Inspect `agent get` and `agent read` after a timeout or a request for input before choosing the next action.
 
 Fork an existing live agent, optionally with a launch prompt and isolated worktree:
 

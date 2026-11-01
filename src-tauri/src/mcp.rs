@@ -8,7 +8,7 @@ use crate::adapters::{SpawnAgentRequest, agent_fork, agent_spawn};
 use crate::events::QmuxEvent;
 use crate::state::AppState;
 use crate::turn_queue::{SubmitAgentTurnMode, SubmitAgentTurnRequest, submit_agent_turn};
-use crate::workspace::{AgentInfo, AgentStatus};
+use crate::workspace::AgentInfo;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -247,9 +247,14 @@ fn wait_for_children(
     arguments: Value,
 ) -> Result<Value, String> {
     let args: WaitArgs = parse(arguments, "wait_for_children")?;
-    if !matches!(args.until.as_str(), "settled" | "done" | "exited") {
-        return Err("until must be settled, done, or exited".to_string());
-    }
+    let until = match crate::workspace::AgentWaitUntil::parse(&args.until) {
+        Some(
+            until @ (crate::workspace::AgentWaitUntil::Settled
+            | crate::workspace::AgentWaitUntil::Done
+            | crate::workspace::AgentWaitUntil::Exited),
+        ) => until,
+        _ => return Err("until must be settled, done, or exited".to_string()),
+    };
     let ids = selected_direct_child_ids(state, caller, args.agent_ids)?;
     let _wait_slot = WaitSlot::acquire()?;
     let deadline = Instant::now() + Duration::from_secs(args.timeout_seconds.min(MAX_WAIT_SECONDS));
@@ -258,21 +263,9 @@ fn wait_for_children(
             .iter()
             .map(|id| state.agent(id).map(|agent| (id.clone(), agent)))
             .collect::<Result<Vec<_>, _>>()?;
-        let complete = current.iter().all(|(_, agent)| match args.until.as_str() {
-            "exited" => agent.as_ref().is_none_or(|agent| agent.pane_id.is_none()),
-            "done" => agent.as_ref().is_none_or(|agent| {
-                agent.pane_id.is_none()
-                    || matches!(
-                        agent.status,
-                        AgentStatus::Done | AgentStatus::Idle | AgentStatus::Failed
-                    )
-            }),
-            _ => agent.as_ref().is_none_or(|agent| {
-                agent.pane_id.is_none()
-                    || agent.status.is_at_rest()
-                    || agent.status == AgentStatus::Failed
-            }),
-        });
+        let complete = current
+            .iter()
+            .all(|(_, agent)| until.satisfied_by(agent.as_ref()));
         if complete || Instant::now() >= deadline {
             let agents = current
                 .into_iter()
@@ -732,6 +725,7 @@ impl Lineage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::AgentStatus;
 
     fn agent(id: &str, parent: Option<&str>) -> AgentInfo {
         AgentInfo {

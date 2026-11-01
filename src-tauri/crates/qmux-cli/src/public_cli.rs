@@ -39,7 +39,7 @@ fn group_help(command: &str) -> Option<&'static str> {
             "usage: qmux pane <command>\n\n  list\n  current\n  get <pane-id>\n  read <pane-id> [--source terminal|viewport] [--lines <count>]\n  create [--current-workspace] [--cwd <path>] [--no-focus]\n  send <pane-id> <text> [--submit]\n  run <pane-id> <command>\n  wait-output <pane-id> (--match <text>|--regex <pattern>) [--timeout <duration>]\n  rename <pane-id> <name>\n  focus <pane-id>\n  close <pane-id>",
         ),
         "agent" => Some(
-            "usage: qmux agent <command>\n\n  list\n  get <agent-id>\n  read <agent-id> [--source transcript|terminal] [--turns <count>] [--lines <count>]\n  start [name] [--adapter <id>] [--prompt <text>] [--worktree] [--model <id>] [--effort <level>] [--cwd <path>] [--no-focus]\n  fork <agent-id> [--prompt <text>] [--worktree] [--no-focus]\n  prompt <agent-id> <text>\n  wait <agent-id> [--until <state>] [--timeout <duration>]\n  focus <agent-id>\n  release <agent-id>",
+            "usage: qmux agent <command>\n\n  list\n  get <agent-id>\n  read <agent-id> [--source transcript|terminal] [--turns <count>] [--lines <count>]\n  start [name] [--adapter <id>] [--prompt <text>] [--worktree] [--model <id>] [--effort <level>] [--cwd <path>] [--no-focus]\n  fork <agent-id> [--prompt <text>] [--worktree] [--no-focus]\n  prompt <agent-id> <text>\n  wait <agent-id> [--until <state>] [--timeout <duration>] (done includes failure)\n  focus <agent-id>\n  release <agent-id>",
         ),
         "artifact" => Some("usage: qmux artifact <command>\n\n  list\n  open <artifact-id>"),
         "split" => Some(

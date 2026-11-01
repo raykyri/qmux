@@ -741,39 +741,18 @@ fn agent_prompt(state: &AppState, context: &ControlContext, arguments: Value) ->
 fn agent_wait(state: &AppState, context: &ControlContext, arguments: Value) -> ControlResult {
     let args: AgentWaitArgs = parse(arguments, "agent.wait")?;
     ensure_agent_read(state, context, &args.id)?;
-    if !matches!(
-        args.until.as_str(),
-        "settled" | "input" | "permission" | "done" | "failed" | "exited"
-    ) {
+    let Some(until) = crate::workspace::AgentWaitUntil::parse(&args.until) else {
         return Err(ControlFailure::new(
             "invalid_argument",
             "agent wait state must be settled, input, permission, done, failed, or exited",
         ));
-    }
+    };
     let timeout_ms = args.timeout_ms.min(600_000);
     let _wait_slot = PublicWaitSlot::acquire()?;
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         let agent = state.agent(&args.id).map_err(internal)?;
-        let complete = match (args.until.as_str(), agent.as_ref()) {
-            ("exited", None) => true,
-            ("settled" | "done", None) => true,
-            ("exited", Some(agent)) => agent.pane_id.is_none(),
-            ("settled" | "done", Some(agent)) if agent.pane_id.is_none() => true,
-            ("settled", Some(agent)) => {
-                agent.status.is_at_rest() || agent.status == crate::workspace::AgentStatus::Failed
-            }
-            ("input", Some(agent)) => agent.status == crate::workspace::AgentStatus::AwaitingInput,
-            ("permission", Some(agent)) => {
-                agent.status == crate::workspace::AgentStatus::AwaitingPermission
-            }
-            ("done", Some(agent)) => matches!(
-                agent.status,
-                crate::workspace::AgentStatus::Done | crate::workspace::AgentStatus::Idle
-            ),
-            ("failed", Some(agent)) => agent.status == crate::workspace::AgentStatus::Failed,
-            _ => false,
-        };
+        let complete = until.satisfied_by(agent.as_ref());
         if complete || Instant::now() >= deadline {
             return Ok(json!({
                 "agentId": args.id,
