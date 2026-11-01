@@ -597,6 +597,13 @@ impl CursorAdapter {
                     .map(|current| state.agent_has_active_subagents(&current.id))
                     .transpose()?
                     .unwrap_or(false);
+                // Same as claude/grok/opencode/codex: the event below says
+                // "agent.running", so the stored status must agree with it
+                // (e.g. after a transcript `turn_ended` or a stale
+                // AwaitingPermission).
+                if waiting_on_subagents && let Some(current) = agent.as_ref() {
+                    state.set_agent_status(&current.id, AgentStatus::Running)?;
+                }
                 let drained = if waiting_on_subagents {
                     false
                 } else if let Some(current) = agent.as_ref() {
@@ -613,6 +620,11 @@ impl CursorAdapter {
             "sessionEnd" => {
                 if let Some(current) = agent.as_ref() {
                     state.clear_agent_subagents(&current.id);
+                    // Same as claude/grok: a session that ended mid-turn must
+                    // not leave a working status with the queue armed.
+                    if matches!(current.status, AgentStatus::Starting | AgentStatus::Running) {
+                        let _ = crate::turn_queue::advance_after_failure(state, &current.id);
+                    }
                 }
                 "agent.session_end"
             }
@@ -1756,5 +1768,40 @@ mod tests {
             let agent = state.agent("agent-1").unwrap().expect("agent exists");
             assert!(matches!(agent.status, AgentStatus::Done), "{event}");
         }
+    }
+
+    /// the stored status agrees with the "agent.running" event.
+    #[test]
+    fn stop_waiting_on_subagents_reasserts_running() {
+        let state = test_state();
+        state.insert_agent(sample_agent()).unwrap();
+        state
+            .agent_subagent_started("agent-1", Some("child"))
+            .unwrap();
+        // e.g. a transcript `turn_ended` already settled the parent.
+        state
+            .set_agent_status("agent-1", AgentStatus::Done)
+            .unwrap();
+        let emitted = ingest(&state, "stop");
+        assert_eq!(emitted.event_type, "agent.running");
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        );
+    }
+
+    /// a session ending mid-turn holds the queue, as for claude/grok.
+    #[test]
+    fn session_end_mid_turn_settles_and_holds_queued_turns() {
+        let state = test_state();
+        state.insert_agent(sample_agent()).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "follow-up".to_string())
+            .unwrap();
+        ingest(&state, "sessionEnd");
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(agent.status, AgentStatus::Done);
+        assert!(agent.paused);
+        assert_eq!(state.agent_queued_turns("agent-1").unwrap().len(), 1);
     }
 }

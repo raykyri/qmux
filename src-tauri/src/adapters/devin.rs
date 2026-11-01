@@ -655,7 +655,16 @@ impl DevinAdapter {
                 }
                 "agent.compacted"
             }
-            "SessionEnd" => "agent.session_end",
+            "SessionEnd" => {
+                // Same as claude/grok: a session that ended mid-turn must not
+                // leave a working status with the queue armed.
+                if let Some(current) = agent.as_ref()
+                    && matches!(current.status, AgentStatus::Starting | AgentStatus::Running)
+                {
+                    let _ = crate::turn_queue::advance_after_failure(state, &current.id);
+                }
+                "agent.session_end"
+            }
             "Stop" => {
                 let drained = if let Some(agent) = agent.as_mut() {
                     finish_agent_after_stop(state, agent)?
@@ -1692,6 +1701,27 @@ mod tests {
     fn invalid_pane_id_is_rejected() {
         let err = hook_config_support_file_from(&test_config(), "../pane", json!({})).unwrap_err();
         assert!(err.contains("invalid pane id"));
+    }
+
+    #[test]
+    fn session_end_mid_turn_settles_and_holds_queued_turns() {
+        for status in [AgentStatus::Starting, AgentStatus::Running] {
+            let state = test_state();
+            let mut agent = sample_agent();
+            agent.status = status;
+            state.insert_agent(agent).unwrap();
+            state
+                .enqueue_agent_turn("agent-1", "follow-up".to_string())
+                .unwrap();
+
+            let event = ingest(&state, hook_for_agent("SessionEnd", "agent-1", json!({})));
+            let agent = state.agent("agent-1").unwrap().unwrap();
+            assert_eq!(event.event_type, "agent.session_end");
+            assert_eq!(event.payload["agent"]["status"], "done");
+            assert_eq!(agent.status, AgentStatus::Done);
+            assert!(agent.paused);
+            assert_eq!(state.agent_queued_turns("agent-1").unwrap().len(), 1);
+        }
     }
 
     #[test]

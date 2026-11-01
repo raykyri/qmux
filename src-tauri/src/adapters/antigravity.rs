@@ -197,9 +197,14 @@ impl AntigravityAdapter {
 
         let info = spawn_pty(state, spec)?;
 
+        // A recovered process is launched without an inline prompt, and agy
+        // registers no session-start hook, so nothing would ever move it out of
+        // Starting (a queue status): composer sends to the resumed tab would
+        // queue until the user typed into the TUI. Match every other adapter's
+        // respawn: ready (Idle); the first PreInvocation promotes to Running.
         let restored = state.mutate_agent(&agent.id, |agent| {
             agent.pane_id = Some(pane.id.clone());
-            agent.status = AgentStatus::Starting;
+            agent.status = AgentStatus::Idle;
         })?;
 
         let restored = restored.unwrap_or_else(|| agent.clone());
@@ -433,7 +438,15 @@ impl AntigravityAdapter {
                 .get("fullyIdle")
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
+        // Same rule as every other adapter's prompt-submit hook: a `!` shell
+        // escape may never be followed by a Stop, so it must not start the
+        // running lifecycle. (Only checkable when the hook carries the prompt.)
+        let shell_escape = notification.event == "PreInvocation"
+            && super::string_field(&notification.payload, "prompt")
+                .as_deref()
+                .is_some_and(crate::turn_queue::is_shell_escape_turn);
         let next_status = match notification.event.as_str() {
+            "PreInvocation" if shell_escape => None,
             "PreInvocation" | "PreToolUse" | "PostToolUse" => Some(AgentStatus::Running),
             "Stop" => None,
             _ => None,
@@ -1598,5 +1611,31 @@ mod tests {
         assert_eq!(evt.event_type, "agent.done");
         let agent = state.agent("agent-1").unwrap().unwrap();
         assert_eq!(agent.status, AgentStatus::Done);
+    }
+
+    /// a `!` shell escape must not enter the running lifecycle.
+    #[test]
+    fn shell_escape_pre_invocation_leaves_a_ready_agent_ready() {
+        let state = AppState::new(test_config());
+        let adapter = AntigravityAdapter::new(&test_config());
+        let mut agent = sample_agent();
+        agent.status = AgentStatus::Done;
+        state.insert_agent(agent).unwrap();
+        adapter
+            .ingest_antigravity_notification(
+                &state,
+                AdapterNotification {
+                    adapter_id: Some("antigravity".to_string()),
+                    agent_id: Some("agent-1".to_string()),
+                    pane_id: None,
+                    event: "PreInvocation".to_string(),
+                    payload: json!({ "prompt": "!git status" }),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Done
+        );
     }
 }
