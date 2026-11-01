@@ -40,6 +40,24 @@ impl DeferredPaneReport {
             }
         }
     }
+
+    /// A later report supersedes this one only when it carries the same fact
+    /// for the same pane: a title never makes a cwd obsolete, or vice versa.
+    fn superseded_by(&self, later: &DeferredPaneReport) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(later)
+            && self.pane_id() == later.pane_id()
+    }
+}
+
+/// Collapses a drained burst to the last report of each (pane, kind), keeping
+/// the survivors in arrival order.
+fn coalesce_deferred_reports(batch: Vec<DeferredPaneReport>) -> Vec<DeferredPaneReport> {
+    let mut kept: Vec<DeferredPaneReport> = Vec::with_capacity(batch.len());
+    for report in batch {
+        kept.retain(|earlier| !earlier.superseded_by(&report));
+        kept.push(report);
+    }
+    kept
 }
 
 static DEFERRED_REPORT_TX: std::sync::LazyLock<std::sync::mpsc::Sender<DeferredPaneReport>> =
@@ -47,20 +65,16 @@ static DEFERRED_REPORT_TX: std::sync::LazyLock<std::sync::mpsc::Sender<DeferredP
         let (tx, rx) = std::sync::mpsc::channel::<DeferredPaneReport>();
         std::thread::spawn(move || {
             while let Ok(first) = rx.recv() {
-                // Drain the burst before applying: a later report for the same
-                // pane supersedes an earlier one (last title/cwd wins), so a
-                // title-spamming program can't build an unbounded backlog.
+                // Drain the burst before applying: a later report of the same
+                // kind for the same pane supersedes an earlier one (last title,
+                // last cwd). Kinds never supersede each other: an OSC 7
+                // followed by an OSC 2 in one burst must keep the cwd.
                 let mut batch = vec![first];
                 while let Ok(report) = rx.try_recv() {
                     batch.push(report);
                 }
-                for (index, report) in batch.iter().enumerate() {
-                    let superseded = batch[index + 1..]
-                        .iter()
-                        .any(|later| later.pane_id() == report.pane_id());
-                    if !superseded {
-                        apply_deferred_pane_report(report);
-                    }
+                for report in coalesce_deferred_reports(batch) {
+                    apply_deferred_pane_report(&report);
                 }
             }
         });
@@ -1385,11 +1399,21 @@ pub use imp::{
     set_web_pointer_claimed, shutdown, submit, update_settings,
 };
 
+/// Runs `operation` against a clone of the registered state. The slot lock is
+/// held only for the clone (AppState is a single Arc), never across the
+/// operation: the deferred title/cwd worker takes the model lock and runs a
+/// `git rev-parse` probe inside its operation, and holding the slot across
+/// that parks every main-thread callback (each keystroke's did_write,
+/// did_resize, did_commit_geometry) behind it. A nested call can no longer
+/// self-deadlock either.
 fn with_app_state(operation: impl FnOnce(&AppState)) {
     let Some(slot) = APP_STATE.get() else { return };
-    let Ok(state) = slot.lock() else { return };
-    let Some(state) = state.as_ref() else { return };
-    operation(state);
+    let state = match slot.lock() {
+        Ok(state) => state.clone(),
+        Err(_) => return,
+    };
+    let Some(state) = state else { return };
+    operation(&state);
 }
 
 fn callback_string(pointer: *const std::ffi::c_char) -> Option<String> {
@@ -2008,6 +2032,58 @@ pub fn native_terminal_read_viewport_text(pane_id: String) -> Result<String, Str
 #[tauri::command]
 pub fn native_terminal_annotation_selection_snapshot(pane_id: String) -> Result<String, String> {
     imp::annotation_selection_snapshot(&pane_id)
+}
+
+#[cfg(test)]
+mod deferred_report_tests {
+    use super::{DeferredPaneReport, coalesce_deferred_reports};
+
+    fn title(pane: &str, title: &str) -> DeferredPaneReport {
+        DeferredPaneReport::Title {
+            pane_id: pane.into(),
+            title: title.into(),
+        }
+    }
+
+    fn cwd(pane: &str, cwd: &str) -> DeferredPaneReport {
+        DeferredPaneReport::Cwd {
+            pane_id: pane.into(),
+            cwd: cwd.into(),
+        }
+    }
+
+    fn describe(reports: &[DeferredPaneReport]) -> Vec<String> {
+        reports
+            .iter()
+            .map(|report| match report {
+                DeferredPaneReport::Title { pane_id, title } => format!("{pane_id} title {title}"),
+                DeferredPaneReport::Cwd { pane_id, cwd } => format!("{pane_id} cwd {cwd}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_title_never_supersedes_a_cwd_for_the_same_pane() {
+        // fish: `cd` emits OSC 7 and the next prompt OSC 2. When both queue
+        // while the worker is busy, both must still be applied.
+        let applied = coalesce_deferred_reports(vec![cwd("p", "/a"), title("p", "~/a")]);
+        assert_eq!(describe(&applied), ["p cwd /a", "p title ~/a"]);
+        let applied = coalesce_deferred_reports(vec![title("p", "~/a"), cwd("p", "/a")]);
+        assert_eq!(describe(&applied), ["p title ~/a", "p cwd /a"]);
+    }
+
+    #[test]
+    fn same_kind_bursts_keep_only_the_last_report_per_pane() {
+        let applied = coalesce_deferred_reports(vec![
+            title("p", "1"),
+            cwd("p", "/a"),
+            title("q", "q1"),
+            title("p", "2"),
+            cwd("p", "/b"),
+            title("p", "3"),
+        ]);
+        assert_eq!(describe(&applied), ["q title q1", "p cwd /b", "p title 3"]);
+    }
 }
 
 #[cfg(test)]
