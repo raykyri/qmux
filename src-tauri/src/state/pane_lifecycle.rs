@@ -4,6 +4,42 @@
 use super::*;
 
 impl AppState {
+    /// Undoes `insert_pane` for a spawn that failed before the pane went live (native
+    /// surface creation failed). `remove_pane` is the "closed for good" transition: it
+    /// prunes a queue-less bound agent, deletes durable scrollback and removes a group
+    /// left without open panes. None of that is right for a pane that never started —
+    /// during startup recovery the group's other panes are simply not respawned yet, so
+    /// that cascade dropped every agent in the workspace, and the caller's
+    /// `mark_agent_failed` / `mark_agent_spawn_failed` then found no agent to mark.
+    /// This only forgets the runtime and the credentials minted for it.
+    pub fn abort_pane_spawn(&self, pane_id: &str) -> Result<(), String> {
+        let removed = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let removed = model.panes.remove(pane_id).is_some();
+            model.pane_order.retain(|id| id != pane_id);
+            // During recovery, saved splits can refer to panes that have not
+            // respawned yet. Pruning against this partial model would discard
+            // unrelated layouts; startup normalizes once all respawns finish.
+            if removed && !self.startup_restoring() {
+                normalize_pane_splits_locked(&mut model);
+            }
+            removed
+        };
+        if !removed {
+            return Ok(());
+        }
+        self.revoke_pane_credentials(pane_id);
+        self.persist();
+        // insert_pane does not announce the pane, but a concurrent listPanes()
+        // refresh may have; the frontend handles a redundant removal as a no-op.
+        self.emit(QmuxEvent::pane_removed(pane_id.to_string()));
+        Ok(())
+    }
+
     pub fn remove_pane(&self, pane_id: &str) -> Result<(), String> {
         // Cancel network helpers before removing the runtime; a late recovery
         // must not install a new attachment into a closing pane.

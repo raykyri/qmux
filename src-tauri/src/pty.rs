@@ -953,7 +953,9 @@ pub fn reattach_remote_pane(state: &AppState, pane: &PaneInfo) -> Result<PaneInf
     })?;
     if native_surface {
         if let Err(err) = crate::native_terminal::create_host_managed(&pane.id, None) {
-            let _ = state.remove_pane(&pane.id);
+            // Not a close: keep the agent, scrollback and group so recovery can mark
+            // the agent "needs relaunch" (recovery.rs).
+            let _ = state.abort_pane_spawn(&pane.id);
             return Err(err);
         }
         register_native_input_writer(&pane.id, stable_writer);
@@ -2007,7 +2009,7 @@ fn spawn_portable_pty(
     if native_surface {
         if let Err(err) = crate::native_terminal::create_host_managed(&pane_id, Some(&pane.cwd)) {
             let _ = kill_child(&pane_id, child.clone());
-            let _ = state.remove_pane(&pane_id);
+            let _ = state.abort_pane_spawn(&pane_id);
             return Err(err);
         }
         register_native_input_writer(&pane_id, writer);
@@ -2212,7 +2214,7 @@ fn spawn_remote_tmux_inner(
     })?;
     if native_surface {
         if let Err(err) = crate::native_terminal::create_host_managed(&pane_id, None) {
-            let _ = state.remove_pane(&pane_id);
+            let _ = state.abort_pane_spawn(&pane_id);
             return Err(err);
         }
         register_native_input_writer(&pane_id, writer);

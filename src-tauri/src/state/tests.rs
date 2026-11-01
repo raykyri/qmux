@@ -8501,3 +8501,107 @@ fn startup_composer_snapshot_batches_only_existing_agents_and_preserves_queue_or
     assert_eq!(snapshot.global_drafts.len(), 1);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn aborted_spawn_keeps_agent_scrollback_and_unrespawned_workspace() {
+    // a failed native-surface spawn ran remove_pane. During startup recovery
+    // the group's other panes are not respawned yet, so the "last pane" cascade
+    // removed the group and pruned every agent in it, and recovery's
+    // mark_agent_failed then found nothing to mark.
+    let workspace = temp_workspace();
+    let state = AppState::new(test_config(workspace.clone()));
+    state
+        .insert_group_after(sample_terminal_group(), None)
+        .unwrap();
+    let mut first = sample_agent("agent-1");
+    first.pane_id = Some("pane-7".to_string());
+    state.insert_agent(first).unwrap();
+    // Bound to a pane later in the respawn order, not yet in the model.
+    let mut second = sample_agent("agent-2");
+    second.pane_id = Some("pane-8".to_string());
+    state.insert_agent(second).unwrap();
+    append_pane_scrollback(&workspace, "pane-7", b"history").unwrap();
+    state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+
+    state.abort_pane_spawn("pane-7").unwrap();
+
+    assert!(state.list_panes().unwrap().is_empty());
+    assert_eq!(state.list_groups().unwrap().len(), 1);
+    assert!(state.agent("agent-1").unwrap().is_some());
+    assert!(state.agent("agent-2").unwrap().is_some());
+    assert_eq!(
+        read_pane_scrollback(&workspace, "pane-7").unwrap(),
+        b"history".to_vec()
+    );
+    // The recovery caller can now record the "needs relaunch" state.
+    let failed = crate::workspace::mark_agent_failed(&state, "agent-1").unwrap();
+    assert!(matches!(failed.status, AgentStatus::Failed));
+}
+
+#[test]
+fn aborted_startup_spawn_preserves_splits_for_panes_not_yet_recovered() {
+    let root = temp_workspace();
+    let split = PaneSplitInfo {
+        id: "split-b-c".to_string(),
+        pane_ids: vec!["pane-b".to_string(), "pane-c".to_string()],
+        sizes: HashMap::from([("pane-b".to_string(), 0.4), ("pane-c".to_string(), 0.6)]),
+        intent: HashMap::new(),
+        axis: PaneSplitAxis::Vertical,
+        root: None,
+    };
+    persistence::save(
+        &root,
+        &PersistedState {
+            groups: vec![sample_terminal_group()],
+            panes: vec![
+                sample_pane("pane-a", None),
+                sample_pane("pane-b", None),
+                sample_pane("pane-c", None),
+            ],
+            pane_splits: vec![split],
+            ..PersistedState::default()
+        },
+    )
+    .unwrap();
+    let state = AppState::new(test_config(root.clone()));
+    state.begin_startup_restore();
+    assert_eq!(state.restore_session().len(), 3);
+    state.insert_pane(sample_pane_runtime("pane-a")).unwrap();
+    state.abort_pane_spawn("pane-a").unwrap();
+    // Read the saved metadata directly: pane_splits() intentionally normalizes
+    // against live panes and is only meaningful after recovery has completed.
+    assert_eq!(state.inner.model.lock().unwrap().pane_splits.len(), 1);
+    for id in ["pane-b", "pane-c"] {
+        state.insert_pane(sample_pane_runtime(id)).unwrap();
+    }
+    state.normalize_pane_layout();
+    state.finish_startup_restore();
+    let saved = persistence::load_with_diagnostics(&root).state;
+    assert_eq!(saved.panes.len(), 2);
+    assert_eq!(saved.pane_splits.len(), 1);
+    assert_eq!(saved.pane_splits[0].id, "split-b-c");
+    assert_eq!(saved.pane_splits[0].pane_ids, vec!["pane-b", "pane-c"]);
+    assert_eq!(saved.pane_splits[0].sizes.get("pane-b"), Some(&0.4));
+    assert_eq!(saved.pane_splits[0].sizes.get("pane-c"), Some(&0.6));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn aborted_spawn_prunes_invalid_splits_outside_startup() {
+    let state = AppState::new(test_config(temp_workspace()));
+    state.insert_pane(sample_pane_runtime("pane-a")).unwrap();
+    state.insert_pane(sample_pane_runtime("pane-b")).unwrap();
+    state
+        .set_pane_splits(vec![PaneSplitInfo {
+            id: "split-a-b".to_string(),
+            pane_ids: vec!["pane-a".to_string(), "pane-b".to_string()],
+            sizes: HashMap::new(),
+            intent: HashMap::new(),
+            axis: PaneSplitAxis::Vertical,
+            root: None,
+        }])
+        .unwrap();
+    state.abort_pane_spawn("pane-a").unwrap();
+    assert!(state.inner.model.lock().unwrap().pane_splits.is_empty());
+    assert_eq!(state.list_panes().unwrap().len(), 1);
+}
