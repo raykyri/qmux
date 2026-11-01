@@ -4371,8 +4371,12 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
         eprintln!("qmux: failed to capture closed pane {pane_id}: {err}");
     }
     if let Some((controller, _, commands)) = state.pane_remote_control(&pane_id)? {
-        if controller.initial_launch_in_progress() {
-            controller.cancel_recovery();
+        // Fence the launch reversibly: if the kill below cannot confirm the
+        // session gone, the pane survives and must keep its recovery path.
+        // `cancel_recovery` (permanent) only runs once the close is certain.
+        let cancelled_launch = controller.initial_launch_in_progress();
+        if cancelled_launch {
+            controller.begin_close();
             controller.wait_for_initial_launch();
         }
         // Preparation may have filled in the support directory while close
@@ -4390,6 +4394,17 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
                 RemoteConnectionState::Failed,
                 Some(err.clone()),
             );
+            if cancelled_launch {
+                // The fence made the launch abort before installing its
+                // attachment, so there is no live generation to keep using.
+                // Lift the fence and let the shared worker probe: it
+                // reattaches if the session exists or reports it ended
+                // (after which a retried close succeeds).
+                controller.abort_close();
+                if let Err(recover_err) = check_remote_pane(state, &pane_id, "closeFailed") {
+                    eprintln!("qmux: failed to resume recovery for {pane_id}: {recover_err}");
+                }
+            }
             return Err(err);
         }
         // Fence and tear down the disposable attachment only after the remote

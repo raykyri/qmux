@@ -192,8 +192,19 @@ struct RecoveryState {
     running: bool,
     revision: u64,
     sleeping: bool,
+    /// Permanent: the pane is gone (or the app is quitting).
     stopped: bool,
+    /// Temporary: a close is waiting for/killing the remote session. Fences
+    /// installs and recovery exactly like `stopped`, but a failed close lifts
+    /// it again (`abort_close`) so the surviving pane can still recover.
+    closing: bool,
     reason: String,
+}
+
+impl RecoveryState {
+    fn fenced(&self) -> bool {
+        self.stopped || self.closing
+    }
 }
 
 impl RemoteAttachmentController {
@@ -220,7 +231,7 @@ impl RemoteAttachmentController {
     }
 
     pub fn stopped(&self) -> bool {
-        self.recovery.lock().unwrap().stopped
+        self.recovery.lock().unwrap().fenced()
     }
 
     pub fn new() -> Arc<Self> {
@@ -231,7 +242,7 @@ impl RemoteAttachmentController {
     /// and invalidate in-flight observations without creating another worker.
     pub fn request_recovery(&self, reason: &str) -> bool {
         let mut recovery = self.recovery.lock().unwrap();
-        if recovery.stopped {
+        if recovery.fenced() {
             return false;
         }
         recovery.revision += 1;
@@ -251,6 +262,24 @@ impl RemoteAttachmentController {
         self.changed.notify_all();
     }
 
+    /// Fences installs and recovery while a close waits for the initial
+    /// launch and kills the remote session. Unlike `cancel_recovery`, this is
+    /// reversible: a close that cannot confirm the session gone calls
+    /// `abort_close` and the pane keeps a recovery path.
+    pub fn begin_close(&self) {
+        let mut recovery = self.recovery.lock().unwrap();
+        recovery.closing = true;
+        recovery.revision += 1;
+        self.changed.notify_all();
+    }
+
+    pub fn abort_close(&self) {
+        let mut recovery = self.recovery.lock().unwrap();
+        recovery.closing = false;
+        recovery.revision += 1;
+        self.changed.notify_all();
+    }
+
     pub fn set_sleeping(&self, sleeping: bool) {
         let mut recovery = self.recovery.lock().unwrap();
         recovery.sleeping = sleeping;
@@ -262,19 +291,19 @@ impl RemoteAttachmentController {
         let recovery = self.recovery.lock().unwrap();
         (
             recovery.revision,
-            recovery.sleeping || recovery.stopped,
+            recovery.sleeping || recovery.fenced(),
             recovery.reason.clone(),
         )
     }
 
     pub fn recovery_is_current(&self, revision: u64) -> bool {
         let recovery = self.recovery.lock().unwrap();
-        recovery.revision == revision && !recovery.sleeping && !recovery.stopped
+        recovery.revision == revision && !recovery.sleeping && !recovery.fenced()
     }
 
     pub fn observe_recovery(&self, revision: u64, update: impl FnOnce()) -> bool {
         let recovery = self.recovery.lock().unwrap();
-        if recovery.revision != revision || recovery.sleeping || recovery.stopped {
+        if recovery.revision != revision || recovery.sleeping || recovery.fenced() {
             return false;
         }
         update();
@@ -371,7 +400,7 @@ impl RemoteAttachmentController {
         attachment: RemoteAttachment,
     ) -> Result<(), RemoteAttachment> {
         let recovery = self.recovery.lock().unwrap();
-        if recovery.stopped {
+        if recovery.fenced() {
             return Err(attachment);
         }
         let mut state = self
@@ -636,6 +665,35 @@ mod tests {
                 .install_if_current(generation, attachment(Default::default()))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn failed_close_restores_the_recovery_path() {
+        let controller = RemoteAttachmentController::new();
+        controller.begin_initial_launch();
+        controller.begin_close();
+        // While closing, the launch is fenced exactly like a closed pane.
+        assert!(controller.stopped());
+        assert!(!controller.request_recovery("systemWake"));
+        let (generation, _) = controller.begin_generation();
+        assert!(
+            controller
+                .install_if_current(generation, attachment(Default::default()))
+                .is_err()
+        );
+        controller.finish_initial_launch();
+        // The remote kill could not be confirmed: the pane stays, so wake and
+        // manual retry must work again.
+        controller.abort_close();
+        assert!(!controller.stopped());
+        assert!(controller.request_recovery("closeFailed"));
+        let (revision, sleeping, reason) = controller.recovery_request();
+        assert!(!sleeping);
+        assert_eq!(reason, "closeFailed");
+        assert!(controller.recovery_is_current(revision));
+        // A confirmed close is still permanent.
+        controller.cancel_recovery();
+        assert!(!controller.request_recovery("manualRetry"));
     }
 
     #[test]
