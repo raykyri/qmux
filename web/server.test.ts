@@ -753,6 +753,83 @@ test("the public server evicts old publication cache entries", async (t) => {
   assert.equal(fetchCount, 130);
 });
 
+test("a 304 revalidation of an entry evicted mid-flight re-enters the cache through its bounds", async (t) => {
+  const draft = await createTranscriptPublicationDraft({
+    title: "Revalidated entry",
+    pane,
+    agent,
+    assistantLabel: "Codex",
+    publicationId: "pub_revalidate1",
+    createdAt: "2026-07-16T12:00:00.000Z",
+    turns: [turn("turn-1", "assistant", "Revalidated answer")],
+  });
+  const index = draft.files["publication.json"];
+  let now = 0;
+  const fetched: string[] = [];
+  let holdRevalidation: Promise<void> | null = null;
+  let revalidationStarted = false;
+  const fetchImpl: typeof fetch = async (url, init) => {
+    const gistId = String(url).split("/").at(-1)!;
+    fetched.push(gistId);
+    const etag = (init?.headers as Record<string, string> | undefined)?.["If-None-Match"];
+    if (etag) {
+      revalidationStarted = true;
+      await holdRevalidation;
+      return new Response(null, { status: 304 });
+    }
+    return new Response(
+      JSON.stringify({
+        id: gistId,
+        html_url: `https://gist.github.com/octocat/${gistId}`,
+        public: true,
+        created_at: "2026-07-16T12:00:00Z",
+        updated_at: "2026-07-16T12:00:00Z",
+        files: {
+          "publication.json": {
+            filename: "publication.json",
+            size: Buffer.byteLength(index),
+            content: index,
+          },
+        },
+      }),
+      { status: 200, headers: { ETag: `"${gistId}"` } },
+    );
+  };
+  const server = createQmuxWebServer({ fetchImpl, rateLimit: null, now: () => now });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const get = async (gistId: string) => {
+    const response = await fetch(`http://127.0.0.1:${address.port}/p/${gistId}`);
+    assert.equal(response.status, 200);
+    await response.arrayBuffer();
+  };
+
+  // The revalidated entry is the oldest; 127 fresher entries fill the cache.
+  await get("stale0000");
+  now = 50_000;
+  for (let n = 1; n < 128; n += 1) await get(`fresh${n.toString().padStart(4, "0")}`);
+  // Only stale0000 has expired. Hold its conditional request upstream while a
+  // cold load for another gist evicts it from the full cache.
+  now = 61_000;
+  let release!: () => void;
+  holdRevalidation = new Promise((resolve) => { release = resolve; });
+  const revalidating = get("stale0000");
+  while (!revalidationStarted) await new Promise((resolve) => setTimeout(resolve, 1));
+  await get("coldload");
+  release();
+  await revalidating;
+
+  // The cache holds at most 128 entries, so re-admitting stale0000 must evict
+  // the oldest survivor; a raw re-insert leaves 129 entries (and the bytes of
+  // the re-inserted entry uncounted).
+  fetched.length = 0;
+  await get("fresh0001");
+  assert.deepEqual(fetched, ["fresh0001"]);
+});
+
 test("the public server caps concurrent publication loads", async (t) => {
   const draft = await createTranscriptPublicationDraft({
     title: "Concurrent load",

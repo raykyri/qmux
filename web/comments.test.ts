@@ -553,6 +553,122 @@ test("published research accepts structured follow-up proposals and owner resolu
   );
 });
 
+test("a comments load that started before a proposal POST cannot cache the pre-POST list", async () => {
+  const { draft, publicRootId } = await researchFixture("pub_racing123", "Racing proposals");
+  let now = 1_000_000;
+  const upstreamComments: unknown[] = [];
+  let gateNextCommentsLoad = false;
+  let releaseGatedLoad: (() => void) | null = null;
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url === "https://github.com/login/oauth/access_token") {
+      return Response.json({ access_token: "gho_racer", scope: "gist" });
+    }
+    if (url === "https://api.github.com/user") {
+      return Response.json({ login: "alice" });
+    }
+    if (url.endsWith("/gists/racing12345")) {
+      return Response.json({
+        id: "racing12345",
+        html_url: "https://gist.github.com/octocat/racing12345",
+        public: true,
+        created_at: "2026-07-16T12:00:00Z",
+        updated_at: "2026-07-16T12:00:00Z",
+        files: Object.fromEntries(
+          Object.entries(draft.files).map(([filename, content]) => [
+            filename,
+            { filename, size: Buffer.byteLength(content), content },
+          ]),
+        ),
+        owner: { login: "octocat", html_url: "https://github.com/octocat" },
+      });
+    }
+    if (url.includes("/gists/racing12345/comments?")) {
+      // GitHub answers with the list as of the moment it served the request.
+      const snapshot = [...upstreamComments];
+      if (gateNextCommentsLoad) {
+        gateNextCommentsLoad = false;
+        await new Promise<void>((resolve) => {
+          releaseGatedLoad = resolve;
+        });
+      }
+      return Response.json(snapshot);
+    }
+    if (url.endsWith("/gists/racing12345/comments") && init?.method === "POST") {
+      upstreamComments.push({
+        id: 31,
+        body: JSON.parse(String(init.body)).body,
+        created_at: "2026-07-16T13:00:00Z",
+        updated_at: "2026-07-16T13:00:00Z",
+        user: { login: "alice", html_url: "https://github.com/alice" },
+      });
+      return Response.json({ id: 31 }, { status: 201 });
+    }
+    throw new Error(`unexpected fetch ${init?.method ?? "GET"} ${url}`);
+  };
+  const handler = createQmuxRequestHandler({
+    fetchImpl,
+    now: () => now,
+    githubToken: "reader-token",
+    oauthClientId: "client-id",
+    oauthClientSecret: "client-secret",
+    sessionSecret: "d".repeat(32),
+    publicOrigin: "https://qmux.app",
+    secureCookies: false,
+    rateLimit: null,
+  });
+  const nodePath = `/p/racing12345/n/${publicRootId}`;
+  const begin = await dispatch(
+    handler,
+    request("GET", `/auth/github?returnTo=${encodeURIComponent(nodePath)}`),
+  );
+  const state = new URL(begin.header("location")).searchParams.get("state");
+  assert.ok(state);
+  const callback = await dispatch(
+    handler,
+    request(
+      "GET",
+      `/auth/github/callback?code=oauth-code&state=${encodeURIComponent(state)}`,
+      "",
+      { cookie: cookiePair(begin.setCookies(), "qmux_oauth_state") },
+    ),
+  );
+  const sessionCookie = cookiePair(callback.setCookies(), "qmux_session");
+  const first = await dispatch(handler, request("GET", nodePath, "", { cookie: sessionCookie }));
+  assert.equal(first.statusCode, 200);
+  const csrfToken = first.body.match(/name="csrfToken" value="([^"]+)"/)?.[1];
+  assert.ok(csrfToken);
+
+  // Let the cached (empty) comment list expire, then start a page view whose
+  // comment fetch is answered before the proposal lands but resolves after it.
+  now += 31_000;
+  gateNextCommentsLoad = true;
+  const racingView = dispatch(handler, request("GET", nodePath, "", { cookie: sessionCookie }));
+  while (!releaseGatedLoad) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const create = await dispatch(
+    handler,
+    request(
+      "POST",
+      `${nodePath}/proposals`,
+      new URLSearchParams({ csrfToken, prompt: "Freshly proposed follow-up?" }).toString(),
+      { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+    ),
+  );
+  assert.equal(create.statusCode, 303);
+  (releaseGatedLoad as () => void)();
+  assert.equal((await racingView).statusCode, 200);
+
+  // The redirect back to the page must show the proposal the user just made.
+  const afterRedirect = await dispatch(
+    handler,
+    request("GET", nodePath, "", { cookie: sessionCookie }),
+  );
+  assert.equal(afterRedirect.statusCode, 200);
+  assert.match(afterRedirect.body, /Freshly proposed follow-up/);
+});
+
 test("OAuth return paths reject response-header control characters", () => {
   assert.equal(safeReturnTo("/p/comment12345#comments"), "/p/comment12345#comments");
   assert.equal(safeReturnTo("/p/comment12345\r\nX-Test: injected"), "/");

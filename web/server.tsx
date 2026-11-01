@@ -164,6 +164,11 @@ interface CachedComments {
 interface CommentsCache {
   entries: Map<string, CachedComments>;
   totalBytes: number;
+  // Bumped by every write-path invalidation. A load records it before going
+  // upstream and only caches its result if no invalidation happened since, so
+  // a list fetched before a proposal POST cannot repopulate the cache after
+  // the POST deleted it.
+  invalidationEpoch: number;
 }
 
 interface PublicationCache {
@@ -217,6 +222,7 @@ export function createQmuxRequestHandler(options: ServerOptions = {}) {
     commentsCache: {
       entries: new Map(),
       totalBytes: 0,
+      invalidationEpoch: 0,
     },
     negativeCache: new Map(),
     rateLimit,
@@ -603,7 +609,7 @@ async function handleCreateProposal(
       githubApiErrorMessage(responseBody, "GitHub could not create this proposal."),
     );
   }
-  deleteCommentsCacheEntry(context.commentsCache, route.gistId);
+  invalidateCommentsCacheEntry(context.commentsCache, route.gistId);
   const returnTo = commentReturnPath(route.gistId, route.nodeId);
   response.writeHead(303, {
     Location: `${returnTo}#proposals`,
@@ -648,6 +654,7 @@ async function loadPublicationComments(
   if (cached) {
     deleteCommentsCacheEntry(context.commentsCache, gistId);
   }
+  const invalidationEpoch = context.commentsCache.invalidationEpoch;
   const comments: PublicationComment[] = [];
   const maxPages = Math.ceil(MAX_GIST_COMMENTS / 100);
   const firstPage = await fetchGitHubCommentsPage(gistId, 1, context);
@@ -681,6 +688,11 @@ async function loadPublicationComments(
     }
   }
   comments.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+  if (context.commentsCache.invalidationEpoch !== invalidationEpoch) {
+    // Serve this request what it read, but don't let it outlive a write that
+    // landed while it was in flight.
+    return comments;
+  }
   cacheComments(context.commentsCache, gistId, {
     comments,
     expiresAt: context.now() + COMMENTS_CACHE_MS,
@@ -788,6 +800,11 @@ function deleteCommentsCacheEntry(cache: CommentsCache, key: string) {
   }
   cache.entries.delete(key);
   cache.totalBytes -= existing.weightBytes;
+}
+
+function invalidateCommentsCacheEntry(cache: CommentsCache, key: string) {
+  cache.invalidationEpoch += 1;
+  deleteCommentsCacheEntry(cache, key);
 }
 
 function cacheComments(
@@ -1161,6 +1178,13 @@ function touchCacheEntry(
   key: string,
   entry: CachedPublication,
 ) {
+  // A revalidation awaits upstream while holding the entry it read. Another
+  // gist's insert may have evicted (and uncounted) it meanwhile; re-admit it
+  // through the bounded insert so totalBytes and the entry cap stay exact.
+  if (cache.entries.get(key) !== entry) {
+    cachePublication(cache, key, entry);
+    return;
+  }
   cache.entries.delete(key);
   cache.entries.set(key, entry);
 }
