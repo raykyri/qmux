@@ -1217,6 +1217,38 @@ pub fn list_agent_transcripts(
     Ok(options)
 }
 
+/// Writes only the binding fields, through `mutate_agent`: validation reads
+/// files, and a whole-struct `update_agent` of the snapshot taken before it
+/// would revert any status / pane / paused change a hook or the queue made in
+/// the meantime (e.g. a Stop that settled Done reverted to Running).
+fn apply_transcript_rebind(
+    state: &AppState,
+    agent_id: &str,
+    validated_against: Option<&str>,
+    session_id: Option<String>,
+    transcript_path: Option<String>,
+) -> Result<AgentInfo, String> {
+    let mut raced = false;
+    let updated = state.mutate_agent(agent_id, |live| {
+        // A concurrent rebind (SessionStart, recovery, another picker click)
+        // owns the binding now; a choice validated against the previous
+        // binding's directory must not overwrite it.
+        if live.transcript_path.as_deref() != validated_against {
+            raced = true;
+            return;
+        }
+        live.session_id = session_id;
+        live.transcript_path = transcript_path;
+    })?;
+    match updated {
+        Some(_) if raced => {
+            Err("transcript binding changed; reopen the session picker".to_string())
+        }
+        Some(updated) => Ok(updated),
+        None => Err(format!("agent {agent_id} not found")),
+    }
+}
+
 /// Repoints an agent at `path` and restarts its tail there, or clears the current
 /// binding when `path` is `None`. The old tail stops itself once it sees the agent
 /// no longer pointing at its file.
@@ -1225,14 +1257,20 @@ pub fn set_agent_transcript(
     agent_id: &str,
     path: Option<&str>,
 ) -> Result<AgentInfo, String> {
-    let Some(mut agent) = state.agent(agent_id)? else {
+    let Some(agent) = state.agent(agent_id)? else {
         return Err(format!("agent {agent_id} not found"));
     };
+    let rebind = |session_id: Option<String>, transcript_path: Option<String>| {
+        apply_transcript_rebind(
+            state,
+            agent_id,
+            agent.transcript_path.as_deref(),
+            session_id,
+            transcript_path,
+        )
+    };
     let Some(path) = path else {
-        agent.session_id = None;
-        agent.transcript_path = None;
-        state.update_agent(agent.clone())?;
-        return Ok(agent);
+        return rebind(None, None);
     };
 
     let candidate = Path::new(path);
@@ -1298,13 +1336,12 @@ pub fn set_agent_transcript(
     }
 
     let already_bound = agent.transcript_path.as_deref() == Some(path);
-    agent.session_id = transcript_session_id(
+    let session_id = transcript_session_id(
         &agent,
         candidate,
         session_id_from_transcript_path(candidate),
     );
-    agent.transcript_path = Some(path.to_string());
-    state.update_agent(agent.clone())?;
+    let agent = rebind(session_id, Some(path.to_string()))?;
     // Clear any recovery/ambiguity notice tied to the previous binding.
     state.emit(transcript_notice(agent_id, path, None));
     if !already_bound {
@@ -2562,6 +2599,66 @@ mod tests {
         assert!(event.is_none());
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert!(matches!(agent.status, AgentStatus::Done));
+    }
+
+    /// a hook that lands while the picker validates must survive the rebind.
+    #[test]
+    fn transcript_rebind_preserves_concurrent_status_and_pause_writes() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::Running))
+            .unwrap();
+        // Simulates a Stop + pause-after landing between the picker's snapshot
+        // and its write (the old code wrote the stale Running snapshot back).
+        state
+            .set_agent_status("agent-1", AgentStatus::Done)
+            .unwrap();
+        state.set_agent_paused("agent-1", true).unwrap();
+
+        let rebound = apply_transcript_rebind(
+            &state,
+            "agent-1",
+            Some("/tmp/session.jsonl"),
+            Some("other".to_string()),
+            Some("/tmp/other.jsonl".to_string()),
+        )
+        .unwrap();
+        assert_eq!(rebound.transcript_path.as_deref(), Some("/tmp/other.jsonl"));
+        assert_eq!(rebound.session_id.as_deref(), Some("other"));
+        assert_eq!(rebound.status, AgentStatus::Done);
+        assert!(rebound.paused);
+    }
+
+    #[test]
+    fn transcript_rebind_refuses_to_overwrite_a_concurrent_rebind() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::Running))
+            .unwrap();
+        state
+            .mutate_agent("agent-1", |agent| {
+                agent.transcript_path = Some("/tmp/rotated.jsonl".to_string());
+            })
+            .unwrap();
+        assert!(
+            apply_transcript_rebind(
+                &state,
+                "agent-1",
+                Some("/tmp/session.jsonl"),
+                None,
+                Some("/tmp/other.jsonl".to_string()),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            state
+                .agent("agent-1")
+                .unwrap()
+                .unwrap()
+                .transcript_path
+                .as_deref(),
+            Some("/tmp/rotated.jsonl")
+        );
     }
 
     #[test]
