@@ -8,6 +8,12 @@ use std::{
 const MIN_SWIFT_DEPLOYMENT_TARGET: &str = "11.3";
 
 fn main() {
+    if env::var("CARGO_CFG_TARGET_OS").ok().as_deref() == Some("macos")
+        && env::var("CARGO_CFG_TARGET_ARCH").ok().as_deref() != Some("aarch64")
+    {
+        panic!("qmux requires an Apple Silicon macOS target (aarch64-apple-darwin)");
+    }
+
     println!("cargo:rustc-check-cfg=cfg(qmux_foundation_models)");
     println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
@@ -48,9 +54,7 @@ fn build_native_terminal_bridge() {
     let deployment_target = swift_deployment_target();
     let target = swift_target_triple(&deployment_target);
     let arch = target.split('-').next().unwrap_or("arm64");
-    // SwiftPM keeps build-plan metadata at the scratch root. Sharing that root
-    // across the two universal-build architectures can leave one architecture
-    // with the other's stale source list after a Swift file is added.
+    // Keep SwiftPM build-plan metadata scoped to the target architecture.
     let scratch = native_build_root.join(format!("swiftpm-{arch}"));
     let cache = native_build_root.join("cache");
     let module_cache = native_build_root.join("module-cache");

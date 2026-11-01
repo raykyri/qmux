@@ -7,7 +7,11 @@ set -euo pipefail
 # .sig to the GitHub release alongside the DMG.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null && pwd)"
-target="${QMUX_BUILD_TARGET:-universal-apple-darwin}"
+target="${QMUX_BUILD_TARGET:-aarch64-apple-darwin}"
+if [[ "$target" != "aarch64-apple-darwin" ]]; then
+  echo "qmux supports only QMUX_BUILD_TARGET=aarch64-apple-darwin (Apple Silicon)." >&2
+  exit 1
+fi
 bundle_dir="$repo_root/src-tauri/target/$target/release/bundle/macos"
 
 version="$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$repo_root/src-tauri/tauri.conf.json" | head -1)"
@@ -39,10 +43,6 @@ print(json.dumps({
     "pub_date": os.environ["PUB_DATE"],
     "platforms": {
         "darwin-aarch64": {
-            "signature": os.environ["SIGNATURE"],
-            "url": os.environ["URL"],
-        },
-        "darwin-x86_64": {
             "signature": os.environ["SIGNATURE"],
             "url": os.environ["URL"],
         },

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds, signs, and notarizes the universal DMG, then uploads a draft GitHub
+# Builds, signs, and notarizes the Apple Silicon DMG, then uploads a draft GitHub
 # release with everything the updater endpoint needs. Publish the draft by hand
 # after checking the notes and installing the DMG once.
 #
@@ -38,6 +38,13 @@ if [[ -f .env ]]; then
     [[ -n "${!name+x}" ]] || export "$name=$value"
   done <.env
 fi
+
+target="${QMUX_BUILD_TARGET:-aarch64-apple-darwin}"
+if [[ "$target" != "aarch64-apple-darwin" ]]; then
+  echo "qmux supports only QMUX_BUILD_TARGET=aarch64-apple-darwin (Apple Silicon)." >&2
+  exit 1
+fi
+export QMUX_BUILD_TARGET="$target"
 
 read_version() {
   sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$1" | head -1
@@ -81,12 +88,6 @@ fi
 # cannot accidentally publish a stale version.
 if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
   echo "HEAD does not match origin/main — pull or push first." >&2
-  exit 1
-fi
-
-target="${QMUX_BUILD_TARGET:-universal-apple-darwin}"
-if [[ "$target" != "universal-apple-darwin" ]]; then
-  echo "Releases must use QMUX_BUILD_TARGET=universal-apple-darwin." >&2
   exit 1
 fi
 
@@ -157,7 +158,7 @@ fi
 "$script_dir/generate-latest-json.sh"
 
 bundle_root="src-tauri/target/$target/release/bundle"
-dmg="$bundle_root/dmg/qmux_${version}_universal.dmg"
+dmg="$bundle_root/dmg/qmux_${version}_aarch64.dmg"
 archive="$bundle_root/macos/qmux.app.tar.gz"
 signature="$archive.sig"
 manifest="$bundle_root/macos/latest.json"
@@ -170,17 +171,31 @@ for file in "$dmg" "$archive" "$signature" "$manifest"; do
 done
 
 if have_notary_creds; then
-  bash "$script_dir/verify-macos-release.sh" "$bundle_root/macos/qmux.app" "$dmg"
+  bash "$script_dir/verify-macos-release.sh" "$bundle_root/macos/qmux.app" "$dmg" "$archive"
+else
+  bash "$script_dir/verify-macos-release.sh" --skip-notarization \
+    "$bundle_root/macos/qmux.app" "$dmg" "$archive"
 fi
 
 checksums="$bundle_root/SHA256SUMS"
 (cd "$(dirname "$dmg")" && shasum -a 256 "$(basename "$dmg")") >"$checksums"
 (cd "$(dirname "$archive")" && shasum -a 256 "$(basename "$archive")") >>"$checksums"
 
+notes_file="$(mktemp "${TMPDIR:-/tmp}/qmux-release-notes.XXXXXX")"
+trap 'rm -f "$notes_file"' EXIT
+cat >"$notes_file" <<'NOTES'
+Requires macOS 13 or later on an Apple Silicon Mac. Intel Mac support ended
+with [v0.4.0, the final universal release](https://github.com/raykyri/qmux/releases/tag/v0.4.0).
+Existing Intel installations can continue using that release and will not be
+offered this update. Apple Silicon users running an older universal app under
+Rosetta should install the native app manually to resume updates.
+NOTES
+
 gh release create "$tag" \
   --draft \
   --title "qmux $tag" \
   --generate-notes \
+  --notes-file "$notes_file" \
   --target "$(git rev-parse HEAD)" \
   "$dmg" "$archive" "$signature" "$manifest" "$checksums"
 

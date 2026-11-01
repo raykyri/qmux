@@ -53,8 +53,13 @@ matching UI adapter on the frontend.
 
 ## Install
 
-Requires macOS 13 (Ventura) or later. The DMG is a universal binary and runs
-natively on Apple Silicon and Intel Macs.
+Requires macOS 13 (Ventura) or later on an Apple Silicon Mac. New builds and
+releases support Apple Silicon only.
+
+Intel Macs can continue using [v0.4.0, the final universal release](https://github.com/raykyri/qmux/releases/tag/v0.4.0).
+Existing Intel installations will not be offered Apple Silicon-only updates.
+If an older universal app runs under Rosetta on an Apple Silicon Mac, install
+the latest native app manually to resume updates.
 
 1. Download the latest `.dmg` from the
    [releases page](https://github.com/raykyri/qmux/releases).
@@ -97,7 +102,7 @@ them in place.
 
 Prerequisites:
 
-- macOS.
+- Apple Silicon Mac running macOS 13 or later.
 - Xcode with Swift 6.2 or newer, required by the native terminal dependency.
 - Rust toolchain.
 - Node.js and npm.
@@ -142,11 +147,14 @@ npm run build:release
 After testing the draft's DMG, publish it with the command printed by the
 release script.
 
-GitHub Actions runs `verify:release` and builds a development DMG on every PR
-(Apple Silicon) and push to `main` (universal). These artifacts use ad-hoc
-signing, have no updater artifacts, and require no signing secrets. Download
+GitHub Actions runs `verify:release` and builds an Apple Silicon development DMG
+on every PR and push to `main`. The app uses ad-hoc signing, the DMG is unsigned,
+and these builds have no updater artifacts or signing secrets. Download
 them from the CI run's artifacts; they are not notarized releases. The workflow
 also supports manual runs and retains artifacts for seven days.
+
+For signed CI releases, follow the [GitHub Actions setup guide](docs/ci-and-releases.md)
+to configure the `release` environment, signing secrets, and publishing variables.
 
 Development:
 

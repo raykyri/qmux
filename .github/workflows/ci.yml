@@ -25,7 +25,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       QMUX_REQUIRE_FOUNDATION_MODELS: '1'
-      QMUX_BUILD_TARGET: ${{ github.event_name == 'pull_request' && 'aarch64-apple-darwin' || 'universal-apple-darwin' }}
+      QMUX_BUILD_TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -48,13 +48,13 @@ jobs:
             --config '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-"}}}' \
             -- --locked
 
-      - name: Check bundled architectures
+      - name: Verify development app and DMG contents
         run: |
-          app="src-tauri/target/$QMUX_BUILD_TARGET/release/bundle/macos/qmux.app"
-          lipo -verify_arch arm64 "$app/Contents/MacOS/qmux"
-          if [[ "$QMUX_BUILD_TARGET" == universal-apple-darwin ]]; then
-            lipo -verify_arch x86_64 "$app/Contents/MacOS/qmux"
-          fi
+          bundle="src-tauri/target/$QMUX_BUILD_TARGET/release/bundle"
+          dmgs=("$bundle"/dmg/*.dmg)
+          [[ "${#dmgs[@]}" -eq 1 ]]
+          bash scripts/verify-macos-release.sh --skip-notarization --allow-unsigned-dmg \
+            "$bundle/macos/qmux.app" "${dmgs[0]}"
 
       - name: Upload development DMG
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

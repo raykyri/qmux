@@ -7,7 +7,7 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null && pwd)"
 # Host-arch builds bundle under target/release; --target builds (including the
-# universal-apple-darwin release target) bundle under target/<triple>/release.
+# aarch64-apple-darwin release target) bundle under target/<triple>/release.
 bundle_roots=("$repo_root"/src-tauri/target/release/bundle "$repo_root"/src-tauri/target/*/release/bundle)
 
 detach_image_if_mounted() {

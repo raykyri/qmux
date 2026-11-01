@@ -3,6 +3,14 @@ description: Install the shared macOS CI and release toolchain.
 runs:
   using: composite
   steps:
+    - name: Require an Apple Silicon runner
+      shell: bash
+      run: |
+        if [[ "$(uname -m)" != arm64 ]]; then
+          echo "::error::qmux builds and native tests require an Apple Silicon runner."
+          exit 1
+        fi
+
     - name: Select Xcode and check the Foundation Models SDK
       shell: bash
       run: |
@@ -25,7 +33,7 @@ runs:
       run: |
         rustup toolchain install 1.95.0 --profile minimal --component rustfmt
         rustup override set 1.95.0
-        rustup target add aarch64-apple-darwin x86_64-apple-darwin \
+        rustup target add aarch64-apple-darwin \
           aarch64-unknown-linux-musl x86_64-unknown-linux-musl
 
     - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2

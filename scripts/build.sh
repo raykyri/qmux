@@ -51,6 +51,13 @@ load_dotenv() {
 
 load_dotenv "$repo_root/.env"
 
+# Validate before signing checks, toolchain installation, or remote CLI builds.
+build_target="${QMUX_BUILD_TARGET:-aarch64-apple-darwin}"
+if [[ "$build_target" != "aarch64-apple-darwin" ]]; then
+  echo "qmux supports only QMUX_BUILD_TARGET=aarch64-apple-darwin (Apple Silicon)." >&2
+  exit 1
+fi
+
 # Tauri notarizes whenever either supported set of Apple credentials reaches
 # the bundler. Keep ordinary builds local even when .env contains release
 # secrets; --notarize is the explicit boundary for sending an artifact to
@@ -101,9 +108,8 @@ fi
 # Tauri does not discover that a configured signing identity is inaccessible
 # until after the application has been built and bundled. In restricted
 # environments such as the Codex sandbox, the login keychain can be present but
-# hidden from `security` and `codesign`. Fail before the two universal-arch Rust
-# builds instead of spending several minutes on an artifact that cannot be
-# signed.
+# hidden from `security` and `codesign`. Fail before building an artifact that
+# cannot be signed.
 if [[ "$(uname -s)" == "Darwin" && -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   # Match the identity as a fixed string. Do not interpolate it into a larger
   # shell word: Developer ID names contain parentheses (team id) that must not
@@ -119,13 +125,8 @@ if [[ "$(uname -s)" == "Darwin" && -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   fi
 fi
 
-# Release DMGs must run on both Apple Silicon and Intel Macs, so default to a
-# universal binary. Override with e.g. QMUX_BUILD_TARGET=aarch64-apple-darwin
-# for a faster single-arch build.
-build_target="${QMUX_BUILD_TARGET:-universal-apple-darwin}"
-
-if [[ "$build_target" == "universal-apple-darwin" ]] && command -v rustup >/dev/null; then
-  rustup target add aarch64-apple-darwin x86_64-apple-darwin
+if command -v rustup >/dev/null; then
+  rustup target add "$build_target"
 fi
 
 "$script_dir/build-remote-cli.sh"
