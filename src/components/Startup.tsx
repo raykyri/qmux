@@ -12,6 +12,15 @@ type StartupProgress = {
   quitting: boolean;
 };
 
+// startup_progress is a local IPC read that cannot fail on the backend side;
+// a rejection is a transport hiccup. Only a run of them means the backend is
+// unreachable, so retry with backoff before declaring the restore failed.
+const STARTUP_POLL_MAX_FAILURES = 8;
+const STARTUP_POLL_INTERVAL_MS = 150;
+const STARTUP_POLL_MAX_BACKOFF_MS = 1_000;
+const STARTUP_FAILED_FALLBACK =
+  "Session restoration failed. Quit and reopen qmux to try again.";
+
 const initialProgress: StartupProgress = {
   phase: "loading", completed: 0, total: 0, error: null, quitting: false,
 };
@@ -41,16 +50,27 @@ export default function Startup({ loadApp = loadApplication }: { loadApp?: () =>
       // animation frame: WebKit can suspend frames in a still-hidden window.
       void invoke("app_window_ready").catch(() => undefined);
     }
+    let consecutiveFailures = 0;
     async function poll() {
       try {
         const next = await invoke<StartupProgress>("startup_progress");
         if (cancelled) return;
+        consecutiveFailures = 0;
         setProgress(next);
         if (next.phase !== "ready" && next.phase !== "failed") {
-          timer = setTimeout(() => void poll(), 150);
+          timer = setTimeout(() => void poll(), STARTUP_POLL_INTERVAL_MS);
         }
       } catch (err) {
-        if (!cancelled) setError(String(err));
+        if (cancelled) return;
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= STARTUP_POLL_MAX_FAILURES) {
+          setError(String(err));
+          return;
+        }
+        timer = setTimeout(
+          () => void poll(),
+          Math.min(STARTUP_POLL_MAX_BACKOFF_MS, STARTUP_POLL_INTERVAL_MS * 2 ** consecutiveFailures),
+        );
       }
     }
     void poll();
@@ -60,7 +80,10 @@ export default function Startup({ loadApp = loadApplication }: { loadApp?: () =>
     };
   }, [quickLaunch, loadApp]);
 
-  const failure = error ?? progress.error;
+  // "failed" is terminal even if the backend sent no message: never spin on it.
+  const failure =
+    error ??
+    (progress.error || (progress.phase === "failed" ? STARTUP_FAILED_FALLBACK : null));
   const ready = progress.phase === "ready" && !progress.quitting && !failure && App;
   return <>
     {ready && <div className="startup-app" inert={!interfaceReady && !quickLaunch}>

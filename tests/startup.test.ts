@@ -106,3 +106,31 @@ test("interface import failure still reveals a screen with a working Quit button
   await act(() => container.querySelector("button")!.click());
   assert.ok(calls.includes("startup_quit"));
 });
+
+test("a transient progress poll failure keeps polling instead of declaring the restore failed", async () => {
+  let failures = 1;
+  mockIPC((command) => {
+    calls.push(command);
+    if (command === "startup_progress") {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("IPC channel briefly unavailable");
+      }
+      return progress;
+    }
+  });
+  await act(async () => { root.render(h(Startup, { loadApp })); });
+  assert.equal(container.querySelector('[role="alert"]'), null);
+  progress = { ...progress, phase: "ready" };
+  await poll();
+  await poll();
+  assert.equal(mounts, 1);
+});
+
+test("a failed phase without a message still shows the failure", async () => {
+  progress = { ...progress, phase: "failed", error: null };
+  installIPC();
+  await act(async () => { root.render(h(Startup, { loadApp })); });
+  assert.ok(container.querySelector('[role="alert"]'), "failed must not spin on Restoring session");
+  assert.doesNotMatch(container.textContent!, /Restoring session/);
+});
