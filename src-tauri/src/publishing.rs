@@ -44,6 +44,39 @@ const PROPOSAL_RESOLUTION_MARKER_PREFIX: &str = "<!-- qmux-proposal-resolution:v
 const COMMENT_MARKER_SUFFIX: &str = " -->";
 
 static PUBLICATIONS_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static PUBLICATIONS_IN_FLIGHT: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Exclusive claim on one publication id for a publish or sync, which read
+/// the stored binding, await GitHub, and write the binding back. Without it
+/// two commands for the same id both pass the read-side checks before either
+/// writes, so both create (or both patch) the Gist and the later binding
+/// write silently replaces the earlier one. Released on drop, on every exit.
+struct PublicationClaim(String);
+
+impl PublicationClaim {
+    fn acquire(publication_id: &str) -> Result<Self, String> {
+        let mut in_flight = PUBLICATIONS_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !in_flight.insert(publication_id.to_string()) {
+            return Err(
+                "This publication is already being published or updated. Wait for that to finish."
+                    .to_string(),
+            );
+        }
+        Ok(Self(publication_id.to_string()))
+    }
+}
+
+impl Drop for PublicationClaim {
+    fn drop(&mut self) {
+        PUBLICATIONS_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.0);
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -476,13 +509,15 @@ pub async fn publishing_publish(
     request: PublishPublicationRequest,
 ) -> Result<PublicationBinding, String> {
     validate_publish_request(&request)?;
+    let _claim = PublicationClaim::acquire(&request.publication_id)?;
     let workspace_root = state.config().workspace_root.clone();
     // A publication id that is already bound must go through sync: creating a
     // second gist here would silently overwrite the binding and orphan the
     // first gist — still live on GitHub (possibly public) with no local record
-    // and no way left to manage it from qmux. This is reachable when the
-    // binding failed to save after a publish (that path deliberately returns
-    // success-with-warning) or when a stale view still shows Publish.
+    // and no way left to manage it from qmux. The claim above makes this
+    // check-then-create atomic per publication id; if the binding cannot be
+    // saved, the rollback below attempts to delete the new Gist and reports
+    // its URL if that cleanup also fails.
     if let Some(existing) = publication_binding(&workspace_root, &request.publication_id)? {
         return Err(format!(
             "This content is already published at {}. Update the existing publication instead of publishing it again.",
@@ -555,12 +590,49 @@ pub async fn publishing_publish(
         created_at: now,
         updated_at: now,
     };
-    if let Err(error) = upsert_publication_binding(&workspace_root, &binding) {
-        binding.warning = Some(format!(
-            "The Gist was created, but qmux could not save its local publication binding: {error}"
-        ));
+    // The binding is the only local record of the Gist: the frontend mints a
+    // fresh publication id for unbound content, so a retry after a lost
+    // binding would publish a duplicate and orphan this Gist. Retry the save
+    // once, then roll the Gist back rather than report success without it.
+    if upsert_publication_binding(&workspace_root, &binding).is_err()
+        && let Err(error) = upsert_publication_binding(&workspace_root, &binding)
+    {
+        return Err(
+            match delete_gist(&client, &token.access_token, &binding.gist_id).await {
+                Ok(()) => format!(
+                    "The Gist was created, but qmux could not save its local binding. The new Gist was deleted: {error}"
+                ),
+                Err(delete_error) => format!(
+                    "The Gist {} was created, but qmux could not save its local binding ({error}) or delete it ({delete_error}). Delete it on GitHub before publishing again.",
+                    binding.gist_url
+                ),
+            },
+        );
     }
+    binding.warning = None;
     Ok(binding)
+}
+
+async fn delete_gist(
+    client: &reqwest::Client,
+    access_token: &str,
+    gist_id: &str,
+) -> Result<(), String> {
+    let response = client
+        .delete(format!("{GITHUB_API_BASE}/gists/{gist_id}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("User-Agent", GITHUB_USER_AGENT)
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+        .send()
+        .await
+        .map_err(|error| github_request_error("delete Gist", error))?;
+    let status = response.status();
+    if status.is_success() || status == StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+    let body = response.text().await.unwrap_or_default();
+    Err(github_response_error("delete Gist", status, &body))
 }
 
 #[tauri::command]
@@ -569,6 +641,7 @@ pub async fn publishing_sync(
     mut request: SyncPublicationRequest,
 ) -> Result<PublicationBinding, String> {
     validate_sync_request(&request)?;
+    let _claim = PublicationClaim::acquire(&request.publication_id)?;
     let workspace_root = state.config().workspace_root.clone();
     let existing = publication_binding(&workspace_root, &request.publication_id)?
         .ok_or_else(|| "This publication is no longer linked to a local Gist.".to_string())?;
@@ -729,7 +802,7 @@ pub async fn publishing_sync(
     // The sync owns every scalar field of the binding, but proposal states can
     // gain entries while its uploads are in flight (a proposal accepted in the
     // research pane); write those through a merge so they survive.
-    let merge_result = update_publication_binding_with(&workspace_root, &template, |stored| {
+    let merge = |stored: &mut PublicationBinding| {
         let concurrent_states = std::mem::take(&mut stored.proposal_states);
         *stored = template.clone();
         stored.proposal_states = concurrent_states;
@@ -740,7 +813,12 @@ pub async fn publishing_sync(
                 stored.proposal_states.insert(key.clone(), state.clone());
             }
         }
-    });
+    };
+    // The stored revision is the external-edit baseline: if this write is
+    // lost, every later sync sees our own update as a foreign edit and is
+    // refused. Retry once before falling back to the warning.
+    let merge_result = update_publication_binding_with(&workspace_root, &template, merge)
+        .or_else(|_| update_publication_binding_with(&workspace_root, &template, merge));
     let binding = match merge_result {
         Ok(binding) => binding,
         Err(error) => {
@@ -2810,6 +2888,21 @@ fn append_warning(warning: &mut Option<String>, message: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publication_claim_serializes_commands_per_publication_id() {
+        let first = PublicationClaim::acquire("pub_claim_a").unwrap();
+        assert!(
+            PublicationClaim::acquire("pub_claim_a")
+                .err()
+                .is_some_and(|error| error.contains("already being published"))
+        );
+        // Other publications are independent.
+        let other = PublicationClaim::acquire("pub_claim_b").unwrap();
+        drop(first);
+        let again = PublicationClaim::acquire("pub_claim_a").unwrap();
+        drop((again, other));
+    }
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
