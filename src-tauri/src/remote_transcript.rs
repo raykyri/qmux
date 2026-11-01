@@ -323,19 +323,42 @@ fn recover(dir: &Path, binding: &Binding) -> Result<Checkpoint, String> {
         Err(e) => return Err(e.to_string()),
     };
     if checkpoint.cursor.offset > 0 {
-        let file = OpenOptions::new()
+        let file = match OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NOFOLLOW)
             .open(mirror(dir, &checkpoint, binding))
-            .map_err(|e| e.to_string())?;
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return restart_checkpoint(&path, checkpoint);
+            }
+            Err(e) => return Err(e.to_string()),
+        };
         if file.metadata().map_err(|e| e.to_string())?.len() < checkpoint.cursor.offset {
-            return Err("local transcript mirror is shorter than its checkpoint".into());
+            // The committed prefix is gone (the mirror was truncated or
+            // replaced outside qmux). Retrying cannot repair that, so stream
+            // the source again from byte 0 into the next generation.
+            return restart_checkpoint(&path, checkpoint);
         }
         // Discard an uncommitted suffix left by a crash between data and cursor.
         file.set_len(checkpoint.cursor.offset)
             .map_err(|e| e.to_string())?;
     }
     Ok(checkpoint)
+}
+
+/// Forgets a checkpoint whose mirror can no longer back it. An empty cursor
+/// identity never matches the remote file, so the next frame is a reset from
+/// byte 0 and `accept` writes it to a fresh generation directory instead of
+/// appending to (or failing on) the damaged mirror.
+fn restart_checkpoint(path: &Path, damaged: Checkpoint) -> Result<Checkpoint, String> {
+    let restarted = Checkpoint {
+        cursor: Cursor::default(),
+        generation: damaged.generation,
+        source: damaged.source,
+    };
+    save_json(path, &restarted)?;
+    Ok(restarted)
 }
 
 fn accept(
@@ -1091,6 +1114,46 @@ mod tests {
         assert!(accept(&dir, &other_binding, &mut recovered, make(true, 0)).is_err());
         let next = accept(&dir, &binding, &mut recovered, make(true, 0)).unwrap();
         assert_ne!(path, next); // A rewrite restarts parsing, even at equal length.
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_mirror_shorter_than_its_checkpoint_restarts_from_a_reset_frame() {
+        let dir = std::env::temp_dir().join(format!("qmux-short-mirror-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let binding = test_binding("claude", "s");
+        let data = "{\"a\":1}\n";
+        let frame = |reset, start| Frame {
+            session: "s".into(),
+            path: "/remote/file".into(),
+            start,
+            reset,
+            historical_end: 0,
+            cursor: Cursor {
+                offset: start + data.len() as u64,
+                identity: "inode".into(),
+                anchor: data.as_bytes().to_vec(),
+            },
+            data: data.into(),
+        };
+        let mut cp = Checkpoint::default();
+        let path = accept(&dir, &binding, &mut cp, frame(true, 0)).unwrap();
+        // Damage the committed prefix outside qmux.
+        fs::write(&path, b"").unwrap();
+        let mut recovered = recover(&dir, &binding).expect("damaged mirror must not wedge");
+        assert_eq!(recovered.cursor, Cursor::default());
+        // The restart is durable: a second recovery does not see the old cursor.
+        assert_eq!(recover(&dir, &binding).unwrap().cursor, Cursor::default());
+        // An empty identity makes the remote send a reset frame, which lands
+        // in the next generation rather than the damaged file.
+        assert!(accept(&dir, &binding, &mut recovered, frame(false, 0)).is_err());
+        let next = accept(&dir, &binding, &mut recovered, frame(true, 0)).unwrap();
+        assert_ne!(path, next);
+        assert_eq!(fs::read_to_string(&next).unwrap(), data);
+        // A deleted mirror restarts the same way.
+        fs::remove_file(&next).unwrap();
+        assert_eq!(recover(&dir, &binding).unwrap().cursor, Cursor::default());
         fs::remove_dir_all(dir).unwrap();
     }
 }
