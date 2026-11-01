@@ -2376,9 +2376,14 @@ mod tests {
         state.insert_agent(agent_bound_to("pane-2")).unwrap();
         let token = state.pane_remote_token("pane-1").unwrap();
         let payload = delivered_hook("event-1", "Stop", true, true);
-        let error =
-            handle_line(&state, &request_line(&token, "hook.deliver", payload)).unwrap_err();
-        assert!(error.contains("not authorized for that agent"));
+        // Discarded, not rejected: an error would be retried by the outbox and
+        // block every later hook for pane-1 behind it.
+        let ack = handle_line(&state, &request_line(&token, "hook.deliver", payload)).unwrap();
+        assert_eq!(ack["discarded"], true);
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        );
         state.insert_agent(agent_bound_to("pane-1")).unwrap();
         let mut payload = delivered_hook("event-2", "Stop", true, true);
         payload["notification"]["agentId"] = json!("retired-agent");
@@ -2400,6 +2405,34 @@ mod tests {
             .unwrap_err()
             .contains("remote pane credential")
         );
+    }
+
+    /// the old process's SessionEnd often reaches the desktop after the
+    /// CLI supervisor's `agent.detach_pane`, and the old agent record survives
+    /// the detach. Its backlog must be acknowledged (discarded), not rejected.
+    #[test]
+    fn remote_hook_backlog_of_a_detached_agent_is_discarded_not_rejected() {
+        let state = test_state();
+        insert_remote_shell(&state, "pane-1");
+        state.insert_agent(agent_bound_to("pane-1")).unwrap();
+        crate::workspace::detach_pane_agent(&state, "pane-1").unwrap();
+        let token = state.pane_remote_token("pane-1").unwrap();
+        for (id, replay) in [("late-session-end", true), ("live-session-end", false)] {
+            let mut payload = delivered_hook(id, "SessionEnd", replay, true);
+            if !replay {
+                payload["lease"] = handle_line(
+                    &state,
+                    &request_line(&token, "hook.delivery-lease", json!({})),
+                )
+                .unwrap()["lease"]
+                    .clone();
+            }
+            let ack = handle_line(&state, &request_line(&token, "hook.deliver", payload)).unwrap();
+            assert_eq!(ack["discarded"], true);
+        }
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(agent.pane_id, None);
+        assert_eq!(agent.status, AgentStatus::Idle);
     }
 
     #[test]

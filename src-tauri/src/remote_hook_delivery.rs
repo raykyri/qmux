@@ -88,23 +88,31 @@ pub(crate) fn deliver(
     let notification: AdapterNotification =
         serde_json::from_value(delivery.notification.clone())
             .map_err(|e| format!("invalid hook notification: {e}"))?;
-    let replaced = state.agent_by_pane(pane)?.is_some_and(|agent| {
-        notification
-            .agent_id
-            .as_deref()
-            .is_some_and(|id| id != agent.id)
-            || notification
-                .adapter_id
+    // Durable delivery replays a backlog that can outlive the process that
+    // wrote it: the agent may since have been detached (`agent.detach_pane` on
+    // exit) or displaced by a replacement launched in the same pane. Such an
+    // event is acknowledged and discarded — never applied and never an error,
+    // because the outbox retries errors and would block every later hook for
+    // this pane behind it. Discarding performs no action on any agent, so this
+    // keeps the scope guarantee of the legacy `hook.notify` rejection.
+    let pane_agent = state.agent_by_pane(pane)?;
+    let foreign_agent = match notification.agent_id.as_deref() {
+        Some(id) => state
+            .agent(id)?
+            .is_some_and(|agent| agent.pane_id.as_deref() != Some(pane)),
+        None => false,
+    };
+    let replaced = foreign_agent
+        || pane_agent.is_some_and(|agent| {
+            notification
+                .agent_id
                 .as_deref()
-                .is_some_and(|id| id != agent.adapter)
-    });
-    // Do not allow the reconciliation path to bypass the normal agent scope check.
-    if let Some(id) = notification.agent_id.as_deref()
-        && let Some(agent) = state.agent(id)?
-        && agent.pane_id.as_deref() != Some(pane)
-    {
-        return Err("control token is not authorized for that agent".into());
-    }
+                .is_some_and(|id| id != agent.id)
+                || notification
+                    .adapter_id
+                    .as_deref()
+                    .is_some_and(|id| id != agent.adapter)
+        });
     let pane_receipts = pane_receipts(state, pane)?;
     // Serialize retries within a pane without blocking other panes behind a
     // lifecycle handler that starts a queued turn or a fork.
