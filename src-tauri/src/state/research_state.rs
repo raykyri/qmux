@@ -1434,6 +1434,13 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            if !model
+                .research_nodes
+                .get(node_id)
+                .is_some_and(|node| node.agent_id.as_deref() == Some(agent_id))
+            {
+                return Err("research worker no longer owns this run".to_string());
+            }
             if let Some(agent) = model.agents.get_mut(agent_id) {
                 if let Some(session_id) = session_id.clone() {
                     agent.session_id = Some(session_id);
@@ -1493,6 +1500,11 @@ impl AppState {
         success: bool,
         error: Option<String>,
     ) -> Result<(), String> {
+        // Runtime registration remains held through snapshot I/O and final
+        // graph settlement, so retry cannot invalidate this ownership check.
+        if self.research_node(node_id)?.agent_id.as_deref() != Some(agent_id) {
+            return Err("research worker no longer owns this run".to_string());
+        }
         let now = now_millis();
         let requested_status = if success {
             ResearchNodeStatus::Complete
@@ -1530,6 +1542,13 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            if !model
+                .research_nodes
+                .get(node_id)
+                .is_some_and(|node| node.agent_id.as_deref() == Some(agent_id))
+            {
+                return Err("research worker no longer owns this run".to_string());
+            }
             if let Some(agent) = model.agents.get_mut(agent_id) {
                 agent.status = if effective_success {
                     AgentStatus::Done
@@ -1631,6 +1650,8 @@ impl AppState {
             }
         }
         let turns = selected_turns.unwrap_or(content.turns);
+        #[cfg(test)]
+        crate::research_runtime::tests::before_snapshot(node_id);
         research::write_research_run_outcome_snapshot_verified(
             &self.inner.config.workspace_root,
             node_id,
@@ -2591,14 +2612,8 @@ impl AppState {
         // Best-effort: the graph snapshots are unreachable once their records
         // are gone, and a leftover file is only clutter.
         for record in reaped_thread_records {
-            let path = std::path::Path::new(&record.snapshot_path);
-            if let Err(err) = std::fs::remove_file(path)
-                && err.kind() != std::io::ErrorKind::NotFound
-            {
-                eprintln!(
-                    "qmux: failed to remove research thread graph {}: {err}",
-                    record.snapshot_path
-                );
+            if let Err(err) = crate::thread_graph::remove_thread_snapshot(&record) {
+                eprintln!("qmux: failed to remove research thread graph: {err}");
             }
         }
         Ok(())
@@ -2727,14 +2742,8 @@ impl AppState {
             }
         }
         for record in reaped_thread_records {
-            let path = std::path::Path::new(&record.snapshot_path);
-            if let Err(err) = std::fs::remove_file(path)
-                && err.kind() != std::io::ErrorKind::NotFound
-            {
-                eprintln!(
-                    "qmux: failed to remove research thread graph {}: {err}",
-                    record.snapshot_path
-                );
+            if let Err(err) = crate::thread_graph::remove_thread_snapshot(&record) {
+                eprintln!("qmux: failed to remove research thread graph: {err}");
             }
         }
         Ok(removal)
@@ -3092,14 +3101,8 @@ impl AppState {
             let Some(record) = record else {
                 continue;
             };
-            let path = std::path::Path::new(&record.snapshot_path);
-            if let Err(err) = std::fs::remove_file(path)
-                && err.kind() != std::io::ErrorKind::NotFound
-            {
-                eprintln!(
-                    "qmux: failed to remove detached research thread graph {}: {err}",
-                    record.snapshot_path
-                );
+            if let Err(err) = crate::thread_graph::remove_thread_snapshot(&record) {
+                eprintln!("qmux: failed to remove research thread graph: {err}");
             }
         }
         Ok(node_ids)

@@ -79,6 +79,31 @@ impl JsonlProcess {
         stderr_log: &Path,
         label: &str,
     ) -> Result<Self, String> {
+        Self::spawn_with_readers(
+            binary,
+            args,
+            envs,
+            cwd,
+            stderr_log,
+            label,
+            |_, name, work| thread::Builder::new().name(name.into()).spawn(work),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_with_readers(
+        binary: &str,
+        args: &[String],
+        envs: &[(&str, &str)],
+        cwd: &Path,
+        stderr_log: &Path,
+        label: &str,
+        mut start_reader: impl FnMut(
+            u32,
+            &str,
+            Box<dyn FnOnce() + Send>,
+        ) -> std::io::Result<thread::JoinHandle<()>>,
+    ) -> Result<Self, String> {
         if let Some(parent) = stderr_log.parent() {
             fs::create_dir_all(parent).map_err(|err| {
                 format!(
@@ -105,7 +130,7 @@ impl JsonlProcess {
             cwd.display()
         );
 
-        let mut child = Command::new(binary)
+        let child = Command::new(binary)
             .args(args)
             .envs(envs.iter().copied())
             .current_dir(cwd)
@@ -115,24 +140,42 @@ impl JsonlProcess {
             .process_group(0)
             .spawn()
             .map_err(|err| format!("failed to spawn {label} research process: {err}"))?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            terminate_after_setup_failure(&mut child);
-            format!("{label} research stdout was not piped")
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            terminate_after_setup_failure(&mut child);
-            format!("{label} research stderr was not piped")
-        })?;
-        let (tx, events) = mpsc::sync_channel(MAX_PENDING_EVENTS);
-        let stdout_label = label.to_string();
-        let stdout_reader = thread::spawn(move || read_jsonl(stdout, tx, &stdout_label));
-        let stderr_reader = thread::spawn(move || copy_bounded(stderr, log));
-        Ok(Self {
+        let mut process = Self {
             child,
-            events: Some(events),
-            stdout_reader: Some(stdout_reader),
-            stderr_reader: Some(stderr_reader),
-        })
+            events: None,
+            stdout_reader: None,
+            stderr_reader: None,
+        };
+        let stdout = process
+            .child
+            .stdout
+            .take()
+            .ok_or_else(|| format!("{label} research stdout was not piped"))?;
+        let stderr = process
+            .child
+            .stderr
+            .take()
+            .ok_or_else(|| format!("{label} research stderr was not piped"))?;
+        let (tx, events) = mpsc::sync_channel(MAX_PENDING_EVENTS);
+        process.events = Some(events);
+        let stdout_label = label.to_string();
+        process.stdout_reader = Some(
+            start_reader(
+                process.pid(),
+                "qmux-research-stdout",
+                Box::new(move || read_jsonl(stdout, tx, &stdout_label)),
+            )
+            .map_err(|err| format!("failed to start {label} stdout reader: {err}"))?,
+        );
+        process.stderr_reader = Some(
+            start_reader(
+                process.pid(),
+                "qmux-research-stderr",
+                Box::new(move || copy_bounded(stderr, log)),
+            )
+            .map_err(|err| format!("failed to start {label} stderr reader: {err}"))?,
+        );
+        Ok(process)
     }
 
     pub fn pid(&self) -> u32 {
@@ -266,12 +309,6 @@ fn copy_bounded(mut source: impl Read, mut target: impl Write) {
     let _ = target.flush();
 }
 
-fn terminate_after_setup_failure(child: &mut Child) {
-    crate::claude_sdk::terminate_process_tree(child.id());
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,5 +415,75 @@ mod tests {
 
         assert!(started.elapsed() < Duration::from_secs(2));
         fs::remove_dir_all(dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    #[test]
+    fn ownership_partial_reader_setup_reaps_child_on_error_and_panic() {
+        let root =
+            std::env::temp_dir().join(format!("qmux-reader-ownership-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        for fail_at in [0, 1] {
+            for panic in [false, true] {
+                let mut calls = 0;
+                let mut pid = 0;
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    JsonlProcess::spawn_with_readers(
+                        "/bin/sh",
+                        &[
+                            "-c".into(),
+                            "while :; do printf '{\"type\":\"tick\"}\\n'; done".into(),
+                        ],
+                        &[],
+                        &root,
+                        &root.join("stderr.log"),
+                        "fixture",
+                        |child_pid, name, work| {
+                            pid = child_pid;
+                            let index = calls;
+                            calls += 1;
+                            if index == fail_at {
+                                // On the second failure, allow stdout to fill its
+                                // bounded queue; cleanup must release the reader.
+                                thread::sleep(Duration::from_millis(50));
+                                if panic {
+                                    panic!("injected reader creation panic");
+                                }
+                                return Err(std::io::Error::other(
+                                    "injected reader creation error",
+                                ));
+                            }
+                            thread::Builder::new().name(name.into()).spawn(work)
+                        },
+                    )
+                }));
+                if panic {
+                    assert!(result.is_err());
+                } else {
+                    assert!(result.unwrap().is_err());
+                }
+                assert!(pid > 0);
+                assert_eq!(
+                    unsafe { libc::kill(pid as i32, 0) },
+                    -1,
+                    "child survived setup failure"
+                );
+                let mut status = 0;
+                assert_eq!(
+                    unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) },
+                    -1,
+                    "child was not reaped"
+                );
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::ECHILD)
+                );
+            }
+        }
+        fs::remove_dir_all(root).ok();
     }
 }

@@ -61,7 +61,15 @@ impl AppState {
             let removed_group_id = model
                 .panes
                 .get(pane_id)
-                .map(|pane| pane.info.group_id.clone());
+                .map(|pane| pane.info.group_id.clone())
+                .or_else(|| {
+                    model
+                        .recovery_panes
+                        .iter()
+                        .find(|pane| pane.id == pane_id)
+                        .map(|pane| pane.group_id.clone())
+                });
+            model.recovery_panes.retain(|pane| pane.id != pane_id);
             model.panes.remove(pane_id);
             model.pane_order.retain(|id| id != pane_id);
             model.research_retiring_panes.remove(pane_id);
@@ -96,7 +104,9 @@ impl AppState {
                 clear_recent_session_binding_locked(&mut model, Some(&agent_id), Some(pane_id));
                 model.agent_typing.remove(&agent_id);
                 model.agent_pending_pause.remove(&agent_id);
-                model.agent_draining.remove(&agent_id);
+                if !model.agent_queue_claims.contains_key(&agent_id) {
+                    model.agent_draining.remove(&agent_id);
+                }
                 model.agent_fork_barriers.remove(&agent_id);
                 model.agent_deferred_queue_resume.remove(&agent_id);
                 model.agent_send_tracking.remove(&agent_id);
@@ -110,20 +120,24 @@ impl AppState {
                 model
                     .agent_submit_watch
                     .retain(|(watched_agent, _)| watched_agent != &agent_id);
-                // A turn claimed for delivery but not yet settled when the pane goes
-                // away: roll it back to the front of the queue so it isn't lost (and so
-                // the has_queue check below keeps the agent for restart recovery).
-                if let Some(turn) = model.agent_inflight.remove(&agent_id) {
-                    model
-                        .agent_turn_queues
-                        .entry(agent_id.clone())
-                        .or_default()
-                        .push_front(turn);
+                // A live sender retains ownership until it reports its outcome.
+                // Keep plain delivery durable in inflight for restart recovery;
+                // do not expose a second movable copy while the write is pending.
+                // New-pane dispatch may have cleared that durable record already,
+                // but its live claim still keeps the parked agent until settlement.
+                if !model.agent_queue_claims.contains_key(&agent_id)
+                    && let Some(turn) = model.agent_inflight.remove(&agent_id)
+                {
+                    let queue = model.agent_turn_queues.entry(agent_id.clone()).or_default();
+                    if !queue.iter().any(|queued| queued.id == turn.id) {
+                        queue.push_front(turn);
+                    }
                 }
                 let has_queue = model
                     .agent_turn_queues
                     .get(&agent_id)
-                    .is_some_and(|queue| !queue.is_empty());
+                    .is_some_and(|queue| !queue.is_empty())
+                    || model.agent_queue_claims.contains_key(&agent_id);
                 if !has_queue {
                     model.agents.remove(&agent_id);
                     model.turns.remove(&agent_id);
@@ -146,7 +160,8 @@ impl AppState {
                     // left it matching no live surface while siblings stayed open, so it
                     // silently vanished from the UI. When this was the group's last pane,
                     // keep the dead id: the queue is then captured into the closed-pane
-                    // undo snapshot and re-homed on restore/restart.
+                    // undo snapshot. Last-pane closure still removes the group and its
+                    // queues; it does not promise restart recovery.
                     let surviving_sibling = removed_group_id.as_deref().and_then(|group_id| {
                         model
                             .panes
@@ -154,13 +169,8 @@ impl AppState {
                             .find(|pane| pane.info.group_id == group_id)
                             .map(|pane| pane.info.id.clone())
                     });
-                    if let Some(agent) = model.agents.get_mut(&agent_id) {
-                        agent.pane_id = None;
-                        agent.orphaned_queue_pane_id =
-                            Some(surviving_sibling.unwrap_or_else(|| pane_id.to_string()));
-                        agent.status = AgentStatus::Idle;
-                        agent.paused = true;
-                    }
+                    let home = surviving_sibling.unwrap_or_else(|| pane_id.to_string());
+                    park_agent_locked(&mut model, &agent_id, &home);
                 }
             }
 

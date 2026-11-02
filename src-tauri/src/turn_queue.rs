@@ -238,8 +238,15 @@ pub fn move_queued_agent_turn(
             // Roll the turn back so the move can't lose it (preserving queue
             // directives). Re-emit the source queue so the UI reflects the restored
             // item.
-            let pending =
-                state.insert_agent_turn_at(&request.from_agent_id, request.index, removed_turn)?;
+            let pending = state.insert_agent_turn_at(
+                &request.from_agent_id,
+                request.index,
+                removed_turn,
+                source
+                    .pane_id
+                    .as_deref()
+                    .or(source.orphaned_queue_pane_id.as_deref()),
+            )?;
             let restored = state.agent_queued_turns(&request.from_agent_id)?;
             state.emit(QmuxEvent::new(
                 "agent.turn_queued",
@@ -451,7 +458,7 @@ pub fn queue_wait_agent_turn(
     let _source_ran = !agent.paused
         && !state.agent_is_typing(&agent.id)?
         && policy.can_send(agent.status)
-        && drain_agent_turn_queue(state, &agent.id)?;
+        && drain_agent_turn_queue_when_ready(state, &agent.id)?;
     let queued_turns = state.agent_queued_turns(&agent.id)?;
     let queued = enqueued_turn
         .as_ref()
@@ -570,7 +577,7 @@ pub fn reorder_queued_agent_turn(
         && !state.agent_is_typing(&agent_id)?
         && agent_composer_policy(state, &agent)?.can_send(agent.status)
     {
-        match drain_agent_turn_queue(state, &agent_id) {
+        match drain_agent_turn_queue_when_ready(state, &agent_id) {
             Ok(true) => {
                 queued_turns = state.agent_queued_turns(&agent_id)?;
                 if let Some(updated) = state.agent(&agent_id)? {
@@ -608,7 +615,27 @@ pub fn reorder_queued_agent_turn(
 /// new panes and leave it idle, so they don't count, keeping callers'
 /// `agent.running` emissions and `sent` flags truthful.
 pub fn drain_agent_turn_queue(state: &AppState, agent_id: &str) -> Result<bool, String> {
-    let result = drain_agent_turn_queue_inner(state, agent_id)?;
+    drain_agent_turn_queue_with(state, agent_id, None)
+}
+
+/// Automatic drain (idle-adjacent wake triggers: typing-clear, unpause, enqueue,
+/// reorder, fork-ready, waiter release). Unlike [`drain_agent_turn_queue`], every
+/// claim re-checks pause, the typing hold and the adapter's ready statuses under the
+/// model lock, so callers' unlocked pre-checks are only a fast path.
+pub fn drain_agent_turn_queue_when_ready(state: &AppState, agent_id: &str) -> Result<bool, String> {
+    let Some(agent) = state.agent(agent_id)? else {
+        return Ok(false);
+    };
+    let policy = agent_composer_policy(state, &agent)?;
+    drain_agent_turn_queue_with(state, agent_id, Some(&policy.ready_statuses))
+}
+
+fn drain_agent_turn_queue_with(
+    state: &AppState,
+    agent_id: &str,
+    ready_statuses: Option<&[AgentStatus]>,
+) -> Result<bool, String> {
+    let result = drain_agent_turn_queue_inner(state, agent_id, ready_statuses)?;
     if result.completed_idle_delivery {
         // Delivery turns can resolve agents without a later Stop hook. Wake their
         // dependents through the iterative release path below rather than recursively
@@ -631,14 +658,20 @@ struct DrainAgentTurnQueueResult {
 fn drain_agent_turn_queue_inner(
     state: &AppState,
     agent_id: &str,
+    ready_statuses: Option<&[AgentStatus]>,
 ) -> Result<DrainAgentTurnQueueResult, String> {
     let mut completed_idle_delivery = false;
     loop {
         // Claim under the model lock so two concurrent triggers can't each pop a ready
         // turn and double-send (the agent isn't marked Running until the send below).
-        match state.claim_ready_agent_turn(agent_id)? {
-            AgentTurnClaim::Ready { turn, pending } => {
-                match send_claimed_turn(state, agent_id, turn, pending, true)? {
+        match state.claim_ready_agent_turn_gated(agent_id, ready_statuses)? {
+            AgentTurnClaim::Ready {
+                turn,
+                pending,
+                claim_id,
+            } => {
+                match send_claimed_turn(state, agent_id, turn, pending, claim_id, true)? {
+                    DispatchOutcome::Retired => return Ok(DrainAgentTurnQueueResult::default()),
                     DispatchOutcome::Ran => {
                         return Ok(DrainAgentTurnQueueResult {
                             source_running: true,
@@ -648,7 +681,11 @@ fn drain_agent_turn_queue_inner(
                         });
                     }
                     DispatchOutcome::ForkPending => {
-                        let finish = state.finish_agent_fork_dispatch(agent_id)?;
+                        let Some(finish) =
+                            state.finish_claimed_agent_fork_dispatch(agent_id, claim_id, None)?
+                        else {
+                            return Ok(DrainAgentTurnQueueResult::default());
+                        };
                         if !finish.ready {
                             return Ok(DrainAgentTurnQueueResult::default());
                         }
@@ -698,6 +735,8 @@ fn drain_agent_turn_queue_inner(
 /// one place (`send_claimed_turn`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DispatchOutcome {
+    /// Teardown/Undo revoked this claim. The old caller must leave its replacement alone.
+    Retired,
     /// The turn was pasted into the agent's own pane; the agent is running it.
     Ran,
     /// A fork was spawned, but its child has not yet adopted an independent
@@ -717,7 +756,7 @@ enum DispatchOutcome {
 /// [`AppState::claim_next_turn_or_settle`]. Ordinary success and every failure clear
 /// the draining guard here. A pending fork deliberately returns with the guard held;
 /// its caller must settle any stale source status and call
-/// [`AppState::finish_agent_fork_dispatch`] before continuing. That ownership handoff
+/// [`AppState::finish_claimed_agent_fork_dispatch`] before continuing. That ownership handoff
 /// prevents a child-ready/exit hook from racing the caller's status write. A turn
 /// carrying another `delivery` directive goes to a new pane instead of this agent's
 /// PTY and leaves its status untouched — the caller is expected to keep draining.
@@ -726,14 +765,14 @@ fn send_claimed_turn(
     agent_id: &str,
     turn: QueuedTurn,
     pending_turns: usize,
+    claim_id: u64,
     resume_queue_after_fork: bool,
 ) -> Result<DispatchOutcome, String> {
-    let agent = match state.agent(agent_id)? {
+    let agent = match state.agent_for_queue_claim(agent_id, claim_id)? {
         Some(agent) => agent,
         None => {
-            state.requeue_inflight_after_failed_drain(agent_id, turn);
-            state.finish_agent_drain(agent_id);
-            return Err(format!("Agent {agent_id} was not found"));
+            state.requeue_inflight_after_failed_drain(agent_id, claim_id, turn);
+            return Ok(DispatchOutcome::Retired);
         }
     };
     let queued_command = turn
@@ -749,12 +788,15 @@ fn send_claimed_turn(
             // instead of re-running it on restart and minting a duplicate
             // pane/agent/worktree. (Plain turns keep at-least-once semantics —
             // re-pasting text is benign; re-forking is not.)
-            state.clear_agent_inflight(agent_id);
+            if !state.clear_agent_inflight(agent_id, claim_id) {
+                return Ok(DispatchOutcome::Retired);
+            }
             deliver_queued_turn_to_new_pane(
                 state,
                 &agent,
                 &turn.text,
                 delivery,
+                claim_id,
                 resume_queue_after_fork,
             )
             .map_err(|message| TurnSendError {
@@ -766,12 +808,20 @@ fn send_claimed_turn(
             // Slash-command delivery has the same at-most-once crash semantics as
             // an explicit delivery directive: spawning a duplicate fork is worse
             // than losing the command in the tiny post-spawn/pre-confirm window.
-            state.clear_agent_inflight(agent_id);
-            deliver_queued_composer_command(state, &agent, command, resume_queue_after_fork)
-                .map_err(|message| TurnSendError {
-                    message,
-                    text_delivered: false,
-                })
+            if !state.clear_agent_inflight(agent_id, claim_id) {
+                return Ok(DispatchOutcome::Retired);
+            }
+            deliver_queued_composer_command(
+                state,
+                &agent,
+                command,
+                claim_id,
+                resume_queue_after_fork,
+            )
+            .map_err(|message| TurnSendError {
+                message,
+                text_delivered: false,
+            })
         }
         (None, None) => send_agent_turn(state, &agent, &turn, AgentSendSource::QueuedTurn)
             .map(|_| DispatchOutcome::Ran),
@@ -785,34 +835,24 @@ fn send_claimed_turn(
             // concatenate onto the one sitting in the composer.
             let mut turn = turn;
             turn.possibly_pasted = turn.possibly_pasted || err.text_delivered;
-            state.requeue_inflight_after_failed_drain(agent_id, turn);
-            state.finish_agent_drain(agent_id);
+            if !state.requeue_inflight_after_failed_drain(agent_id, claim_id, turn) {
+                return Ok(DispatchOutcome::Retired);
+            }
             return Err(err.message);
         }
     };
-    // Delivered: clear the in-flight record so it isn't re-queued on the next restart
-    // (a no-op for delivery turns, which cleared it before dispatch).
-    state.clear_agent_inflight(agent_id);
-    if turn.pause_after {
-        if delivers_to_new_pane {
-            // A delivery turn never runs on this agent, so its "pause after" takes
-            // effect now rather than arming a pending pause for the next idle.
-            state.set_agent_paused(agent_id, true)?;
-        } else {
-            // A pause-after turn arms the pause; it takes effect when this turn
-            // finishes (see `advance_after_idle`), not now.
-            state.mark_agent_pending_pause(agent_id)?;
-        }
-    }
+    let Some(resume_queue) = state.complete_claimed_agent_turn(
+        agent_id,
+        claim_id,
+        turn.pause_after,
+        delivers_to_new_pane,
+        matches!(outcome, DispatchOutcome::ForkPending),
+    ) else {
+        return Ok(DispatchOutcome::Retired);
+    };
     let outcome = match outcome {
-        DispatchOutcome::ForkPending => DispatchOutcome::ForkPending,
-        DispatchOutcome::StayedIdle { .. } => DispatchOutcome::StayedIdle {
-            resume_queue: state.finish_agent_drain(agent_id),
-        },
-        DispatchOutcome::Ran => {
-            state.finish_agent_drain(agent_id);
-            DispatchOutcome::Ran
-        }
+        DispatchOutcome::StayedIdle { .. } => DispatchOutcome::StayedIdle { resume_queue },
+        outcome => outcome,
     };
     let queued_turns = state.agent_queued_turns(agent_id)?;
     state.emit(QmuxEvent::new(
@@ -875,12 +915,14 @@ fn hold_queue_and_settle(
     // This is not a successful completion, so a stale queued-send record must not
     // look like "already drained" to a later idle, and must not block Unpause.
     let _ = state.clear_agent_outstanding_sends(agent_id);
-    let pending_pause = state.take_agent_pending_pause(agent_id)?;
+    let pending_pause = state.pause_agent_if_pending(agent_id, settled_status)?;
     let has_queue = !state.agent_queued_turns(agent_id)?.is_empty();
-    if pending_pause || has_queue {
-        state.set_agent_paused(agent_id, true)?;
+    if !pending_pause {
+        if has_queue {
+            state.set_agent_paused(agent_id, true)?;
+        }
+        state.set_agent_status(agent_id, settled_status)?;
     }
-    state.set_agent_status(agent_id, settled_status)?;
     if release_waiters {
         release_waiters_for_agent(state, agent_id)?;
     }
@@ -928,21 +970,11 @@ fn advance_after_settlement(
         // aborted, so presenting it as Done — and releasing dependents that
         // asked to wait for actual completion — would defeat the interruption
         // settlement path.
-        if state.take_agent_pending_pause(agent_id)? {
-            state.set_agent_paused(agent_id, true)?;
-            state.set_agent_status(agent_id, settled_status)?;
+        if state.pause_agent_if_pending(agent_id, settled_status)? {
             if release_waiters {
                 release_waiters_for_agent(state, agent_id)?;
             }
             return Ok(IdleResolution::Paused);
-        }
-        if state.agent_is_paused(agent_id)? {
-            // Paused: leave the queue intact and don't auto-send.
-            state.set_agent_status(agent_id, settled_status)?;
-            if release_waiters {
-                release_waiters_for_agent(state, agent_id)?;
-            }
-            return Ok(IdleResolution::Idle);
         }
         // Atomically claim a ready turn, observe that another drain owns the agent, or
         // settle to the requested ready status — all under one model lock. This both
@@ -951,17 +983,28 @@ fn advance_after_settlement(
         // The user-is-typing case is handled inside as an idle settle (the queue is held;
         // it resumes when the frontend clears the typing flag).
         match state.claim_next_turn_or_settle(agent_id, settled_status)? {
-            IdleAdvance::Sent { turn, pending } => {
+            IdleAdvance::Sent {
+                turn,
+                pending,
+                claim_id,
+            } => {
                 let is_delivery = turn.delivery.is_some();
-                match send_claimed_turn(state, agent_id, turn, pending, true) {
+                match send_claimed_turn(state, agent_id, turn, pending, claim_id, true) {
+                    Ok(DispatchOutcome::Retired) => return Ok(IdleResolution::Idle),
                     Ok(DispatchOutcome::Ran) => return Ok(IdleResolution::Drained),
                     Ok(DispatchOutcome::ForkPending) => {
                         // Settle while the fork dispatch still owns the ordinary drain
                         // guard. A racing ready/exit signal can only mark the barrier;
                         // finish then atomically hands ownership either back to this
                         // loop or to the later hook-side resume path.
-                        state.set_agent_status(agent_id, settled_status)?;
-                        let finish = state.finish_agent_fork_dispatch(agent_id)?;
+                        let Some(finish) = state.finish_claimed_agent_fork_dispatch(
+                            agent_id,
+                            claim_id,
+                            Some(settled_status),
+                        )?
+                        else {
+                            return Ok(IdleResolution::Idle);
+                        };
                         if finish.ready
                             && state
                                 .agent(agent_id)?
@@ -1038,7 +1081,7 @@ pub fn release_waiters_for_agent(state: &AppState, target_agent_id: &str) -> Res
             if !policy.can_send(source.status) {
                 continue;
             }
-            match drain_agent_turn_queue_inner(state, &source.id) {
+            match drain_agent_turn_queue_inner(state, &source.id, Some(&policy.ready_statuses)) {
                 Ok(result) => {
                     if result.source_running {
                         drained_count += 1;
@@ -1154,7 +1197,7 @@ fn resume_source_after_fork_barrier(
         && !state.agent_is_typing(source_agent_id)?
         && agent_composer_policy(state, &source)?.can_send(source.status);
     if should_resume {
-        match drain_agent_turn_queue(state, source_agent_id) {
+        match drain_agent_turn_queue_when_ready(state, source_agent_id) {
             Ok(true) => {
                 if let Some(updated) = state.agent(source_agent_id)? {
                     state.emit(QmuxEvent::new(
@@ -1201,12 +1244,9 @@ pub fn unpause_agent(
         .ok_or_else(|| format!("Agent {agent_id} was not found"))?;
     let agent = state.set_agent_paused(agent_id, false)?.unwrap_or(agent);
 
-    let policy = agent_composer_policy(state, &agent)?;
-    let sent = if policy.can_send(agent.status) {
-        drain_agent_turn_queue(state, agent_id)?
-    } else {
-        false
-    };
+    // Gated drain: honors a live typing hold (the typing-clear then drains, since the
+    // pause is already cleared) and re-reads status under the claim lock.
+    let sent = drain_agent_turn_queue_when_ready(state, agent_id)?;
 
     let queued_turns = state.agent_queued_turns(agent_id)?;
     state.emit(QmuxEvent::new(
@@ -1231,6 +1271,7 @@ pub fn unpause_agent(
 /// idle handler holds the queue. On clear, if the agent is idle (and not paused), the
 /// held turn is drained now; otherwise it resumes on the next idle. The frontend sets
 /// this on keystrokes and clears it 1500ms after typing stops.
+#[cfg(test)]
 pub fn set_agent_typing(
     state: &AppState,
     agent_id: &str,
@@ -1241,12 +1282,7 @@ pub fn set_agent_typing(
     let mut sent = false;
     if !typing {
         // Typing stopped: drain a held turn if the agent is idle and not paused.
-        if let Some(agent) = state.agent(agent_id)?
-            && !agent.paused
-            && agent_composer_policy(state, &agent)?.can_send(agent.status)
-        {
-            sent = drain_agent_turn_queue(state, agent_id)?;
-        }
+        sent = drain_agent_turn_queue_when_ready(state, agent_id)?;
     }
 
     let queued_turns = state.agent_queued_turns(agent_id)?;
@@ -1255,6 +1291,64 @@ pub fn set_agent_typing(
         pending_turns: queued_turns.len(),
         queued_turns,
     })
+}
+
+/// Applies an ordered update from the current webview document. A bounded lease
+/// recovers a lost release; normal input renews it on each keystroke.
+pub fn set_agent_typing_for_document(
+    state: &AppState,
+    agent_id: &str,
+    document: &str,
+    sequence: u64,
+    typing: bool,
+) -> Result<SendNextQueuedAgentTurnResult, String> {
+    let (accepted, start_expiry) =
+        state.update_agent_typing(agent_id, document, sequence, typing)?;
+    if start_expiry {
+        let state = state.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                match expire_agent_typing(&state, std::time::Instant::now()) {
+                    Ok(true) => {}
+                    Ok(false) => break,
+                    Err(err) => {
+                        eprintln!("qmux: typing lease expiry failed: {err}");
+                        break;
+                    }
+                }
+            }
+        });
+    }
+    let sent = accepted && !typing && drain_agent_turn_queue_when_ready(state, agent_id)?;
+    let queued_turns = state.agent_queued_turns(agent_id)?;
+    Ok(SendNextQueuedAgentTurnResult {
+        sent,
+        pending_turns: queued_turns.len(),
+        queued_turns,
+    })
+}
+
+/// Wake only: the caller already invalidated/expired holds under the model lock.
+/// Never clear again here, since a newer hold may have arrived while queued work
+/// for a previous agent was being delivered.
+pub fn resume_after_typing_holds(state: &AppState, agent_ids: Vec<String>) {
+    for agent_id in agent_ids {
+        if let Err(err) = drain_agent_turn_queue_when_ready(state, &agent_id) {
+            eprintln!("qmux: failed to resume {agent_id} after typing: {err}");
+        }
+    }
+}
+
+fn expire_agent_typing(state: &AppState, now: std::time::Instant) -> Result<bool, String> {
+    let (expired, keep_running) = state.expire_agent_typing(now)?;
+    if !expired.is_empty() {
+        // Delivery may block on native I/O or pane creation. Keep the lease
+        // clock moving for other agents while these wakeups are dispatched.
+        let state = state.clone();
+        std::thread::spawn(move || resume_after_typing_holds(&state, expired));
+    }
+    Ok(keep_running)
 }
 
 pub fn send_next_queued_agent_turn(
@@ -1266,14 +1360,18 @@ pub fn send_next_queued_agent_turn(
     // queue, unlike the automatic drains, which keep going while the agent stays
     // idle. `sent` reports whether the top item was dispatched, whatever its kind.
     let sent = match state.claim_ready_agent_turn(agent_id)? {
-        AgentTurnClaim::Ready { turn, pending } => {
-            let outcome = send_claimed_turn(state, agent_id, turn, pending, false)?;
+        AgentTurnClaim::Ready {
+            turn,
+            pending,
+            claim_id,
+        } => {
+            let outcome = send_claimed_turn(state, agent_id, turn, pending, claim_id, false)?;
             match outcome {
                 DispatchOutcome::ForkPending => {
                     // Explicit send-next owns exactly one item. Finalize the barrier
                     // handoff; the barrier remains non-resuming unless a separate
                     // direct send raced this dispatch and requested its own wakeup.
-                    finish_send_next_fork_dispatch(state, agent_id)?;
+                    finish_send_next_fork_dispatch(state, agent_id, claim_id)?;
                 }
                 DispatchOutcome::StayedIdle { resume_queue: true } => {
                     // The manual action still dispatched exactly its one selected item;
@@ -1281,9 +1379,11 @@ pub fn send_next_queued_agent_turn(
                     // queued while that dispatch held the guard.
                     drain_agent_turn_queue(state, agent_id)?;
                 }
-                DispatchOutcome::Ran | DispatchOutcome::StayedIdle { .. } => {}
+                DispatchOutcome::Retired
+                | DispatchOutcome::Ran
+                | DispatchOutcome::StayedIdle { .. } => {}
             }
-            true
+            !matches!(outcome, DispatchOutcome::Retired)
         }
         AgentTurnClaim::Draining | AgentTurnClaim::Idle => false,
     };
@@ -1295,8 +1395,14 @@ pub fn send_next_queued_agent_turn(
     })
 }
 
-fn finish_send_next_fork_dispatch(state: &AppState, agent_id: &str) -> Result<(), String> {
-    let finish = state.finish_agent_fork_dispatch(agent_id)?;
+fn finish_send_next_fork_dispatch(
+    state: &AppState,
+    agent_id: &str,
+    claim_id: u64,
+) -> Result<(), String> {
+    let Some(finish) = state.finish_claimed_agent_fork_dispatch(agent_id, claim_id, None)? else {
+        return Ok(());
+    };
     if finish.ready && finish.resume_queue {
         // The child became ready inline while dispatch still owned the source.
         // Preserve the separate direct-send wakeup carried by the barrier instead of
@@ -1383,7 +1489,7 @@ fn drain_after_enqueue(
     let _source_ran = !agent.paused
         && !state.agent_is_typing(agent_id)?
         && policy.can_send(agent.status)
-        && drain_agent_turn_queue(state, agent_id)?;
+        && drain_agent_turn_queue_when_ready(state, agent_id)?;
     // Rebuild the snapshot after the drain either way: the drain result says only
     // whether the source agent is running now, while the command result should say
     // whether this submitted turn is still queued. Delivery turns can dispatch to a
@@ -1407,12 +1513,13 @@ fn deliver_queued_turn_to_new_pane(
     source: &AgentInfo,
     text: &str,
     delivery: &QueuedTurnDelivery,
+    claim_id: u64,
     resume_queue_after_fork: bool,
 ) -> Result<DispatchOutcome, String> {
     match delivery {
         QueuedTurnDelivery::Fork { use_worktree } => {
             let pane = fork_agent_source(state, source, *use_worktree, Some(text))?;
-            begin_queued_fork_barrier(state, source, &pane, resume_queue_after_fork)
+            begin_queued_fork_barrier(state, source, &pane, claim_id, resume_queue_after_fork)
         }
         QueuedTurnDelivery::NewSession => {
             spawn_sibling_agent_session(state, source, text)?;
@@ -1430,6 +1537,7 @@ fn deliver_queued_composer_command(
     state: &AppState,
     source: &AgentInfo,
     command: QueuedComposerCommand<'_>,
+    claim_id: u64,
     resume_queue_after_fork: bool,
 ) -> Result<DispatchOutcome, String> {
     match command {
@@ -1438,7 +1546,7 @@ fn deliver_queued_composer_command(
             use_worktree,
         } => {
             let pane = fork_agent_source(state, source, use_worktree, Some(prompt))?;
-            begin_queued_fork_barrier(state, source, &pane, resume_queue_after_fork)
+            begin_queued_fork_barrier(state, source, &pane, claim_id, resume_queue_after_fork)
         }
     }
 }
@@ -1447,13 +1555,19 @@ fn begin_queued_fork_barrier(
     state: &AppState,
     source: &AgentInfo,
     pane: &crate::state::PaneInfo,
+    claim_id: u64,
     resume_queue_after_fork: bool,
 ) -> Result<DispatchOutcome, String> {
     let child_agent_id = pane
         .agent_id
         .as_deref()
         .ok_or_else(|| format!("forked pane {} has no agent", pane.id))?;
-    if state.begin_agent_fork_barrier(&source.id, child_agent_id, resume_queue_after_fork)? {
+    if state.begin_agent_fork_barrier_with_claim(
+        &source.id,
+        child_agent_id,
+        resume_queue_after_fork,
+        Some(claim_id),
+    )? {
         Ok(DispatchOutcome::ForkPending)
     } else {
         Ok(DispatchOutcome::StayedIdle {
@@ -2112,6 +2226,113 @@ mod tests {
     }
 
     #[test]
+    fn pause_after_delivered_turn_survives_restart_before_settlement() {
+        let state = test_state();
+        state.restore_session();
+        state
+            .insert_agent(sample_agent_with_id(
+                "agent-1",
+                AgentStatus::Running,
+                Some("pane-1"),
+            ))
+            .unwrap();
+        state
+            .insert_pane(sample_pane_runtime("pane-1", Some("agent-1")))
+            .unwrap();
+        state.enqueue_agent_turn("agent-1", "first".into()).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "second".into())
+            .unwrap();
+        state
+            .set_queued_turn_pause("agent-1", 0, true, Some("first"), None)
+            .unwrap();
+        assert!(matches!(
+            advance_after_idle(&state, "agent-1").unwrap(),
+            IdleResolution::Drained
+        ));
+        assert!(state.agent_delivery_debug("agent-1").unwrap().pending_pause);
+        let config = state.config().clone();
+        state.finalize_persistence_for_exit();
+
+        let restored = AppState::new(config.clone());
+        restored.restore_session();
+        // Replace only the PTY runtime, as remote reattach does. The agent and
+        // queue come from the actual production loader and AppState hydration.
+        restored
+            .insert_pane(sample_pane_runtime("pane-1", Some("agent-1")))
+            .unwrap();
+        assert!(matches!(
+            advance_after_idle(&restored, "agent-1").unwrap(),
+            IdleResolution::Paused
+        ));
+        assert!(restored.agent_is_paused("agent-1").unwrap());
+        assert_eq!(
+            restored.list_agent_turn_queue("agent-1").unwrap(),
+            ["second"]
+        );
+        assert!(unpause_agent(&restored, "agent-1").unwrap().sent);
+        assert!(
+            restored
+                .list_agent_turn_queue("agent-1")
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::remove_dir_all(config.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn pending_pause_failed_delivery_retries_after_restart_without_arming_early() {
+        let state = test_state();
+        state.restore_session();
+        state.insert_agent(sample_agent(AgentStatus::Done)).unwrap();
+        state.enqueue_agent_turn("agent-1", "first".into()).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "second".into())
+            .unwrap();
+        state
+            .set_queued_turn_pause("agent-1", 0, true, None, None)
+            .unwrap();
+        let original_id = state.agent_queued_turns("agent-1").unwrap()[0].id.clone();
+        assert!(drain_agent_turn_queue(&state, "agent-1").is_err());
+        assert!(!state.agent_delivery_debug("agent-1").unwrap().pending_pause);
+        let config = state.config().clone();
+        state.finalize_persistence_for_exit();
+        let restored = AppState::new(config.clone());
+        restored.restore_session();
+        let queue = restored.agent_queued_turns("agent-1").unwrap();
+        assert_eq!(queue[0].id, original_id);
+        assert!(queue[0].pause_after);
+        assert!(
+            !restored
+                .agent_delivery_debug("agent-1")
+                .unwrap()
+                .pending_pause
+        );
+        restored
+            .insert_pane(sample_pane_runtime("missing-pane", Some("agent-1")))
+            .unwrap();
+        assert!(drain_agent_turn_queue(&restored, "agent-1").unwrap());
+        assert!(
+            restored
+                .agent_delivery_debug("agent-1")
+                .unwrap()
+                .pending_pause
+        );
+        // Simulate the prompt acknowledgement that precedes a genuine idle.
+        restored.clear_agent_outstanding_sends("agent-1").unwrap();
+        assert!(matches!(
+            advance_after_idle(&restored, "agent-1").unwrap(),
+            IdleResolution::Paused
+        ));
+        assert_eq!(
+            restored.list_agent_turn_queue("agent-1").unwrap(),
+            ["second"]
+        );
+        assert!(unpause_agent(&restored, "agent-1").unwrap().sent);
+        std::fs::remove_dir_all(config.workspace_root).unwrap();
+    }
+
+    #[test]
     fn ready_agent_statuses_send_immediately() {
         let policy = claude_policy();
         assert!(!policy.should_queue(AgentStatus::AwaitingInput));
@@ -2541,6 +2762,8 @@ mod tests {
         let state = test_state();
         let mut source = agent_with_id("source", AgentStatus::Done);
         source.pane_id = None;
+        source.orphaned_queue_pane_id = Some("source-home".to_string());
+        source.paused = true;
         state.insert_agent(source).unwrap();
         // A busy target queues rather than sends, so no pane write is needed.
         state
@@ -2575,6 +2798,8 @@ mod tests {
         let state = test_state();
         let mut source = agent_with_id("source", AgentStatus::Done);
         source.pane_id = None;
+        source.orphaned_queue_pane_id = Some("source-home".to_string());
+        source.paused = true;
         state.insert_agent(source).unwrap();
         // The target is ready to send but its pane is missing, so the handoff fails.
         state
@@ -2663,9 +2888,10 @@ mod tests {
         // Target is parked (pane closed, no pane binding) but still owns queued work —
         // exactly the state remove_pane leaves an agent in when its pane is closed with a
         // live queue.
-        state
-            .insert_agent(sample_agent_with_id("target", AgentStatus::Idle, None))
-            .unwrap();
+        let mut target = sample_agent_with_id("target", AgentStatus::Idle, None);
+        target.orphaned_queue_pane_id = Some("source-pane".to_string());
+        target.paused = true;
+        state.insert_agent(target).unwrap();
         state
             .insert_pane(sample_pane_runtime("source-pane", Some("source")))
             .unwrap();
@@ -3350,6 +3576,87 @@ mod tests {
     }
 
     #[test]
+    fn gated_claim_rechecks_pause_typing_and_status_under_the_lock() {
+        // auto-drain callers pre-check pause/typing/status without the lock. The
+        // claim itself must re-evaluate them, so a flag that lands between the caller's
+        // read and the pop cannot slip a turn through.
+        let state = test_state();
+        state.insert_agent(sample_agent(AgentStatus::Done)).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "queued".to_string())
+            .unwrap();
+        let ready = [
+            AgentStatus::Done,
+            AgentStatus::Idle,
+            AgentStatus::AwaitingInput,
+        ];
+
+        state.set_agent_paused("agent-1", true).unwrap();
+        assert!(matches!(
+            state
+                .claim_ready_agent_turn_gated("agent-1", Some(&ready))
+                .unwrap(),
+            AgentTurnClaim::Idle
+        ));
+        state.set_agent_paused("agent-1", false).unwrap();
+
+        state.set_agent_typing("agent-1", true).unwrap();
+        assert!(matches!(
+            state
+                .claim_ready_agent_turn_gated("agent-1", Some(&ready))
+                .unwrap(),
+            AgentTurnClaim::Idle
+        ));
+        state.set_agent_typing("agent-1", false).unwrap();
+
+        state
+            .set_agent_status("agent-1", AgentStatus::Running)
+            .unwrap();
+        assert!(matches!(
+            state
+                .claim_ready_agent_turn_gated("agent-1", Some(&ready))
+                .unwrap(),
+            AgentTurnClaim::Idle
+        ));
+        assert_eq!(state.agent_queued_turns("agent-1").unwrap().len(), 1);
+
+        // The explicit "send now" claim keeps bypassing the gate.
+        assert!(matches!(
+            state.claim_ready_agent_turn("agent-1").unwrap(),
+            AgentTurnClaim::Ready { .. }
+        ));
+    }
+
+    #[test]
+    fn idle_settle_rechecks_pause_inside_the_claim_lock() {
+        // a pause that lands after advance_after_settlement's fast-path
+        // `agent_is_paused` read must still hold the queue at the claim.
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::Running))
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "queued".to_string())
+            .unwrap();
+        state.set_agent_paused("agent-1", true).unwrap();
+
+        assert!(matches!(
+            state
+                .claim_next_turn_or_settle("agent-1", AgentStatus::Done)
+                .unwrap(),
+            IdleAdvance::Idle
+        ));
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["queued".to_string()]
+        );
+        assert!(matches!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Done
+        ));
+    }
+
+    #[test]
     fn paused_agent_queues_explicit_send() {
         let state = test_state();
         state
@@ -3477,10 +3784,18 @@ mod tests {
     fn waiter_stays_blocked_from_fork_claim_through_child_readiness() {
         let state = test_state();
         state
-            .insert_agent(sample_agent_with_id("target", AgentStatus::Done, None))
+            .insert_agent(sample_agent_with_id(
+                "target",
+                AgentStatus::Done,
+                Some("target-pane"),
+            ))
             .unwrap();
         state
-            .insert_agent(sample_agent_with_id("waiter", AgentStatus::Done, None))
+            .insert_agent(sample_agent_with_id(
+                "waiter",
+                AgentStatus::Done,
+                Some("waiter-pane"),
+            ))
             .unwrap();
         let mut child = sample_agent_with_id("child", AgentStatus::Running, None);
         child.parent_id = Some("target".to_string());
@@ -3535,10 +3850,18 @@ mod tests {
     fn waiter_created_during_fork_initialization_stays_blocked() {
         let state = test_state();
         state
-            .insert_agent(sample_agent_with_id("target", AgentStatus::Done, None))
+            .insert_agent(sample_agent_with_id(
+                "target",
+                AgentStatus::Done,
+                Some("target-pane"),
+            ))
             .unwrap();
         state
-            .insert_agent(sample_agent_with_id("waiter", AgentStatus::Done, None))
+            .insert_agent(sample_agent_with_id(
+                "waiter",
+                AgentStatus::Done,
+                Some("waiter-pane"),
+            ))
             .unwrap();
         let mut child = sample_agent_with_id("child", AgentStatus::Running, None);
         child.parent_id = Some("target".to_string());
@@ -3582,10 +3905,18 @@ mod tests {
     fn waiter_remains_blocked_across_back_to_back_forks() {
         let state = test_state();
         state
-            .insert_agent(sample_agent_with_id("target", AgentStatus::Done, None))
+            .insert_agent(sample_agent_with_id(
+                "target",
+                AgentStatus::Done,
+                Some("target-pane"),
+            ))
             .unwrap();
         state
-            .insert_agent(sample_agent_with_id("waiter", AgentStatus::Done, None))
+            .insert_agent(sample_agent_with_id(
+                "waiter",
+                AgentStatus::Done,
+                Some("waiter-pane"),
+            ))
             .unwrap();
         for child_id in ["child-1", "child-2"] {
             let mut child = sample_agent_with_id(child_id, AgentStatus::Running, None);
@@ -3681,7 +4012,11 @@ mod tests {
     fn fork_readiness_waits_for_dispatch_owner_without_losing_wakeup() {
         let state = test_state();
         state
-            .insert_agent(sample_agent_with_id("source", AgentStatus::Done, None))
+            .insert_agent(sample_agent_with_id(
+                "source",
+                AgentStatus::Done,
+                Some("source-pane"),
+            ))
             .unwrap();
         let mut child = sample_agent_with_id("child", AgentStatus::Running, None);
         child.parent_id = Some("source".to_string());
@@ -3800,7 +4135,11 @@ mod tests {
     fn inline_manual_fork_readiness_wakes_waiter_after_owner_handoff() {
         let state = test_state();
         state
-            .insert_agent(sample_agent_with_id("target", AgentStatus::Done, None))
+            .insert_agent(sample_agent_with_id(
+                "target",
+                AgentStatus::Done,
+                Some("target-pane"),
+            ))
             .unwrap();
         state
             .insert_agent(sample_agent_with_id(
@@ -3829,10 +4168,10 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(matches!(
-            state.claim_ready_agent_turn("target").unwrap(),
-            AgentTurnClaim::Ready { .. }
-        ));
+        let claim_id = match state.claim_ready_agent_turn("target").unwrap() {
+            AgentTurnClaim::Ready { claim_id, .. } => claim_id,
+            _ => panic!("expected a claim"),
+        };
         assert!(
             state
                 .begin_agent_fork_barrier("target", "child", false)
@@ -3850,7 +4189,7 @@ mod tests {
                 .is_none()
         );
 
-        finish_send_next_fork_dispatch(&state, "target").unwrap();
+        finish_send_next_fork_dispatch(&state, "target", claim_id).unwrap();
 
         assert!(state.list_agent_turn_queue("waiter").unwrap().is_empty());
         assert!(matches!(
@@ -3863,7 +4202,11 @@ mod tests {
     fn child_exit_waits_for_dispatch_owner_without_losing_wakeup() {
         let state = test_state();
         state
-            .insert_agent(sample_agent_with_id("source", AgentStatus::Done, None))
+            .insert_agent(sample_agent_with_id(
+                "source",
+                AgentStatus::Done,
+                Some("source-pane"),
+            ))
             .unwrap();
         let mut child = sample_agent_with_id("child", AgentStatus::Running, None);
         child.parent_id = Some("source".to_string());
@@ -3902,7 +4245,11 @@ mod tests {
     fn direct_send_during_manual_barrier_requests_resume_after_readiness() {
         let state = test_state();
         state
-            .insert_agent(sample_agent_with_id("source", AgentStatus::Done, None))
+            .insert_agent(sample_agent_with_id(
+                "source",
+                AgentStatus::Done,
+                Some("source-pane"),
+            ))
             .unwrap();
         let mut child = sample_agent_with_id("child", AgentStatus::Running, None);
         child.parent_id = Some("source".to_string());
@@ -3937,7 +4284,11 @@ mod tests {
     fn failed_direct_enqueue_does_not_enable_manual_barrier_resume() {
         let state = test_state();
         state
-            .insert_agent(sample_agent_with_id("source", AgentStatus::Done, None))
+            .insert_agent(sample_agent_with_id(
+                "source",
+                AgentStatus::Done,
+                Some("source-pane"),
+            ))
             .unwrap();
         let mut child = sample_agent_with_id("child", AgentStatus::Running, None);
         child.parent_id = Some("source".to_string());
@@ -3977,7 +4328,11 @@ mod tests {
     fn direct_send_in_pre_barrier_spawn_window_requests_resume_atomically() {
         let state = test_state();
         state
-            .insert_agent(sample_agent_with_id("source", AgentStatus::Done, None))
+            .insert_agent(sample_agent_with_id(
+                "source",
+                AgentStatus::Done,
+                Some("source-pane"),
+            ))
             .unwrap();
         let mut child = sample_agent_with_id("child", AgentStatus::Running, None);
         child.parent_id = Some("source".to_string());
@@ -4064,7 +4419,11 @@ mod tests {
     fn explicit_queue_is_allowed_while_fork_barrier_holds_ready_source() {
         let state = test_state();
         state
-            .insert_agent(sample_agent_with_id("source", AgentStatus::Done, None))
+            .insert_agent(sample_agent_with_id(
+                "source",
+                AgentStatus::Done,
+                Some("source-pane"),
+            ))
             .unwrap();
         let mut child = sample_agent_with_id("child", AgentStatus::Running, None);
         child.parent_id = Some("source".to_string());

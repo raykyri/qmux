@@ -78,6 +78,7 @@ private func nativeTerminalDidOpenURL(
 @MainActor
 final class NativeTerminalPane: NSObject,
     TerminalSurfaceCloseDelegate,
+    TerminalSurfaceLifecycleDelegate,
     TerminalSurfaceTitleDelegate,
     TerminalSurfacePwdDelegate,
     TerminalSurfaceResizeDelegate,
@@ -102,10 +103,10 @@ final class NativeTerminalPane: NSObject,
     /// optimistically claim only panes for which this remains true.
     var acceptsKeyboardClaim = true
     var isFocused = false
-    /// True once the view has been fitted to a real (nonzero) frame. Until
-    /// then the surface still has its zero-frame default grid, and replaying
-    /// restored scrollback into it would be reflowed — and scrambled — by the
-    /// first real fit; the host gates replay on this flag.
+    /// Records the host's initial fit of a live surface to a real (nonzero)
+    /// frame. Vendor layout may already have fitted it, but replay stays gated
+    /// until the host commits this readiness transition. Reset on detach so a
+    /// replacement surface must establish its own geometry before replay.
     var hasCommittedGeometry = false
     var consumedShortcutKeyCodes: Set<UInt16> = []
     /// Tauri settings invokes may complete out of order while a theme is being
@@ -532,6 +533,20 @@ final class NativeTerminalPane: NSObject,
 
     func pasteApprovedText(_ text: String) -> Bool {
         view.pasteApprovedText(text)
+    }
+
+    func terminalDidAttachSurface(_ surface: TerminalSurface) {
+        // Ghostty calls this before completing its own metrics synchronization.
+        // Reconcile on the next main-actor turn using the latest accepted layout,
+        // including surfaces created by late settings/window attachment.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            NativeTerminalHost.shared.surfaceDidAttach(self)
+        }
+    }
+
+    func terminalDidDetachSurface() {
+        hasCommittedGeometry = false
     }
 
     func applySettings(_ settings: TerminalPaneSettings) -> Bool {

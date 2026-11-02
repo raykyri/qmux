@@ -2023,6 +2023,24 @@ fn start_codex_transcript_binding(
     session_id: Option<String>,
     transcript_path: Option<String>,
 ) {
+    start_codex_transcript_binding_with_home(
+        state,
+        agent_id,
+        session_id,
+        transcript_path,
+        codex_home,
+    );
+}
+
+fn start_codex_transcript_binding_with_home(
+    state: AppState,
+    agent_id: String,
+    session_id: Option<String>,
+    transcript_path: Option<String>,
+    resolve_home: impl FnOnce() -> Result<PathBuf, String>,
+) {
+    // Resolve the session root only if discovery is needed. Tests supply their
+    // own root here without mutating CODEX_HOME for other concurrent bindings.
     if let Some(agent) = state.agent(&agent_id).ok().flatten().filter(|agent| {
         agent.session_id == session_id
             && agent.transcript_path.is_some()
@@ -2078,7 +2096,7 @@ fn start_codex_transcript_binding(
     }
 
     let session_id = session_id.expect("usable session id checked above");
-    let Ok(codex_home) = codex_home() else {
+    let Ok(codex_home) = resolve_home() else {
         finish_codex_transcript_binding_failure(
             &state,
             &agent_id,
@@ -4451,27 +4469,16 @@ trusted_hash = "sha256:trusted"
         agent.session_id = Some(session_id.to_string());
         state.insert_agent(agent).unwrap();
 
-        let prev = env::var_os("CODEX_HOME");
-        unsafe {
-            env::set_var("CODEX_HOME", &codex_home);
-        }
-
-        start_codex_transcript_binding(
+        start_codex_transcript_binding_with_home(
             state.clone(),
             "agent-1".to_string(),
             Some(session_id.to_string()),
             None,
+            || Ok(codex_home),
         );
 
         let agent = wait_for_agent_transcript_path(&state, "agent-1", &transcript_path);
         assert_eq!(agent.session_id.as_deref(), Some(session_id));
-
-        unsafe {
-            match prev {
-                Some(val) => env::set_var("CODEX_HOME", val),
-                None => env::remove_var("CODEX_HOME"),
-            }
-        }
     }
 
     #[test]
@@ -4547,18 +4554,24 @@ trusted_hash = "sha256:trusted"
     fn codex_discovery_skips_when_transcript_already_bound() {
         let state = test_state();
         let existing_path = temp_dir().join("existing.jsonl");
+        let session_id = "019eeca7-d820-7b91-b1e8-9c954fb1a105";
+        fs::write(
+            &existing_path,
+            format!(r#"{{"type":"session_meta","payload":{{"id":"{session_id}"}}}}"#),
+        )
+        .unwrap();
         let mut agent = sample_agent();
+        agent.session_id = Some(session_id.to_string());
         agent.transcript_path = Some(existing_path.display().to_string());
         state.insert_agent(agent).unwrap();
 
-        start_codex_transcript_binding(
+        start_codex_transcript_binding_with_home(
             state.clone(),
             "agent-1".to_string(),
-            Some("019eeca7-d820-7b91-b1e8-9c954fb1a105".to_string()),
+            Some(session_id.to_string()),
             None,
+            || panic!("a matching durable binding must not start directory discovery"),
         );
-
-        thread::sleep(Duration::from_millis(300));
 
         let agent = state.agent("agent-1").unwrap().expect("agent exists");
         assert_eq!(
@@ -4566,6 +4579,65 @@ trusted_hash = "sha256:trusted"
             Some(existing_path.to_str().unwrap()),
             "transcript_path should not be overridden by discovery when already bound"
         );
+        assert_eq!(agent.session_id.as_deref(), Some(session_id));
+        state
+            .mutate_agent("agent-1", |agent| agent.transcript_path = None)
+            .unwrap();
+    }
+
+    #[test]
+    fn codex_discovery_replaces_existing_binding_for_a_verified_new_session() {
+        let state = test_state();
+        let codex_home = temp_dir();
+        let existing_path = codex_home.join("existing.jsonl");
+        let session_id = "019eeca7-d820-7b91-b1e8-9c954fb1a105";
+        fs::write(
+            &existing_path,
+            r#"{"type":"session_meta","payload":{"id":"previous-session"}}"#,
+        )
+        .unwrap();
+        let mut agent = sample_agent();
+        agent.session_id = Some("previous-session".into());
+        agent.transcript_path = Some(existing_path.display().to_string());
+        state.insert_agent(agent).unwrap();
+        let session_dir = codex_home.join("sessions/2026/06/21");
+        fs::create_dir_all(&session_dir).unwrap();
+        let transcript_path = session_dir.join(format!("rollout-{session_id}.jsonl"));
+        // A plausible filename cannot replace the canonical binding until the
+        // rollout's own session_meta authenticates the new reported session.
+        fs::write(
+            &transcript_path,
+            r#"{"type":"session_meta","payload":{"id":"unrelated-session"}}"#,
+        )
+        .unwrap();
+        assert!(
+            find_codex_transcript_path(&codex_home, session_id)
+                .unwrap()
+                .is_none()
+        );
+        start_codex_transcript_binding_with_home(
+            state.clone(),
+            "agent-1".into(),
+            Some(session_id.into()),
+            None,
+            || Ok(codex_home),
+        );
+        let provisional = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(provisional.session_id.as_deref(), Some("previous-session"));
+        assert_eq!(
+            provisional.transcript_path.as_deref(),
+            Some(existing_path.to_str().unwrap())
+        );
+        fs::write(
+            &transcript_path,
+            format!(r#"{{"type":"session_meta","payload":{{"id":"{session_id}"}}}}"#),
+        )
+        .unwrap();
+        let bound = wait_for_agent_transcript_path(&state, "agent-1", &transcript_path);
+        assert_eq!(bound.session_id.as_deref(), Some(session_id));
+        state
+            .mutate_agent("agent-1", |agent| agent.transcript_path = None)
+            .unwrap();
     }
 
     #[test]
@@ -5379,6 +5451,163 @@ trusted_hash = "sha256:trusted"
         assert_eq!(
             state.agent("agent-1").unwrap().unwrap().status,
             AgentStatus::Done
+        );
+        state
+            .mutate_agent("agent-1", |agent| agent.transcript_path = None)
+            .unwrap();
+    }
+
+    #[test]
+    fn issue10_live_completion_waits_for_children_and_fresh_parent_completion() {
+        let state = test_state();
+        let bytes = install_agent_pane(&state);
+        let path = temp_dir().join("live-children.jsonl");
+        fs::write(
+            &path,
+            format!(
+                "{}\n",
+                codex_message_line("t", "user", "input_text", "parent")
+            ),
+        )
+        .unwrap();
+        state
+            .mutate_agent("agent-1", |agent| {
+                agent.transcript_path = Some(path.display().to_string())
+            })
+            .unwrap();
+        crate::transcript::start_transcript_tail(
+            state.clone(),
+            "agent-1".into(),
+            path.display().to_string(),
+            "codex".into(),
+        );
+        wait_codex_test(&state, |state| {
+            state.list_turns(Some("agent-1")).unwrap().len() == 1
+        });
+        state
+            .enqueue_agent_turn("agent-1", "queued follow-up".into())
+            .unwrap();
+        ingest(
+            &state,
+            hook_for_agent("SubagentStart", "agent-1", json!({"agent_id":"child"})),
+        );
+        crate::transcript::append_transcript_lines(
+            &path,
+            &[
+                json!({"type":"event_msg","payload":{"type":"task_complete"}}).to_string(),
+                codex_message_line("t", "assistant", "output_text", "after first completion"),
+            ],
+        )
+        .unwrap();
+        wait_codex_test(&state, |state| {
+            state.list_turns(Some("agent-1")).unwrap().len() == 2
+        });
+        assert!(
+            bytes.lock().unwrap().is_empty(),
+            "live child completion must not inject queued input"
+        );
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["queued follow-up"]
+        );
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        );
+        for _ in 0..2 {
+            ingest(
+                &state,
+                hook_for_agent("SubagentStop", "agent-1", json!({"agent_id":"child"})),
+            );
+            ingest(&state, hook_for_agent("Stop", "agent-1", json!({})));
+        }
+        assert!(
+            bytes.lock().unwrap().is_empty(),
+            "child stops and Codex Stop cannot replay completion"
+        );
+        // This is an explicit test input, not a claim that every provider emits
+        // another completion after its last child. Without one, Running persists.
+        crate::transcript::append_transcript_lines(
+            &path,
+            &[
+                json!({"type":"event_msg","payload":{"type":"task_complete"}}).to_string(),
+                codex_message_line("t", "assistant", "output_text", "after synthesis"),
+            ],
+        )
+        .unwrap();
+        wait_codex_test(&state, |state| {
+            state.list_agent_turn_queue("agent-1").unwrap().is_empty()
+        });
+        wait_codex_test(&state, |_| !bytes.lock().unwrap().is_empty());
+        assert_eq!(state.outstanding_agent_sends("agent-1").unwrap().len(), 1);
+        let sent = bytes.lock().unwrap().clone();
+        ingest(&state, hook_for_agent("Stop", "agent-1", json!({})));
+        assert_eq!(*bytes.lock().unwrap(), sent);
+        state
+            .mutate_agent("agent-1", |agent| agent.transcript_path = None)
+            .unwrap();
+    }
+
+    #[test]
+    fn issue10_stale_remote_mirror_is_not_replayed_by_midturn_stop() {
+        let state = test_state();
+        install_remote_agent_pane(&state);
+        let path = temp_dir().join("lagged-mirror.jsonl");
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                codex_message_line("t", "user", "input_text", "turn A"),
+                json!({"type":"event_msg","payload":{"type":"task_complete"}})
+            ),
+        )
+        .unwrap();
+        state
+            .mutate_agent("agent-1", |agent| {
+                agent.transcript_path = Some(path.display().to_string())
+            })
+            .unwrap();
+        let historical_end = Arc::new(std::sync::atomic::AtomicU64::new(
+            fs::metadata(&path).unwrap().len(),
+        ));
+        crate::transcript::start_remote_transcript_tail(
+            state.clone(),
+            "agent-1".into(),
+            path.display().to_string(),
+            "codex".into(),
+            historical_end,
+        );
+        wait_codex_test(&state, |state| {
+            state.list_turns(Some("agent-1")).unwrap().len() == 1
+        });
+        state
+            .set_agent_status("agent-1", AgentStatus::Done)
+            .unwrap();
+        state
+            .record_agent_send(
+                "agent-1",
+                "turn B".into(),
+                crate::state::AgentSendSource::QueuedTurn,
+            )
+            .unwrap();
+        ingest(
+            &state,
+            hook_for_agent("UserPromptSubmit", "agent-1", json!({"prompt":"turn B"})),
+        );
+        assert!(state.outstanding_agent_sends("agent-1").unwrap().is_empty());
+        state
+            .enqueue_agent_turn("agent-1", "turn C".into())
+            .unwrap();
+        for _ in 0..2 {
+            ingest(&state, hook_for_agent("Stop", "agent-1", json!({})));
+        }
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        );
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["turn C"]
         );
         state
             .mutate_agent("agent-1", |agent| agent.transcript_path = None)

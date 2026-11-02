@@ -8,7 +8,7 @@ import type {
   Ref,
 } from "react";
 import { createPortal } from "react-dom";
-import { claimNativeTerminalPointerForWebDrag } from "../../lib/api";
+import { claimNativeTerminalPointerForWebOverlay } from "../../lib/api";
 import { classNames } from "./classNames";
 
 interface DialogContextValue {
@@ -112,7 +112,7 @@ function useModalLifecycle(
     };
   }, [backdropRef, inertAppRoot]);
 
-  useEffect(() => claimNativeTerminalPointerForWebDrag(), []);
+  useEffect(() => claimNativeTerminalPointerForWebOverlay(), []);
 }
 
 export interface DialogBackdropProps extends HTMLAttributes<HTMLDivElement> {

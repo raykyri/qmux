@@ -1,7 +1,9 @@
+import { ComposerDrafts, remainingComposerDraft } from "../lib/composerDrafts";
+import { TauriEvent } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Input } from "./ui";
 import { ChevronDown } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { getAgentUiAdapter } from "../adapters";
 import {
   dismissGlobalTaskLauncher,
@@ -202,6 +204,10 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+// The launcher webview is long-lived; requests can outlive a React mount.
+const launcherDrafts = new ComposerDrafts();
+let launcherSummon = 0;
+
 export default function GlobalTaskLauncher() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const filterInputRef = useRef<HTMLInputElement | null>(null);
@@ -215,19 +221,40 @@ export default function GlobalTaskLauncher() {
   // ~12×/second under a busy agent — while never on screen. Only the visible
   // window needs live data; focus/blur drive this flag.
   const visibleRef = useRef(false);
+  // Each show (and the initial hidden prewarm) owns its reads. Request order
+  // alone cannot revoke a refresh on blur or effect disposal before another
+  // request starts. Object identity also distinguishes A → B → A summons.
+  const refreshScopeRef = useRef<object | null>(null);
+  const refreshRequestRef = useRef(0);
   const [targets, setTargets] = useState<LauncherTarget[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string>(loadLastTargetAgentId);
   const [filter, setFilter] = useState("");
   const [initialDraftValue] = useState(
     () => readSessionDraftJson<{ text: string }>(SESSION_DRAFT_KEYS.globalTaskLauncher)?.text ?? "",
   );
-  const [value, setValue] = useState(initialDraftValue);
+  const composer = useSyncExternalStore(launcherDrafts.subscribe,
+    () => launcherDrafts.read("launcher", initialDraftValue));
+  const value = composer.draft.text;
+  const setValue = (next: string) => {
+    launcherDrafts.set("launcher", next, true);
+    if (next) saveSessionDraftJson(SESSION_DRAFT_KEYS.globalTaskLauncher, { text: next });
+    else clearSessionDraft(SESSION_DRAFT_KEYS.globalTaskLauncher);
+  };
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const selectedAgentIdRef = useRef(selectedAgentId);
+  selectedAgentIdRef.current = selectedAgentId;
   const [sessionDraftReady, setSessionDraftReady] = useState(Boolean(initialDraftValue));
   const valueTouchedRef = useRef(false);
   const [queueMenuOpen, setQueueMenuOpen] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const submitting = composer.busy;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Background refreshes must not erase or replace an action's error.
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   // Mirror the composer's submit shortcut ("Require ⌘↵ to send"). Settings live
   // in localStorage, which this window shares with the main one; re-read on
   // each focus so a change made in Settings applies to the next launch.
@@ -289,12 +316,16 @@ export default function GlobalTaskLauncher() {
     };
   }, []);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (scope = refreshScopeRef.current) => {
+    if (scope === null || refreshScopeRef.current !== scope) return;
+    const request = ++refreshRequestRef.current;
+    const ownsRefresh = () =>
+      refreshScopeRef.current === scope && refreshRequestRef.current === request;
     try {
       if (runtimeConfigRef.current === null) {
-        runtimeConfigRef.current = await getRuntimeConfig().catch(
-          (): RuntimeConfig | null => null,
-        );
+        const config = await getRuntimeConfig().catch((): RuntimeConfig | null => null);
+        if (!ownsRefresh()) return;
+        runtimeConfigRef.current = config;
       }
       const [panes, agents, groups, shellJobs] = await Promise.all([
         listPanes(),
@@ -302,6 +333,7 @@ export default function GlobalTaskLauncher() {
         listGroups(),
         listShellAgentJobs().catch((): ShellAgentJobInfo[] => []),
       ]);
+      if (!ownsRefresh()) return;
       const paneById = new Map(panes.map((pane) => [pane.id, pane]));
       const groupById = new Map(groups.map((group) => [group.id, group]));
       const shellJobByAgent = new Map(shellJobs.map((job) => [job.agentId, job]));
@@ -316,6 +348,7 @@ export default function GlobalTaskLauncher() {
       const queues = await Promise.all(
         live.map((agent) => listAgentTurnQueue(agent.id).catch((): QueuedTurn[] => [])),
       );
+      if (!ownsRefresh()) return;
       const next = live
         .map((agent, index): LauncherTarget => {
           const pane = paneById.get(agent.paneId as string) as PaneInfo;
@@ -336,64 +369,86 @@ export default function GlobalTaskLauncher() {
       setSelectedAgentId((current) =>
         next.some((target) => target.agent.id === current) ? current : (next[0]?.agent.id ?? ""),
       );
-      setError(null);
+      setRefreshError(null);
     } catch (cause) {
-      setError(errorMessage(cause));
+      if (ownsRefresh()) setRefreshError(errorMessage(cause));
     } finally {
-      setLoading(false);
+      if (ownsRefresh()) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     const launcherWindow = getCurrentWindow();
     let disposed = false;
-    let unlistenFocus: (() => void) | undefined;
-    let unlistenEvents: (() => void) | undefined;
-
-    void launcherWindow.onFocusChanged(({ payload: focused }) => {
-      if (focused) {
-        visibleRef.current = true;
-        setRequireCmdEnterToSend(loadSettings().requireCmdEnterToSend);
-        // A stale filter from the previous launch would silently hide tabs,
-        // and cached exchange context from the previous summon may predate
-        // replies that landed in between.
-        setFilter("");
-        exchangeCacheRef.current.clear();
-        setExchangeEpoch((epoch) => epoch + 1);
-        // Focus immediately: the textarea stays enabled through the refresh so
-        // the first keystrokes after the hotkey land in the draft.
-        requestAnimationFrame(() => textareaRef.current?.focus());
-        void refresh();
-      } else {
-        visibleRef.current = false;
-        if (refreshTimerRef.current !== null) {
-          window.clearTimeout(refreshTimerRef.current);
-          refreshTimerRef.current = null;
-        }
-        setQueueMenuOpen(false);
-        void launcherWindow.hide();
+    const unlisteners: (() => void)[] = [];
+    const ownListener = (registration: Promise<() => void>) => {
+      void registration.then((unlisten) => {
+        if (disposed) unlisten();
+        else unlisteners.push(unlisten);
+      }).catch((cause) => {
+        console.warn("qmux: failed to subscribe to launcher events", cause);
+      });
+    };
+    const clearRefreshTimer = () => {
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
       }
-    }).then((unlisten) => {
-      if (disposed) unlisten();
-      else unlistenFocus = unlisten;
-    });
-    void listenToEvents(() => {
+    };
+
+    // Register independently: onFocusChanged installs focus then blur and
+    // cannot release the first subscription if the second setup rejects.
+    ownListener(launcherWindow.listen(TauriEvent.WINDOW_FOCUS, () => {
+      if (disposed) return;
+      launcherSummon += 1;
+      const scope = {};
+      refreshScopeRef.current = scope;
+      visibleRef.current = true;
+      clearRefreshTimer();
+      setError(null);
+      setRefreshError(null);
+      setRequireCmdEnterToSend(loadSettings().requireCmdEnterToSend);
+      // A stale filter from the previous launch would silently hide tabs,
+      // and cached exchange context may predate replies that landed between.
+      setFilter("");
+      exchangeCacheRef.current.clear();
+      setExchangeEpoch((epoch) => epoch + 1);
+      // Focus immediately; an old frame must not steal focus on a later show.
+      requestAnimationFrame(() => {
+        if (!disposed && refreshScopeRef.current === scope) textareaRef.current?.focus();
+      });
+      void refresh(scope);
+    }));
+    ownListener(launcherWindow.listen(TauriEvent.WINDOW_BLUR, () => {
+      if (disposed) return;
+      visibleRef.current = false;
+      refreshScopeRef.current = null;
+      clearRefreshTimer();
+      setQueueMenuOpen(false);
+      void launcherWindow.hide().catch((cause) => {
+        console.warn("qmux: failed to hide the task launcher", cause);
+      });
+    }));
+    ownListener(listenToEvents(() => {
       // Skip the refetch while hidden; the focus handler refreshes on show.
-      if (!visibleRef.current) return;
-      if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
-      refreshTimerRef.current = window.setTimeout(() => void refresh(), 80);
-    }).then((unlisten) => {
-      if (disposed) unlisten();
-      else unlistenEvents = unlisten;
-    });
-    // One-time pre-warm so the first show renders instantly; ongoing refreshes
-    // are gated on visibility above.
+      if (disposed || !visibleRef.current) return;
+      const scope = refreshScopeRef.current;
+      clearRefreshTimer();
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null;
+        if (!disposed && visibleRef.current) void refresh(scope);
+      }, 80);
+    }));
+    // One-time hidden prewarm. Cleanup revokes it even when StrictMode sets
+    // up this same mounted instance again before the native calls settle.
+    refreshScopeRef.current = {};
     void refresh();
     return () => {
       disposed = true;
-      unlistenFocus?.();
-      unlistenEvents?.();
-      if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
+      visibleRef.current = false;
+      refreshScopeRef.current = null;
+      unlisteners.forEach((unlisten) => unlisten());
+      clearRefreshTimer();
     };
   }, [refresh]);
 
@@ -619,26 +674,34 @@ export default function GlobalTaskLauncher() {
 
   async function finishSubmission(operation: () => Promise<unknown>, allowEmpty = false) {
     if (!selected || submitting || (!allowEmpty && !hasValue)) return;
-    setSubmitting(true);
+    if (!launcherDrafts.begin("launcher")) return;
+    const submitted = launcherDrafts.read("launcher").draft;
+    const summon = launcherSummon;
+    const target = selected.agent.id;
+    const ownsPresentation = () => mountedRef.current && launcherSummon === summon &&
+      selectedAgentIdRef.current === target;
     setError(null);
     try {
       await operation();
-      // A successful dispatch is the strongest signal for the remembered
-      // target — it also covers selections made by the filter's auto-snap,
-      // which selectTarget never sees.
-      saveLastTargetAgentId(selected.agent.id);
-      setValue("");
-      clearSessionDraft(SESSION_DRAFT_KEYS.globalTaskLauncher);
-      setQueueMenuOpen(false);
-      // Explicit dismissal: hand focus back to the app the launcher was
-      // summoned from rather than leaving qmux activated.
-      await dismissGlobalTaskLauncher();
     } catch (cause) {
-      setError(errorMessage(cause));
-      requestAnimationFrame(() => textareaRef.current?.focus());
-    } finally {
-      setSubmitting(false);
+      if (ownsPresentation()) {
+        setError(errorMessage(cause));
+        requestAnimationFrame(() => {
+          if (ownsPresentation()) textareaRef.current?.focus();
+        });
+      }
+      launcherDrafts.end("launcher");
+      return;
     }
+    // Explicitly persist the reconciled shared revision, including unchanged
+    // replacements and completions after unmount. No effect needs to rerun.
+    setValue(remainingComposerDraft(launcherDrafts.read("launcher").draft, submitted));
+    launcherDrafts.end("launcher");
+    if (!ownsPresentation()) return;
+    saveLastTargetAgentId(target);
+    setQueueMenuOpen(false);
+    // Delivery already succeeded; a hide failure must not invite a duplicate send.
+    await dismissGlobalTaskLauncher().catch(() => undefined);
   }
 
   function submit(mode: SubmitAgentTurnMode) {
@@ -688,6 +751,8 @@ export default function GlobalTaskLauncher() {
         .filter(Boolean)
         .join(" · ")
     : `Queued (${queuedTurns.length})`;
+
+  const displayedError = error ?? refreshError;
 
   return (
     <main className="global-task-launcher">
@@ -883,7 +948,7 @@ export default function GlobalTaskLauncher() {
           }}
         />
 
-        {error ? <div className="global-task-launcher-error" role="alert">{error}</div> : null}
+        {displayedError ? <div className="global-task-launcher-error" role="alert">{displayedError}</div> : null}
 
         <div className="global-task-launcher-actions">
           {permissionActions.map((action) => (
@@ -897,12 +962,13 @@ export default function GlobalTaskLauncher() {
                 // Unlike a task submission, answering a permission prompt keeps
                 // the window open and the typed draft intact, mirroring the
                 // composer.
-                setSubmitting(true);
+                if (!launcherDrafts.begin("launcher")) return;
                 setError(null);
+                const refreshScope = refreshScopeRef.current;
                 void submitPaneInput(selected.pane.id, action.input)
-                  .then(() => refresh())
+                  .then(() => refresh(refreshScope))
                   .catch((cause) => setError(errorMessage(cause)))
-                  .finally(() => setSubmitting(false));
+                  .finally(() => launcherDrafts.end("launcher"));
               }}
             >
               {action.label}
@@ -974,11 +1040,12 @@ export default function GlobalTaskLauncher() {
                   className="control-button queue-button"
                   disabled={submitting}
                   onClick={() => {
-                    setSubmitting(true);
+                    if (!launcherDrafts.begin("launcher")) return;
+                    const refreshScope = refreshScopeRef.current;
                     void unpauseAgent(selected.agent.id)
-                      .then(() => refresh())
+                      .then(() => refresh(refreshScope))
                       .catch((cause) => setError(errorMessage(cause)))
-                      .finally(() => setSubmitting(false));
+                      .finally(() => launcherDrafts.end("launcher"));
                   }}
                 >
                   Unpause

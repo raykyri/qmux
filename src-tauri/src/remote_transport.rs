@@ -47,12 +47,17 @@ struct ForwardLease {
     // A locally observed master PID, never a remote process identity. A new
     // master has no forwards even if it uses the same control socket pathname.
     master_pid: Option<u32>,
+    // Set before registration, including requests whose acknowledgement is lost.
+    registration_pid: Option<u32>,
+    // Closing transfers ownership to cleanup; it does not free capacity yet.
+    retired: bool,
 }
 
 struct HostPool {
     base: Vec<String>,
     forwards: HashMap<String, ForwardLease>,
     slots: usize,
+    cleanup_running: bool,
 }
 
 #[derive(Default)]
@@ -96,6 +101,7 @@ fn pool(commands: &RemoteTmuxCommands) -> Result<Option<Arc<Mutex<HostPool>>>, S
                     base,
                     forwards: HashMap::new(),
                     slots: 2,
+                    cleanup_running: false,
                 }))
             })
             .clone(),
@@ -169,7 +175,14 @@ fn master_pid(base: &[String], runner: &mut Runner<'_>) -> Result<Option<u32>, S
         CONTROL_TIMEOUT,
     )?;
     if !output.status.success() {
-        return Ok(None);
+        let error = String::from_utf8_lossy(&output.stderr);
+        if error.contains("No such file") || error.contains("Connection refused") {
+            return Ok(None);
+        }
+        return Err(format!(
+            "could not identify qmux SSH transport: {}",
+            error.trim()
+        ));
     }
     // OpenSSH writes `Master running (pid=123)` to stderr in the C locale.
     let text = String::from_utf8_lossy(&output.stderr);
@@ -208,6 +221,9 @@ impl HostPool {
             .as_ref()
             .ok_or("missing hook forward")?;
         if let Some(lease) = self.forwards.get(&forward.remote_path).cloned() {
+            if lease.retired {
+                return Err("remote hook socket is awaiting cleanup".into());
+            }
             if lease.forward != *forward {
                 return Err("remote hook socket is already owned by another local endpoint".into());
             }
@@ -244,6 +260,9 @@ impl HostPool {
             .as_ref()
             .ok_or("missing hook forward")?;
         if let Some(lease) = self.forwards.get(&forward.remote_path) {
+            if lease.retired {
+                return Err("remote hook socket is awaiting cleanup".into());
+            }
             if lease.forward != *forward {
                 return Err("remote hook socket is already owned by another local endpoint".into());
             }
@@ -266,6 +285,8 @@ impl HostPool {
                     forward: forward.clone(),
                     slot,
                     master_pid: None,
+                    registration_pid: None,
+                    retired: false,
                 },
             );
         }
@@ -309,6 +330,10 @@ impl HostPool {
                 runner(&cleanup, "remove stale remote hook socket", CONNECT_TIMEOUT)?,
                 "remove stale remote hook socket",
             )?;
+            self.forwards
+                .get_mut(&forward.remote_path)
+                .unwrap()
+                .registration_pid = Some(pid);
             require_success(
                 runner(
                     &control(&base, "forward", Some(forward)),
@@ -366,23 +391,79 @@ impl HostPool {
     }
 
     fn release(&mut self, path: &str, runner: &mut Runner<'_>) -> Result<(), String> {
-        let Some(lease) = self.forwards.get(path).cloned() else {
+        let Some(lease) = self.forwards.get_mut(path) else {
+            return Ok(());
+        };
+        lease.retired = true;
+        self.clean_retired(path, runner)
+    }
+
+    fn clean_retired(&mut self, path: &str, runner: &mut Runner<'_>) -> Result<(), String> {
+        let Some(lease) = self
+            .forwards
+            .get(path)
+            .filter(|lease| lease.retired)
+            .cloned()
+        else {
             return Ok(());
         };
         let base = self.base_for(lease.slot);
-        if master_pid(&base, runner)?.is_some() {
-            // Cancel is idempotent when the master has been replaced or an
-            // earlier failed attempt registered the forward without acknowledgement.
-            let _ = runner(
-                &control(&base, "cancel", Some(&lease.forward)),
+        if let Some(registered_pid) = lease.registration_pid
+            && master_pid(&base, runner)? == Some(registered_pid)
+        {
+            require_success(
+                runner(
+                    &control(&base, "cancel", Some(&lease.forward)),
+                    "release remote hook forward",
+                    CONTROL_TIMEOUT,
+                )?,
                 "release remote hook forward",
-                CONTROL_TIMEOUT,
             )?;
         }
         self.forwards.remove(path);
-        // sshd may leave the Unix pathname behind. Next registration removes it
-        // only after cancellation; closing a pane never starts a new SSH session.
+        // Never cancel a replacement master's forward, connect a new master,
+        // or forget an uncertain cancellation on the original master.
         Ok(())
+    }
+
+    fn retry_retired(&mut self, runner: &mut Runner<'_>) {
+        let retired: Vec<_> = self
+            .forwards
+            .iter()
+            .filter(|(_, lease)| lease.retired)
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in retired {
+            if self.clean_retired(&path, runner).is_ok() {
+                continue;
+            }
+            let Some(lease) = self.forwards.get(&path).cloned() else {
+                continue;
+            };
+            // A missing cancellation acknowledgement cannot distinguish an
+            // absent forward from a failed request. When no live pane shares
+            // this master, retire that owned generation and confirm its exit.
+            if self
+                .forwards
+                .values()
+                .any(|other| other.slot == lease.slot && !other.retired)
+            {
+                continue;
+            }
+            let base = self.base_for(lease.slot);
+            if lease.registration_pid.is_some()
+                && master_pid(&base, runner).ok().flatten() == lease.registration_pid
+            {
+                let _ = runner(
+                    &control(&base, "exit", None),
+                    "retire unused qmux SSH transport",
+                    CONTROL_TIMEOUT,
+                );
+                // Removal still requires absence or a different generation;
+                // even an exit request may time out before being delivered.
+                let _ = self.clean_retired(&path, runner);
+            }
+        }
     }
 }
 
@@ -429,6 +510,27 @@ pub(crate) fn release_forward(commands: &RemoteTmuxCommands) {
             &mut |argv, action, timeout| run(argv, action, timeout, || false),
         ) {
             eprintln!("qmux: {err}");
+        }
+        if host.cleanup_running || !host.forwards.values().any(|lease| lease.retired) {
+            return;
+        }
+        host.cleanup_running = true;
+        drop(host);
+        std::thread::spawn(move || cleanup_worker(pool));
+    }
+}
+
+fn cleanup_worker(pool: Arc<Mutex<HostPool>>) {
+    loop {
+        std::thread::sleep(Duration::from_secs(2));
+        if HOSTS.lock().unwrap_or_else(|e| e.into_inner()).stopped {
+            return;
+        }
+        let mut host = pool.lock().unwrap_or_else(|e| e.into_inner());
+        host.retry_retired(&mut |argv, action, timeout| run(argv, action, timeout, || false));
+        if !host.forwards.values().any(|lease| lease.retired) {
+            host.cleanup_running = false;
+            return;
         }
     }
 }
@@ -505,6 +607,7 @@ mod tests {
             base: ssh_base(commands).unwrap(),
             forwards: HashMap::new(),
             slots: 2,
+            cleanup_running: false,
         }
     }
 
@@ -992,5 +1095,206 @@ mod tests {
         if let Err(panic) = result {
             std::panic::resume_unwind(panic);
         }
+    }
+
+    #[test]
+    fn issue19_release_rejects_uncertain_nonzero_cancel_and_preserves_capacity() {
+        let a = commands("19-cancel-a");
+        let b = commands("19-cancel-b");
+        let mut host = host(&a);
+        let mut ssh = Ssh::default();
+        prepare(&mut host, &a, &mut ssh).unwrap();
+        prepare(&mut host, &b, &mut ssh).unwrap();
+        assert!(
+            host.release(&a.remote_socket_path, &mut |argv, action, timeout| {
+                if action == "release remote hook forward" {
+                    Ok(output(false, "control request failed"))
+                } else {
+                    ssh.run(argv, action, timeout)
+                }
+            })
+            .is_err(),
+            "uncertain cancellation must remain owned"
+        );
+        assert_eq!(host.forwards.len(), 2);
+        assert_eq!(ssh.registrations.len(), 2);
+        host.release(&a.remote_socket_path, &mut |a, b, c| ssh.run(a, b, c))
+            .unwrap();
+        assert_eq!(host.forwards.len(), 1);
+        assert_eq!(ssh.registrations.len(), 1);
+        prepare(&mut host, &b, &mut ssh).unwrap();
+    }
+
+    #[test]
+    fn issue19_release_does_not_cancel_a_replacement_master_generation() {
+        let a = commands("19-generation");
+        let mut host = host(&a);
+        let mut ssh = Ssh::default();
+        prepare(&mut host, &a, &mut ssh).unwrap();
+        ssh.masters.values_mut().for_each(|pid| *pid += 1);
+        ssh.registrations.clear();
+        ssh.calls.clear();
+        host.release(&a.remote_socket_path, &mut |a, b, c| ssh.run(a, b, c))
+            .unwrap();
+        assert_eq!(ssh.calls, ["check qmux SSH transport"]);
+        assert!(host.forwards.is_empty());
+    }
+
+    #[test]
+    fn issue19_release_forward_retries_real_control_process_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let a = commands_for("19-worker", "issue19-worker.invalid");
+        let mut host = host(&a);
+        let mut ssh = Ssh::default();
+        prepare(&mut host, &a, &mut ssh).unwrap();
+        let dir = std::env::temp_dir().join(format!("qmux-issue19-ssh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("ssh");
+        // A real child process times out in output_with_timeout, then subsequent
+        // check/cancel calls succeed once the local test changes its fault flag.
+        std::fs::write(
+            &script,
+            format!(
+                r##"#!/bin/sh
+if [ ! -f '{}/ready' ]; then exec sleep 10; fi
+case "$*" in
+  *'-O check'*) echo 'Master running (pid=1)' >&2 ;;
+  *'-O cancel'*) touch '{}/cancelled' ;;
+  *) exit 70 ;;
+esac
+"##,
+                dir.display(),
+                dir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        host.base[0] = script.to_string_lossy().into();
+        let pool = Arc::new(Mutex::new(host));
+        let key = ssh_base(&a).unwrap();
+        HOSTS
+            .lock()
+            .unwrap()
+            .hosts
+            .insert(key.clone(), pool.clone());
+        release_forward(&a);
+        assert_eq!(pool.lock().unwrap().forwards.len(), 1);
+        std::fs::write(dir.join("ready"), "").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(6);
+        while !pool.lock().unwrap().forwards.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let removed = pool.lock().unwrap().forwards.is_empty();
+        HOSTS.lock().unwrap().hosts.remove(&key);
+        assert!(removed, "closed pane lease had no cleanup retry owner");
+        assert!(dir.join("cancelled").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn issue19_cleanup_preserves_live_sibling_then_retires_unused_master() {
+        let a = commands("19-retired-a");
+        let b = commands("19-retired-b");
+        let mut host = host(&a);
+        let mut ssh = Ssh::default();
+        prepare(&mut host, &a, &mut ssh).unwrap();
+        prepare(&mut host, &b, &mut ssh).unwrap();
+        let mut fault = |argv: &[String], action: &str, timeout| {
+            if action == "release remote hook forward" {
+                return Ok(output(false, "lost cancellation acknowledgement"));
+            }
+            if action == "retire unused qmux SSH transport" {
+                let path = argv.iter().find(|a| a.starts_with("ControlPath=")).unwrap();
+                ssh.masters.remove(path);
+                ssh.registrations.retain(|(control, _), _| control != path);
+                ssh.calls.push(action.into());
+                return Ok(output(true, ""));
+            }
+            ssh.run(argv, action, timeout)
+        };
+        assert!(host.release(&a.remote_socket_path, &mut fault).is_err());
+        host.retry_retired(&mut fault);
+        assert_eq!(host.forwards.len(), 2);
+        assert!(host.forwards[&a.remote_socket_path].retired);
+        assert!(!host.forwards[&b.remote_socket_path].retired);
+        assert!(
+            host.prepare(&a, &mut fault)
+                .unwrap_err()
+                .contains("awaiting cleanup")
+        );
+        assert!(host.release(&b.remote_socket_path, &mut fault).is_err());
+        host.retry_retired(&mut fault);
+        assert!(host.forwards.is_empty());
+        drop(fault);
+        assert!(ssh.masters.is_empty());
+        assert!(ssh.registrations.is_empty());
+        assert_eq!(
+            ssh.calls
+                .iter()
+                .filter(|a| a.as_str() == "retire unused qmux SSH transport")
+                .count(),
+            1
+        );
+        let extra = commands("19-slot-reuse");
+        prepare(&mut host, &extra, &mut ssh).unwrap();
+        assert_eq!(host.forwards[&extra.remote_socket_path].slot, 1);
+    }
+
+    #[test]
+    fn issue19_permanent_cleanup_failure_remains_owned_and_counts_against_slot() {
+        let panes: Vec<_> = (0..PANES_PER_MASTER)
+            .map(|i| commands(&format!("19-permanent-{i}")))
+            .collect();
+        let mut host = host(&panes[0]);
+        let mut ssh = Ssh::default();
+        for pane in &panes {
+            prepare(&mut host, pane, &mut ssh).unwrap();
+        }
+        let mut blocked = |_: &[String], _: &str, _: Duration| Err("control unavailable".into());
+        assert!(
+            host.release(&panes[0].remote_socket_path, &mut blocked)
+                .is_err()
+        );
+        host.retry_retired(&mut blocked);
+        assert_eq!(host.forwards.len(), PANES_PER_MASTER);
+        assert_eq!(ssh.registrations.len(), PANES_PER_MASTER);
+        let extra = commands("19-permanent-extra");
+        prepare(&mut host, &extra, &mut ssh).unwrap();
+        assert_eq!(host.forwards[&extra.remote_socket_path].slot, 2);
+    }
+
+    #[test]
+    fn issue19_failed_prepare_reservation_stays_live_until_explicit_close() {
+        let a = commands("19-reservation");
+        let mut host = host(&a);
+        assert!(
+            host.prepare(&a, &mut |_, _, _| Err("offline".into()))
+                .is_err()
+        );
+        host.retry_retired(&mut |_, _, _| panic!("a retryable prepare is not a closed pane"));
+        assert_eq!(host.forwards.len(), 1);
+        assert!(!host.forwards[&a.remote_socket_path].retired);
+        host.release(&a.remote_socket_path, &mut |_, _, _| {
+            panic!("no registration was attempted")
+        })
+        .unwrap();
+        assert!(host.forwards.is_empty());
+    }
+
+    #[test]
+    fn issue19_control_permission_error_is_not_proof_of_absence() {
+        let a = commands("19-permission");
+        let mut host = host(&a);
+        let mut ssh = Ssh::default();
+        prepare(&mut host, &a, &mut ssh).unwrap();
+        assert!(
+            host.release(&a.remote_socket_path, &mut |_, _, _| Ok(output(
+                false,
+                "Control socket connect: Permission denied"
+            )))
+            .is_err()
+        );
+        assert!(host.forwards.contains_key(&a.remote_socket_path));
     }
 }

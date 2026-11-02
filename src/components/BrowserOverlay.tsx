@@ -29,6 +29,7 @@ import {
 } from "../lib/api";
 import type { HumanBrowserSnapshot } from "../lib/api";
 import { isHumanBrowserLifecycleBusy } from "../lib/humanBrowserLifecycleQueue";
+import type { HumanBrowserNavigationState } from "../lib/humanBrowserState";
 
 const MIN_BROWSER_OVERLAY_WIDTH = 360;
 const MIN_BROWSER_OVERLAY_HEIGHT = 240;
@@ -63,6 +64,7 @@ interface BrowserOverlayProps {
   // Bumped when a URL must be replayed. Human-browser Refresh uses the native
   // reload command directly so a just-changed page URL cannot be overwritten.
   reloadNonce: number;
+  navigationState: HumanBrowserNavigationState;
   // True for token-bearing file-server URLs: sandbox the frame so served (possibly
   // untrusted) content gets an opaque origin. Executable previews receive exact-file
   // tokens that cannot fetch other workspace files. Protected previews stay in WebKit.
@@ -104,6 +106,7 @@ export default function BrowserOverlay({
   previewStatus,
   url,
   reloadNonce,
+  navigationState,
   sandbox,
   bodyFontId,
   initialPreviewScroll,
@@ -220,7 +223,6 @@ export default function BrowserOverlay({
     let busyRetryTimer: number | null = null;
     let locationPollInFlight = false;
     let lastNavigationRevision = humanBrowserNavigationRevisionRef.current;
-    let appliedNavigationRevision = lastNavigationRevision;
     let locationEventSequence = 0;
     let locationPollSuppressedUntil = 0;
     let syncSequence = 0;
@@ -244,6 +246,9 @@ export default function BrowserOverlay({
       const sequence = ++syncSequence;
       const locationSequence = locationEventSequence;
       const navigationRevision = humanBrowserNavigationRevisionRef.current;
+      const requestedNavigationRevision = navigationRevision === navigationState.settledRevision
+        ? navigationState.acknowledgedRevision : navigationRevision;
+      const visible = !humanBrowserOccludedRef.current && rect.width >= 1 && rect.height >= 1;
       if (navigationRevision !== lastNavigationRevision) {
         lastNavigationRevision = navigationRevision;
         locationPollSuppressedUntil = performance.now() + HUMAN_BROWSER_NAVIGATION_GRACE_MS;
@@ -257,13 +262,24 @@ export default function BrowserOverlay({
           y: rect.top,
           width: rect.width,
           height: rect.height,
-          visible:
-            !humanBrowserOccludedRef.current && rect.width >= 1 && rect.height >= 1,
-          navigationRevision: humanBrowserNavigationRevisionRef.current,
+          visible,
+          navigationRevision: requestedNavigationRevision,
         });
         if (!cancelled && sequence === syncSequence && result.applied) {
-          appliedNavigationRevision = navigationRevision;
-          setHumanBrowserError(null);
+          // Native hide requests acknowledge surface ownership only; they do
+          // not deliver a typed navigation queued while the slot is occluded.
+          if (visible) {
+            navigationState.acknowledgedRevision = Math.max(
+              navigationState.acknowledgedRevision, requestedNavigationRevision,
+            );
+            navigationState.settledRevision = navigationRevision;
+            if (
+              navigationRevision === humanBrowserNavigationRevisionRef.current &&
+              requestedNavigationRevision === navigationRevision
+            ) {
+              setHumanBrowserError(null);
+            }
+          }
           if (
             result.snapshot &&
             navigationRevision === humanBrowserNavigationRevisionRef.current &&
@@ -273,7 +289,10 @@ export default function BrowserOverlay({
           }
         }
       } catch (error) {
-        if (!cancelled && sequence === syncSequence) {
+        if (
+          !cancelled && sequence === syncSequence &&
+          navigationRevision === humanBrowserNavigationRevisionRef.current
+        ) {
           setHumanBrowserError(error instanceof Error ? error.message : String(error));
           // A close/reopen can interrupt the frontend queue while the old
           // native child is still being created. Its permit can outlast the
@@ -283,6 +302,12 @@ export default function BrowserOverlay({
               busyRetryTimer = null;
               scheduleSync();
             }, HUMAN_BROWSER_BUSY_RETRY_MS);
+          } else if (visible && !isHumanBrowserLifecycleBusy(error)) {
+            // A definitive failure ends this attempt, not the surviving page.
+            // Resume observation without treating the failed revision as
+            // acknowledged: replaying it with an observed URL could reload
+            // that page. A new explicit navigation still sends its new nonce.
+            navigationState.settledRevision = navigationRevision;
           }
         }
       } finally {
@@ -320,7 +345,7 @@ export default function BrowserOverlay({
       // while sync waits in the queue or retries a busy native lifecycle.
       if (
         humanBrowserNavigationRevisionRef.current !== lastNavigationRevision ||
-        humanBrowserNavigationRevisionRef.current !== appliedNavigationRevision
+        humanBrowserNavigationRevisionRef.current !== navigationState.settledRevision
       ) {
         return;
       }
@@ -359,7 +384,7 @@ export default function BrowserOverlay({
       // page's old URL before syncSlot establishes the navigation grace period.
       if (
         navigationRevision !== lastNavigationRevision ||
-        navigationRevision !== appliedNavigationRevision
+        navigationRevision !== navigationState.settledRevision
       ) {
         return;
       }
@@ -371,7 +396,7 @@ export default function BrowserOverlay({
         if (
           cancelled ||
           navigationRevision !== humanBrowserNavigationRevisionRef.current ||
-          navigationRevision !== appliedNavigationRevision ||
+          navigationRevision !== navigationState.settledRevision ||
           locationSequence !== locationEventSequence
         ) {
           return;
@@ -428,7 +453,7 @@ export default function BrowserOverlay({
         }).catch(() => undefined);
       }
     };
-  }, [humanBrowser, paneId]);
+  }, [humanBrowser, navigationState, paneId]);
 
   useLayoutEffect(() => {
     syncHumanBrowserSlotRef.current();

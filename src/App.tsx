@@ -1,3 +1,4 @@
+import { ComposerDrafts } from "./lib/composerDrafts";
 import { afterStartupPaint, loadInitialWorkspace, reconcileStartupArtifacts, reconcileStartupDrafts, startupResearchPane } from "./lib/startupHydration";
 import RemoteLinkContextMenu from "./components/RemoteLinkContextMenu";
 import { useRemoteFilePreviews } from "./hooks/useRemoteFilePreviews";
@@ -12,6 +13,7 @@ import WorktreeCreateDialog from "./components/WorktreeCreateDialog";
 import RepositoryBrowserDialog from "./components/RepositoryBrowserDialog";
 import PendingRemoteGroup from "./components/PendingRemoteGroup";
 import { useRemoteGroupCreation } from "./hooks/useRemoteGroupCreation";
+import { usePaneSplitPersistence } from "./hooks/usePaneSplitPersistence";
 import { waitForPaintedFrame } from "./lib/paint";
 import { useRemoteSettings } from "./hooks/useRemoteSettings";
 import RemoteSettingsForm, { RemoteProbeStatus } from "./components/RemoteSettingsForm";
@@ -323,7 +325,12 @@ import {
   type AppShortcutCommand,
 } from "./lib/appShortcuts";
 import { requestComposerInsert } from "./lib/promptLibrary";
-import { nativeHumanBrowserOwnerIds } from "./lib/humanBrowserState";
+import {
+  humanBrowserNavigationStateFor,
+  nativeHumanBrowserOwnerIds,
+  pruneHumanBrowserNavigationState,
+  type HumanBrowserNavigationState,
+} from "./lib/humanBrowserState";
 import { openAfterBrowserHide } from "./lib/humanBrowserLifecycleQueue";
 import {
   anyBrowserOverlayOpen,
@@ -399,7 +406,6 @@ import {
   paneSplitIsNested,
   paneSplitLayout,
   paneSplitsEqual,
-  paneSnapshotForPersistedPaneSplits,
   rememberActiveSplitPane,
   reservedTerminalStageWidth,
   resizeSplitNodeFractions,
@@ -544,6 +550,7 @@ import {
   browserOpenPreviewExternal,
   browserRevealLocalPath,
   claimNativeTerminalPointerForWebDrag,
+  claimNativeTerminalPointerForWebOverlay,
   clearAgentWorkingStatus,
   closeWorktreePane,
   confirmAppExit,
@@ -657,7 +664,6 @@ import {
   setNativeTerminalKeyboardOwner,
   setNativeTerminalStageBackstop,
   setPaneLayout,
-  setPaneSplits as persistPaneSplits,
   setAgentDraft as persistAgentDraft,
   setAgentTranscript,
   setAgentTyping,
@@ -982,14 +988,13 @@ function TerminalSplitResizer({
     if (!IS_MAC || hoverClaimRef.current) {
       return;
     }
-    const releaseNativePointer = claimNativeTerminalPointerForWebDrag();
+    const releaseNativePointer = claimNativeTerminalPointerForWebOverlay();
     // Safety nets for a hover that never reports its exit — the window losing
     // key while the pointer rests on the divider, or the pointer leaving during
     // an occlusion. A claim nobody releases leaves every terminal mouse-dead,
-    // and unlike a claim taken mid-press this one is sticky natively (no button
-    // is down when it lands), so AppKit's own pointer-up retirement never
-    // covers it. Events on this divider — including a captured drag, which
-    // retargets them here — are the gesture itself and must not retire it.
+    // and this hover claim is explicitly sticky, so AppKit's pointer-up
+    // retirement does not cover it. Events on this divider — including a captured
+    // drag, which retargets them here — are the gesture itself and must not retire it.
     const onThisDivider = (target: EventTarget | null) => {
       const element = nativeRegionRef.current;
       return Boolean(element && target instanceof Node && element.contains(target));
@@ -1795,6 +1800,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // panes that want to attach are parked here so their pre-attach backlog is only
   // released after the listener can actually deliver it.
   const eventsReadyRef = useRef(false);
+  const [eventsReady, setEventsReady] = useState(false);
   const pendingAttachRef = useRef<Set<string>>(new Set());
   const panesRef = useRef<PaneInfo[]>([]);
   const agentsRef = useRef<AgentInfo[]>([]);
@@ -1802,6 +1808,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // Composer drafts live here keyed by agent so they survive tab switches; the
   // ref mirrors the state for synchronous reads from the debounced disk flush.
   const draftsByAgentRef = useRef<Record<string, string>>({});
+  const composerDraftsRef = useRef(new ComposerDrafts());
   const draftFlushTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   // Per-agent queue scroll positions, so switching tabs (even through a shell pane,
   // which unmounts the composer) restores where each queue was left. Ephemeral: a ref
@@ -1838,6 +1845,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const browserOverlayByPaneRef = useRef<Record<string, BrowserOverlayState>>({});
   const browserPreviewScrollByOwnerRef = useRef<BrowserPreviewScrollCache>(new Map());
   const nativeHumanBrowserOwnerIdsRef = useRef<Set<string>>(new Set());
+  const humanBrowserNavigationByOwnerRef = useRef(new Map<string, HumanBrowserNavigationState>());
   const activeBrowserOwnerIdRef = useRef<string | null>(null);
   const toggleActiveBrowserOverlayRef = useRef<() => void>(() => {});
   const closeActiveBrowserOverlayRef = useRef<() => void>(() => {});
@@ -1856,6 +1864,14 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // Debounced "user is typing" hold per agent: while active the backend won't
   // auto-drain that agent's queue. Holds the agent id + the pending release timer.
   const agentTypingRef = useRef<{ agentId: string; timer: number } | null>(null);
+  useEffect(() => () => {
+    const current = agentTypingRef.current;
+    if (current) {
+      window.clearTimeout(current.timer);
+      agentTypingRef.current = null;
+      void setAgentTyping(current.agentId, false).catch(() => undefined);
+    }
+  }, []);
   const paneDropTargetRef = useRef<PaneDropTarget | null>(null);
   const groupDropTargetRef = useRef<GroupDropTarget | null>(null);
   const paneReorderPersistChainRef = useRef<Promise<void>>(Promise.resolve());
@@ -3200,8 +3216,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       setExportResearchPane(null);
     }
   }, [exportResearchPane, panes]);
-  const [paneSplits, setPaneSplitsState] = useState<PaneSplitInfo[]>([]);
-  paneSplitsRef.current = paneSplits;
+  const { paneSplits, setPaneSplitsState, savePaneSplits, onPaneSplitsChanged } =
+    usePaneSplitPersistence(paneSplitsRef, panesRef, setError);
   useLayoutEffect(() => {
     // Also cover restored/backend selections and newly created or changed splits.
     rememberActiveSplitPane(lastActivePaneBySplitRef.current, paneSplits, activePaneId);
@@ -3270,7 +3286,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     // Reader mode covers the native terminal stage. Own pointer routing for
     // its full lifetime so AppKit cannot send a press or release to Ghostty
     // while the DOM overlay and native surface visibility settle.
-    return claimNativeTerminalPointerForWebDrag();
+    return claimNativeTerminalPointerForWebOverlay();
   }, [assistantTurnReaderOpen]);
   // PiP is opt-in per pane. Keeping the flag separate from transcript expansion
   // lets a pane remember the choice across expand/restore and tab round trips.
@@ -4740,6 +4756,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       browserOwnerIds.add(researchBrowserOwnerId(tree.id));
     }
     pruneBrowserPreviewScroll(browserPreviewScrollByOwnerRef.current, browserOwnerIds);
+    pruneHumanBrowserNavigationState(humanBrowserNavigationByOwnerRef.current, browserOwnerIds);
     setTerminalTitleByPane((current) => {
       const next = Object.fromEntries(
         Object.entries(current).filter(([paneId]) => ids.has(paneId)),
@@ -4822,6 +4839,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   useEffect(() => {
     const ids = new Set(agents.map((agent) => agent.id));
     transcriptOptionsRequestTrackerRef.current.retain(ids);
+    composerDraftsRef.current.retain(ids);
     const pruneRecord = <T,>(current: Record<string, T>): Record<string, T> => {
       const next = Object.fromEntries(Object.entries(current).filter(([id]) => ids.has(id)));
       return Object.keys(next).length === Object.keys(current).length ? current : next;
@@ -5050,9 +5068,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     }
     if (agentTypingRef.current) {
       window.clearTimeout(agentTypingRef.current.timer);
-    } else {
-      void setAgentTyping(agentId, true).catch(() => undefined);
     }
+    // Renew the backend lease even within a long typing burst.
+    void setAgentTyping(agentId, true).catch(() => undefined);
     const timer = window.setTimeout(() => {
       agentTypingRef.current = null;
       void setAgentTyping(agentId, false).catch(() => undefined);
@@ -6302,6 +6320,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // is there when the user returns to the tab, while the disk write is debounced
   // (clearing flushes at once so a sent/emptied draft never lingers in state.json).
   function setAgentDraft(agentId: string, draft: string) {
+    composerDraftsRef.current.set(agentId, draft);
     startupDraftOverridesRef.current?.set(agentId, draft);
     const nextDrafts = { ...draftsByAgentRef.current };
     if (draft) {
@@ -7592,8 +7611,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         drag.index,
         (client - drag.startClient) / drag.stageExtent,
       );
-      setPaneSplitsState((current) =>
-        current.map((candidate) => (candidate.id === latestSplit.id ? latestSplit : candidate)),
+      setPaneSplitsState(
+        paneSplitsRef.current.map((candidate) =>
+          candidate.id === latestSplit.id ? latestSplit : candidate,
+        ),
       );
     };
 
@@ -7608,7 +7629,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       setTerminalGeometryResizing(false);
       setTerminalSplitResizeMask(null);
       savePaneSplits(
-        paneSplits.map((candidate) => (candidate.id === latestSplit.id ? latestSplit : candidate)),
+        paneSplitsRef.current.map((candidate) =>
+          candidate.id === latestSplit.id ? latestSplit : candidate,
+        ),
       );
     };
 
@@ -7632,9 +7655,11 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     event.stopPropagation();
     const step = event.shiftKey ? 0.08 : 0.03;
     const delta = event.key === forward ? step : -step;
-    const resized = resizeSplitNodeFractions(split, divider.path, divider.index, delta);
+    const currentSplit = paneSplitsRef.current.find((candidate) => candidate.id === split.id);
+    if (!currentSplit) return;
+    const resized = resizeSplitNodeFractions(currentSplit, divider.path, divider.index, delta);
     savePaneSplits(
-      paneSplits.map((candidate) => (candidate.id === resized.id ? resized : candidate)),
+      paneSplitsRef.current.map((candidate) => (candidate.id === resized.id ? resized : candidate)),
     );
   }
 
@@ -7701,6 +7726,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     : { enabled: false, reason: undefined };
 
   useEffect(() => {
+    // Registration can fail/retry. Do not capture a workspace snapshot while
+    // changes are still falling into the gap before the global event listener.
+    if (!eventsReady) return;
     let cancelled = false;
     let cancelSecondary: (() => void) | undefined;
     let restoreHiddenResearch: (() => Promise<void>) | undefined;
@@ -7793,10 +7821,12 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         if (globalDraftsRevisionRef.current === initialGlobalDraftsRevision) {
           setGlobalDrafts(composers.globalDrafts);
         }
+        for (const flush of composerDraftFlushersRef.current) flush();
         const restoredDrafts = reconcileStartupDrafts(
           composers.drafts, draftsByAgentRef.current, startupDraftOverridesRef.current ?? new Map(),
         );
         startupDraftOverridesRef.current = null;
+        for (const [id, text] of Object.entries(restoredDrafts)) composerDraftsRef.current.set(id, text);
         draftsByAgentRef.current = restoredDrafts;
         setDraftsByAgentState(restoredDrafts);
       } catch (err) {
@@ -8081,7 +8111,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       cancelled = true;
       cancelSecondary?.();
     };
-  }, []);
+  }, [eventsReady]);
 
   // Persist any debounced-but-unwritten drafts when the window is hidden or the
   // app unmounts, so a quick close never drops the last second of typing.
@@ -8293,6 +8323,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
 
   const handleEventsReady = useCallback(() => {
     eventsReadyRef.current = true;
+    setEventsReady(true);
     const pending = pendingAttachRef.current;
     pendingAttachRef.current = new Set();
     for (const paneId of pending) {
@@ -8301,32 +8332,13 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     void hydrateShellAgentJobs().catch(() => undefined);
   }, [attachPaneWithRetry, hydrateShellAgentJobs]);
 
-  function savePaneSplits(nextSplits: PaneSplitInfo[], paneSnapshot = panes) {
-    const normalized = normalizePaneSplitsForPanes(nextSplits, paneSnapshot);
-    setPaneSplitsState(normalized);
-    void persistPaneSplits(normalized)
-      .then((persisted) => {
-        const paneBasis = paneSnapshotForPersistedPaneSplits(
-          persisted,
-          panesRef.current,
-          paneSnapshot,
-        );
-        setPaneSplitsState(normalizePaneSplitsForPanes(persisted, paneBasis));
-      })
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : String(err));
-      });
-  }
-
   useEffect(() => {
-    setPaneSplitsState((current) => {
-      const normalized = normalizePaneSplitsForPanes(current, panes);
-      if (paneSplitsEqual(current, normalized)) {
-        return current;
-      }
-      void persistPaneSplits(normalized).catch(() => undefined);
-      return normalized;
-    });
+    const current = paneSplitsRef.current;
+    const normalized = normalizePaneSplitsForPanes(current, panes);
+    if (paneSplitsEqual(current, normalized)) return;
+    // Persistence is a side effect, so keep it outside a React state updater.
+    // Use the same ordering as user-initiated saves; normalization stays silent.
+    savePaneSplits(normalized, panes, { reportErrors: false });
   }, [panes]);
 
   // Stable per-pane ref callbacks. An inline `ref={(h) => ...}` is a new function
@@ -10676,10 +10688,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       setActivePaneId(paneId);
       requestAnimationFrame(() => terminalPaneRefs.current.get(paneId)?.focus());
     },
-    onPaneSplitsChanged: (splits: PaneSplitInfo[]) => {
-      paneSplitsRef.current = splits;
-      setPaneSplitsState(splits);
-    },
+    onPaneSplitsChanged,
     onTerminalSearchRequested: openNativeTerminalSearch,
     onTerminalPasteRequested: requestNativeTerminalPaste,
     onTerminalUserInput: reportNativeTerminalInput,
@@ -10968,8 +10977,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       );
       if (restoredAgent) {
         void refreshAgentTurnQueue(restoredAgent.id).catch(() => undefined);
+        const draftBeforeRestore = composerDraftsRef.current.read(restoredAgent.id).draft;
         void getAgentDraft(restoredAgent.id)
           .then((draft) => {
+            if (composerDraftsRef.current.read(restoredAgent.id).draft !== draftBeforeRestore) return;
             startupDraftOverridesRef.current?.set(restoredAgent.id, draft ?? "");
             const nextDrafts = { ...draftsByAgentRef.current };
             if (draft) {
@@ -10977,6 +10988,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             } else {
               delete nextDrafts[restoredAgent.id];
             }
+            composerDraftsRef.current.set(restoredAgent.id, draft ?? "");
             draftsByAgentRef.current = nextDrafts;
             setDraftsByAgentState(nextDrafts);
           })
@@ -13609,7 +13621,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     // Sidebar menus are position:fixed and can extend over the native terminal.
     // Claim web pointer routing so clicks on the overlapping portion hit the
     // menu instead of Ghostty.
-    const releaseNativePointer = claimNativeTerminalPointerForWebDrag();
+    const releaseNativePointer = claimNativeTerminalPointerForWebOverlay();
     const handleDismiss = () => {
       setPaneContextMenu(null);
       setGroupMenu(null);
@@ -15692,6 +15704,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                 onMoveQueuedTurn={(targetAgentId, index, turn, expectedId) =>
                   void moveQueuedTurnToAgent(agent.id, targetAgentId, index, turn, expectedId)
                 }
+                composerDrafts={composerDraftsRef.current}
                 onDraftChange={setAgentDraft}
                 registerDraftFlusher={registerComposerDraftFlusher}
                 onWaitTargetHover={setWaitTargetHoverAgentId}
@@ -19093,6 +19106,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             onClose={() => closeActiveBrowserOverlay(activeBrowserOwnerId)}
           /> : undefined}
           reloadNonce={activeBrowserOverlay.reloadNonce}
+          navigationState={humanBrowserNavigationStateFor(
+            humanBrowserNavigationByOwnerRef.current, activeBrowserOwnerId,
+          )}
           sandbox={activeBrowserOverlay.sandbox}
           bodyFontId={settings.bodyFontId}
           initialPreviewScroll={browserPreviewScrollFor(

@@ -35,6 +35,13 @@ export interface PublishDialogTarget {
   buildDraft: (title: string) => Promise<PublicationDraft>;
 }
 
+interface PublishingAuthFlow {
+  authorization: PublishingDeviceAuthorization;
+  intervalSeconds: number;
+  nextPollAt: number;
+  pending: Promise<void> | null;
+}
+
 interface PublishDialogProps {
   target: PublishDialogTarget | null;
   onClose: () => void;
@@ -57,6 +64,11 @@ export default function PublishDialog({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<"code" | "link" | null>(null);
   const titleRef = useRef<HTMLInputElement | null>(null);
+  const authFlowRef = useRef<PublishingAuthFlow | null>(null);
+  const authRequestRef = useRef<symbol | null>(null);
+  const mountedRef = useRef(false);
+  const [pollRevision, setPollRevision] = useState(0);
+  const open = target !== null;
   const busy = loadingAuth || publishing;
   const busyRef = useRef(busy);
   const onCloseRef = useRef(onClose);
@@ -64,73 +76,124 @@ export default function PublishDialog({
   onCloseRef.current = onClose;
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      authRequestRef.current = null;
+      authFlowRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    // Closing retires opening-specific work, but not a device request already
+    // running in native code. Its credential write cannot be canceled here.
+    authRequestRef.current = null;
     if (!target) {
+      setLoadingAuth(false);
       return;
     }
     setTitle(target.initialTitle);
     setIsPublic(target.binding?.isPublic ?? false);
-    setAuthorization(null);
     setPublishing(false);
     setResult(null);
     setError(null);
     setCopied(null);
     setLoadingAuth(true);
-    void getPublishingAuthStatus()
-      .then(setAuth)
-      .catch((reason) => setError(errorMessage(reason)))
-      .finally(() => setLoadingAuth(false));
+    const request = Symbol();
+    authRequestRef.current = request;
+    const current = () => authRequestRef.current === request;
+    void (async () => {
+      try {
+        // Read AFTER any outstanding poll's credential write, including when
+        // its IPC reply fails. Polling cannot resume until this read settles.
+        await authFlowRef.current?.pending;
+        if (!current()) return;
+        const status = await getPublishingAuthStatus();
+        if (!current()) return;
+        setAuth(status);
+        if (status.connected) {
+          authFlowRef.current = null;
+          setAuthorization(null);
+          setError(null);
+        } else if (
+          authFlowRef.current && Date.now() >= authFlowRef.current.authorization.expiresAt
+        ) {
+          authFlowRef.current = null;
+          setAuthorization(null);
+          setError("The GitHub authorization code expired. Start again.");
+        }
+      } catch (reason) {
+        if (current()) setError(errorMessage(reason));
+      } finally {
+        if (current()) {
+          authRequestRef.current = null;
+          setLoadingAuth(false);
+        }
+      }
+    })();
     const frame = requestAnimationFrame(() => {
       titleRef.current?.focus();
       titleRef.current?.select();
     });
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      if (current()) authRequestRef.current = null;
+      cancelAnimationFrame(frame);
+    };
   }, [target]);
 
   useEffect(() => {
-    if (!authorization || auth?.connected) {
+    const flow = authFlowRef.current;
+    // The request ref is set by the opening effect before this effect runs,
+    // even in the first reopen render where loadingAuth is still false.
+    if (!open || !flow || auth?.connected || authRequestRef.current || flow.pending) {
       return;
     }
     let disposed = false;
-    let timer: number | null = null;
-    let intervalSeconds = authorization.intervalSeconds;
-    const poll = async () => {
-      if (disposed) {
+    const timer = window.setTimeout(() => {
+      if (disposed || authFlowRef.current !== flow || authRequestRef.current || flow.pending) {
         return;
       }
-      if (Date.now() >= authorization.expiresAt) {
+      if (Date.now() >= flow.authorization.expiresAt) {
+        authFlowRef.current = null;
         setAuthorization(null);
         setError("The GitHub authorization code expired. Start again.");
         return;
       }
-      try {
-        const response = await pollPublishingAuth(authorization.deviceCode);
-        if (disposed) {
-          return;
-        }
-        if (response.status === "connected") {
-          setAuth(response.account);
-          setAuthorization(null);
-          setError(null);
-          return;
-        }
-        intervalSeconds = response.intervalSeconds;
-      } catch (reason) {
-        if (!disposed) {
+      flow.pending = (async () => {
+        try {
+          const response = await pollPublishingAuth(flow.authorization.deviceCode);
+          // A closed dialog still owns this flow. Only unmount or replacement
+          // retires it; effect cleanup cancels scheduling, not native work.
+          if (!mountedRef.current || authFlowRef.current !== flow) return;
+          if (response.status === "connected") {
+            setAuth(response.account);
+            authFlowRef.current = null;
+            setAuthorization(null);
+            setError(null);
+          } else {
+            // slow_down applies to subsequent polls too; a later pending reply
+            // may supply a smaller default interval from the native API.
+            flow.intervalSeconds = Math.max(flow.intervalSeconds, response.intervalSeconds);
+            flow.nextPollAt = Date.now() + flow.intervalSeconds * 1_000;
+          }
+        } catch (reason) {
+          if (!mountedRef.current || authFlowRef.current !== flow) return;
+          authFlowRef.current = null;
           setAuthorization(null);
           setError(errorMessage(reason));
+        } finally {
+          flow.pending = null;
+          if (mountedRef.current && authFlowRef.current === flow) {
+            setPollRevision((revision) => revision + 1);
+          }
         }
-        return;
-      }
-      timer = window.setTimeout(poll, Math.max(1, intervalSeconds) * 1_000);
-    };
-    timer = window.setTimeout(poll, Math.max(1, intervalSeconds) * 1_000);
+      })();
+    }, Math.max(0, Math.min(flow.nextPollAt, flow.authorization.expiresAt) - Date.now()));
     return () => {
       disposed = true;
-      if (timer !== null) {
-        window.clearTimeout(timer);
-      }
+      window.clearTimeout(timer);
     };
-  }, [auth?.connected, authorization]);
+  }, [auth?.connected, authorization, loadingAuth, open, pollRevision]);
 
   useEffect(() => {
     if (!target) {
@@ -157,29 +220,53 @@ export default function PublishDialog({
   const canPublish = Boolean(title.trim()) && auth?.connected === true && !busy;
 
   async function connect() {
+    if (authRequestRef.current || authFlowRef.current) return;
+    const request = Symbol();
+    authRequestRef.current = request;
+    const current = () => authRequestRef.current === request;
     setLoadingAuth(true);
     setError(null);
     try {
       const next = await beginPublishingAuth();
+      if (!current()) return;
+      const intervalSeconds = Math.max(1, next.intervalSeconds);
+      authFlowRef.current = {
+        authorization: next,
+        intervalSeconds,
+        nextPollAt: Date.now() + intervalSeconds * 1_000,
+        pending: null,
+      };
       setAuthorization(next);
       await openExternalUrl(next.verificationUri);
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (current()) setError(errorMessage(reason));
     } finally {
-      setLoadingAuth(false);
+      if (current()) {
+        authRequestRef.current = null;
+        setLoadingAuth(false);
+      }
     }
   }
 
   async function disconnect() {
+    if (authRequestRef.current || authFlowRef.current?.pending) return;
+    const request = Symbol();
+    authRequestRef.current = request;
+    const current = () => authRequestRef.current === request;
     setLoadingAuth(true);
     setError(null);
     try {
+      authFlowRef.current = null;
       setAuthorization(null);
-      setAuth(await disconnectPublishingAuth());
+      const status = await disconnectPublishingAuth();
+      if (current()) setAuth(status);
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (current()) setError(errorMessage(reason));
     } finally {
-      setLoadingAuth(false);
+      if (current()) {
+        authRequestRef.current = null;
+        setLoadingAuth(false);
+      }
     }
   }
 

@@ -1708,6 +1708,7 @@ mod tests {
         for status in [AgentStatus::Starting, AgentStatus::Running] {
             let state = test_state();
             let mut agent = sample_agent();
+            agent.pane_id = Some("test-pane".to_string());
             agent.status = status;
             state.insert_agent(agent).unwrap();
             state

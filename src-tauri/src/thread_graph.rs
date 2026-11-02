@@ -33,12 +33,12 @@ const GRAPH_CACHE_MAX_CLEAN_BYTES: usize = 128 * 1024 * 1024;
 /// the newest mutation rather than a yet-to-be-flushed disk file. Successfully
 /// flushed entries stay warm briefly so the next transcript line does not
 /// immediately read and parse the whole graph again. Clean entries are expired
-/// by idle time and least-recently-used order under a byte cap. Test builds
-/// bypass the global cache (reads and writes stay synchronous on disk) so tests
-/// can assert snapshot files immediately after a mutation; the cache policy
-/// itself is exercised against local maps below.
+/// by idle time and least-recently-used order under a byte cap. Tests bypass the
+/// global cache unless they explicitly opt into the production cache path.
 ///
-/// A crash can lose at most the last debounce window of graph updates; graphs
+/// Healthy writes normally coalesce over the debounce window. Failed writes
+/// stay dirty and are retried on the maintenance wake;
+/// a crash before storage recovers can lose those buffered updates. Graph turns
 /// derive from transcripts, which the next launch re-tails.
 struct CachedGraph {
     graph: ThreadGraph,
@@ -64,8 +64,24 @@ static GRAPH_FLUSH_PENDING: LazyLock<(Mutex<bool>, Condvar)> =
 static GRAPH_FLUSHER_SPAWNED: AtomicBool = AtomicBool::new(false);
 static GRAPH_CACHE_ACCESS_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(test)]
+thread_local! {
+    static TEST_GRAPH_CACHE_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+static TEST_GRAPH_FLUSH_COMPLETIONS: LazyLock<Mutex<HashMap<(String, String), usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static TEST_GRAPH_IDLE_FLUSH_TIMES: LazyLock<Mutex<Vec<Instant>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
 fn graph_cache_enabled() -> bool {
-    !cfg!(test)
+    #[cfg(test)]
+    return TEST_GRAPH_CACHE_ENABLED.with(|enabled| enabled.get());
+    #[cfg(not(test))]
+    true
 }
 
 fn cached_graph(storage_root: &str, thread_id: &str) -> Option<ThreadGraph> {
@@ -172,6 +188,38 @@ fn invalidate_clean_cached_graph(storage_root: &str, thread_id: &str) {
     drop(removed);
 }
 
+/// Removes cached revisions and the snapshot of an already-deleted record.
+/// Serialize with mutations and flushes so a previously queued retry cannot
+/// recreate the file. This is not a tombstone: a later fresh mutation or an
+/// already-started disk read can still populate a new cache entry.
+pub fn remove_thread_snapshot(record: &ThreadRecord) -> Result<(), String> {
+    let lease = thread_lock(&record.id)?;
+    let _thread_guard = lease.acquire()?;
+    let _flush_guard = GRAPH_FLUSH_LOCK
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let evicted = {
+        let mut cache = GRAPH_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+        let keys = cache
+            .keys()
+            .filter(|(_, id)| id == &record.id)
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .filter_map(|key| cache.remove(&key))
+            .collect::<Vec<_>>()
+    };
+    drop(evicted);
+    match fs::remove_file(&record.snapshot_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!(
+            "failed to remove thread graph {}: {err}",
+            record.snapshot_path
+        )),
+    }
+}
+
 fn take_dirty_graphs(cache: &mut HashMap<(String, String), CachedGraph>) -> Vec<PendingGraphFlush> {
     cache
         .iter_mut()
@@ -215,6 +263,11 @@ fn complete_graph_flush(
     clean_ttl: Duration,
     max_clean_bytes: usize,
 ) -> Vec<CachedGraph> {
+    #[cfg(test)]
+    {
+        let mut completions = TEST_GRAPH_FLUSH_COMPLETIONS.lock().unwrap();
+        *completions.entry(key.clone()).or_default() += 1;
+    }
     let Some(entry) = cache.get_mut(key) else {
         return Vec::new();
     };
@@ -306,11 +359,28 @@ fn prune_global_graph_cache() {
 }
 
 fn schedule_graph_flush() {
-    if GRAPH_FLUSHER_SPAWNED
+    schedule_graph_flush_with(&GRAPH_FLUSHER_SPAWNED, || {
+        std::thread::Builder::new()
+            .name("qmux-graph-flusher".into())
+            .spawn(graph_flusher_loop)
+            .map(|_| ())
+    });
+}
+
+fn schedule_graph_flush_with(spawned: &AtomicBool, spawn: impl FnOnce() -> std::io::Result<()>) {
+    if spawned
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
     {
-        std::thread::spawn(graph_flusher_loop);
+        if let Err(err) = spawn() {
+            // Do not permanently claim a worker that never started. Preserve
+            // this mutation synchronously when possible; a later mutation can
+            // try starting the worker again if thread resources recover.
+            spawned.store(false, Ordering::SeqCst);
+            eprintln!("qmux: failed to start graph flusher: {err}");
+            flush_dirty_thread_graphs();
+            return;
+        }
     }
     let (pending, wake) = &*GRAPH_FLUSH_PENDING;
     let mut pending = pending.lock().unwrap_or_else(|err| err.into_inner());
@@ -337,6 +407,16 @@ fn graph_flusher_loop() {
             should_flush
         };
         if !should_flush {
+            // Any failed flush (including an explicit synchronous flush) leaves
+            // dirty entries behind. The maintenance wake owns retries even if
+            // no later mutation schedules work. A fixed five-second cadence
+            // avoids a busy loop on unavailable storage; clean entries do no I/O.
+            flush_dirty_thread_graphs();
+            #[cfg(test)]
+            TEST_GRAPH_IDLE_FLUSH_TIMES
+                .lock()
+                .unwrap()
+                .push(Instant::now());
             prune_global_graph_cache();
             continue;
         }
@@ -353,7 +433,8 @@ fn graph_flusher_loop() {
 
 /// Writes every dirty cached graph to disk. Called by the flusher after each
 /// debounce window and once at exit (alongside the state.json final snapshot)
-/// so a clean quit never loses graph updates.
+/// to attempt a final commit. Failures stay dirty and are logged; neither a
+/// retry nor exit can guarantee durability while storage is unavailable.
 pub fn flush_dirty_thread_graphs() {
     // The background flusher can already be writing when the exit callback
     // reaches this function. Serialize whole flushes so exit waits for that
@@ -1725,21 +1806,30 @@ fn atomic_write_owner_only(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .mode(0o600)
         .open(&tmp)
         .map_err(|err| format!("failed to create {}: {err}", tmp.display()))?;
-    file.write_all(bytes)
-        .map_err(|err| format!("failed to write {}: {err}", tmp.display()))?;
-    file.write_all(b"\n")
-        .map_err(|err| format!("failed to write {}: {err}", tmp.display()))?;
-    file.sync_all()
-        .map_err(|err| format!("failed to sync {}: {err}", tmp.display()))?;
-    drop(file);
-    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))
-        .map_err(|err| format!("failed to set permissions on {}: {err}", tmp.display()))?;
-    fs::rename(&tmp, path).map_err(|err| format!("failed to replace {}: {err}", path.display()))?;
-    let _ = OpenOptions::new()
-        .read(true)
-        .open(parent)
-        .and_then(|dir| dir.sync_all());
-    Ok(())
+    let result = (|| {
+        file.write_all(bytes)
+            .map_err(|err| format!("failed to write {}: {err}", tmp.display()))?;
+        file.write_all(b"\n")
+            .map_err(|err| format!("failed to write {}: {err}", tmp.display()))?;
+        file.sync_all()
+            .map_err(|err| format!("failed to sync {}: {err}", tmp.display()))?;
+        drop(file);
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))
+            .map_err(|err| format!("failed to set permissions on {}: {err}", tmp.display()))?;
+        fs::rename(&tmp, path)
+            .map_err(|err| format!("failed to replace {}: {err}", path.display()))?;
+        let _ = OpenOptions::new()
+            .read(true)
+            .open(parent)
+            .and_then(|dir| dir.sync_all());
+        Ok(())
+    })();
+    if result.is_err() {
+        // Retrying a persistent write or rename failure must not accumulate
+        // partial or full snapshots in the storage directory.
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -2013,6 +2103,309 @@ mod tests {
             Vec::<HomeTurnSummary>::new()
         );
         fs::remove_dir_all(worktree).unwrap();
+    }
+
+    // Only this test's mutations opt into the real global cache. Existing
+    // synchronous tests and mutations on other test threads keep their policy.
+    static PRODUCTION_CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ProductionCacheTest {
+        _guard: MutexGuard<'static, ()>,
+        root: PathBuf,
+        agent: AgentInfo,
+    }
+
+    impl ProductionCacheTest {
+        fn new(name: &str) -> Self {
+            let guard = PRODUCTION_CACHE_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            TEST_GRAPH_CACHE_ENABLED.with(|enabled| assert!(!enabled.replace(true)));
+            let root = temp_worktree(name);
+            let thread_id = root.file_name().unwrap().to_str().unwrap();
+            let agent = sample_agent_with(
+                "cache-agent",
+                "codex",
+                thread_id,
+                "cache-branch",
+                root.display().to_string(),
+            );
+            Self {
+                _guard: guard,
+                root,
+                agent,
+            }
+        }
+
+        fn key(&self) -> (String, String) {
+            (
+                self.root.display().to_string(),
+                agent_thread_id(&self.agent),
+            )
+        }
+
+        fn path(&self) -> PathBuf {
+            let (root, id) = self.key();
+            snapshot_path(&root, &id)
+        }
+
+        fn store(&self) -> ThreadStore {
+            ThreadStore::new(&self.root)
+        }
+
+        fn append(&self, id: &str) {
+            self.store()
+                .append_turn_node(&self.agent, &sample_turn(&self.agent.id, id, "user", 0))
+                .unwrap();
+        }
+
+        fn completions(&self) -> usize {
+            *TEST_GRAPH_FLUSH_COMPLETIONS
+                .lock()
+                .unwrap()
+                .get(&self.key())
+                .unwrap_or(&0)
+        }
+
+        fn wait_for(&self, description: &str, predicate: impl Fn() -> bool) {
+            let deadline = Instant::now() + GRAPH_CACHE_CLEANUP_INTERVAL + Duration::from_secs(3);
+            while !predicate() {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for {description}"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        fn block_writes(&self) {
+            fs::create_dir_all(self.path()).unwrap();
+        }
+
+        fn restore_writes(&self) {
+            fs::remove_dir(self.path()).unwrap();
+        }
+
+        fn disk_has(&self, id: &str) -> bool {
+            let (root, thread_id) = self.key();
+            read_snapshot_from_disk(&root, &thread_id)
+                .ok()
+                .flatten()
+                .is_some_and(|(graph, _)| graph.nodes.contains_key(id))
+        }
+    }
+
+    impl Drop for ProductionCacheTest {
+        fn drop(&mut self) {
+            TEST_GRAPH_CACHE_ENABLED.with(|enabled| enabled.set(false));
+            let _flush_guard = GRAPH_FLUSH_LOCK
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            GRAPH_CACHE.lock().unwrap().remove(&self.key());
+            TEST_GRAPH_FLUSH_COMPLETIONS
+                .lock()
+                .unwrap()
+                .remove(&self.key());
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn production_cache_retries_failed_write_without_another_mutation() {
+        let test = ProductionCacheTest::new("qmux-idle-retry");
+        // Seed a clean cached graph first. A directory at the JSON destination
+        // then makes the real atomic rename fail, independent of user privileges.
+        test.append("old");
+        flush_dirty_thread_graphs();
+        fs::remove_file(test.path()).unwrap();
+        test.block_writes();
+        let before = test.completions();
+        test.append("new");
+        test.wait_for("first failed background write", || {
+            test.completions() > before
+        });
+        let cached = test
+            .store()
+            .read_thread(&agent_thread_id(&test.agent))
+            .unwrap()
+            .unwrap();
+        assert!(cached.nodes.contains_key("new"));
+        test.restore_writes();
+        test.wait_for("durable idle retry after storage recovery", || {
+            test.disk_has("new")
+        });
+        let disk = read_snapshot_from_disk(&test.key().0, &test.key().1)
+            .unwrap()
+            .unwrap()
+            .0;
+        assert!(disk.nodes.contains_key("old"));
+    }
+
+    #[test]
+    fn production_cache_repeated_failures_wait_between_idle_attempts() {
+        let test = ProductionCacheTest::new("qmux-repeated-retry");
+        test.append("latest");
+        flush_dirty_thread_graphs();
+        fs::remove_file(test.path()).unwrap();
+        test.block_writes();
+        let before = test.completions();
+        test.append("new");
+        test.wait_for("first failed background write", || {
+            test.completions() > before
+        });
+        // Other tests may finalize AppState and explicitly flush every graph.
+        // Those legitimate immediate writes are not maintenance retries. Observe
+        // two actual idle wakes to verify the background worker does not spin.
+        let idle_before = TEST_GRAPH_IDLE_FLUSH_TIMES.lock().unwrap().len();
+        test.wait_for("first idle retry while storage still fails", || {
+            TEST_GRAPH_IDLE_FLUSH_TIMES.lock().unwrap().len() > idle_before
+        });
+        test.wait_for("second idle retry while storage still fails", || {
+            TEST_GRAPH_IDLE_FLUSH_TIMES.lock().unwrap().len() > idle_before + 1
+        });
+        let times = TEST_GRAPH_IDLE_FLUSH_TIMES.lock().unwrap();
+        assert!(
+            times[idle_before + 1].duration_since(times[idle_before])
+                >= GRAPH_CACHE_CLEANUP_INTERVAL
+        );
+        drop(times);
+        assert!(test.completions() > before + 1);
+        let cached = test.store().read_thread(&test.key().1).unwrap().unwrap();
+        assert!(cached.nodes.contains_key("new"));
+        test.restore_writes();
+        test.wait_for("successful retry after repeated failures", || {
+            test.disk_has("new")
+        });
+    }
+
+    #[test]
+    fn production_cache_retries_latest_revision_and_explicit_failure() {
+        let test = ProductionCacheTest::new("qmux-latest-retry");
+        test.append("first");
+        flush_dirty_thread_graphs();
+        fs::remove_file(test.path()).unwrap();
+        test.block_writes();
+        let before = test.completions();
+        test.append("second");
+        test.wait_for("failed older revision", || test.completions() > before);
+        let before_newer = test.completions();
+        test.append("latest");
+        test.wait_for("failed newer revision", || {
+            test.completions() > before_newer
+        });
+        assert!(flush_dirty_thread_graph(&test.key().0, &test.key().1).is_err());
+        test.restore_writes();
+        test.wait_for("latest revision after idle recovery", || {
+            test.disk_has("latest")
+        });
+        assert!(test.disk_has("first"));
+        assert!(test.disk_has("second"));
+        let _flush_guard = GRAPH_FLUSH_LOCK.lock().unwrap();
+        let cache = GRAPH_CACHE.lock().unwrap();
+        let entry = cache.get(&test.key()).unwrap();
+        assert!(!entry.dirty && !entry.flushing);
+    }
+
+    #[test]
+    fn production_cache_final_flush_commits_recovered_storage_immediately() {
+        let test = ProductionCacheTest::new("qmux-final-retry");
+        test.append("saved-at-exit");
+        flush_dirty_thread_graphs();
+        fs::remove_file(test.path()).unwrap();
+        test.block_writes();
+        let before = test.completions();
+        test.append("last");
+        test.wait_for("failed background write", || test.completions() > before);
+        test.restore_writes();
+        // Same synchronous entry point used by AppState's final exit flush.
+        flush_dirty_thread_graphs();
+        assert!(test.disk_has("last"));
+    }
+
+    #[test]
+    fn production_cache_removal_fences_flushes_and_cancels_idle_retry() {
+        let test = ProductionCacheTest::new("qmux-remove-retry");
+        test.append("removed");
+        flush_dirty_thread_graphs();
+        fs::remove_file(test.path()).unwrap();
+        test.block_writes();
+        let before = test.completions();
+        test.append("dirty");
+        test.wait_for("failed background write", || test.completions() > before);
+        test.restore_writes();
+        let record = thread_record_for_agent(&test.agent, "cache-branch", &test.root);
+        let flush_guard = GRAPH_FLUSH_LOCK.lock().unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let remove = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = remove_thread_snapshot(&record);
+            done_tx.send(result).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        // Finish a real write while retaining the flush lock, as the flusher
+        // does. Deletion must wait and then remove this completed snapshot.
+        let graph = test.store().read_thread(&test.key().1).unwrap().unwrap();
+        write_snapshot_to_disk(&test.key().0, &graph).unwrap();
+        drop(flush_guard);
+        done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap();
+        remove.join().unwrap();
+        assert!(!test.path().exists());
+        assert!(!GRAPH_CACHE.lock().unwrap().contains_key(&test.key()));
+        std::thread::sleep(GRAPH_CACHE_CLEANUP_INTERVAL + GRAPH_FLUSH_DEBOUNCE);
+        assert!(
+            !test.path().exists(),
+            "the queued retry recreated a removed graph"
+        );
+    }
+
+    #[test]
+    fn graph_flusher_spawn_failure_falls_back_and_releases_ownership() {
+        let test = ProductionCacheTest::new("qmux-flusher-spawn");
+        let graph = ThreadGraph::empty_for_agent(&test.agent);
+        cache_dirty_graph(&test.key().0, &test.key().1, graph);
+        let spawned = AtomicBool::new(false);
+        schedule_graph_flush_with(&spawned, || {
+            Err(std::io::Error::other("injected spawn failure"))
+        });
+        assert!(!spawned.load(Ordering::SeqCst));
+        assert!(
+            test.path().is_file(),
+            "synchronous fallback did not save the graph"
+        );
+        let called = std::cell::Cell::new(false);
+        schedule_graph_flush_with(&spawned, || {
+            called.set(true);
+            Ok(())
+        });
+        assert!(called.get());
+        assert!(spawned.load(Ordering::SeqCst));
+        schedule_graph_flush_with(&spawned, || panic!("duplicate worker"));
+    }
+
+    #[test]
+    fn failed_atomic_graph_writes_do_not_accumulate_temporary_files() {
+        let root = temp_worktree("qmux-graph-retry-tempfiles");
+        let agent = sample_agent(root.display().to_string());
+        let graph = ThreadGraph::empty_for_agent(&agent);
+        let path = snapshot_path(&root.display().to_string(), &graph.thread_id);
+        fs::create_dir_all(&path).unwrap();
+        for _ in 0..3 {
+            assert!(write_snapshot_to_disk(&root.display().to_string(), &graph).is_err());
+        }
+        let entries = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries.len(),
+            1,
+            "failed retries leaked temporary snapshots"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

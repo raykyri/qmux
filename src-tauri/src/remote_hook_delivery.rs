@@ -86,8 +86,19 @@ pub(crate) fn deliver(
         return Err("invalid hook delivery id".into());
     }
     let notification: AdapterNotification =
-        serde_json::from_value(delivery.notification.clone())
-            .map_err(|e| format!("invalid hook notification: {e}"))?;
+        match serde_json::from_value(delivery.notification.clone()) {
+            Ok(notification) => notification,
+            Err(_) => {
+                // Auth and envelope/id validation have already succeeded. This
+                // exact notification cannot ever deserialize, so no lifecycle
+                // handler has run and a correlated terminal rejection is safe.
+                // Do not classify handler/lock/server errors as permanent.
+                return Ok(json!({
+                    "id": delivery.id, "replay": true, "discarded": true,
+                    "rejected": "invalid_notification",
+                }));
+            }
+        };
     // Durable delivery replays a backlog that can outlive the process that
     // wrote it: the agent may since have been detached (`agent.detach_pane` on
     // exit) or displaced by a replacement launched in the same pane. Such an
@@ -183,10 +194,17 @@ fn reconcile(
     }
     let session = (!hook_payload_is_subagent(&notification.payload))
         .then(|| {
-            ["session_id", "sessionId", "resource_id", "resourceId"]
-                .iter()
-                .find_map(|key| notification.payload.get(key).and_then(Value::as_str))
-                .filter(|id| qmux_cli::transcript_stream::valid_session(id))
+            [
+                "session_id",
+                "sessionId",
+                "conversation_id",
+                "conversationId",
+                "resource_id",
+                "resourceId",
+            ]
+            .iter()
+            .find_map(|key| notification.payload.get(key).and_then(Value::as_str))
+            .filter(|id| qmux_cli::transcript_stream::valid_session(id))
         })
         .flatten();
     if session.is_some_and(|session| agent.fork_point.as_deref() == Some(session)) {
@@ -195,36 +213,41 @@ fn reconcile(
     let observation = (!hook_payload_is_subagent(&notification.payload))
         .then(|| hook_observation(&notification.event, &notification.payload))
         .flatten();
-    // An authoritative Claude task registry also heals dropped SubagentStop
-    // hooks. These are state-only mutations; no queued work is released.
-    if agent.adapter == "claude"
-        && observation == Some(HookObservation::Stop)
-        && let Some(tasks) = notification
+    // Parse the authoritative registry here; apply it with the observation and
+    // any failure cleanup under the same identity-checked model lock below.
+    let background_tasks = (agent.adapter == "claude"
+        && observation == Some(HookObservation::Stop))
+    .then(|| {
+        notification
             .payload
             .get("background_tasks")
             .and_then(Value::as_array)
-    {
-        let active = tasks.iter().any(|task| {
+    })
+    .flatten()
+    .map(|tasks| {
+        tasks.iter().any(|task| {
             task.get("status")
                 .and_then(Value::as_str)
                 .is_none_or(|status| status.eq_ignore_ascii_case("running"))
-        });
-        state.set_agent_background_tasks_reported(&agent.id, active)?;
-        if !active {
-            state.clear_agent_subagents(&agent.id);
-        }
-    }
-    let waiting_on_background = agent.adapter == "claude"
-        && (state.agent_has_reported_background_tasks(&agent.id)?
-            || state.agent_has_active_subagents(&agent.id)?);
-    let status = observed_status(
-        &agent.adapter,
-        &notification.event,
-        &notification.payload,
+        })
+    });
+    if let Some(updated) = state.reconcile_remote_hook(
+        pane,
+        &agent.id,
+        session,
         observation,
-        waiting_on_background,
-    );
-    if let Some(updated) = state.reconcile_remote_hook(pane, &agent.id, session, status)? {
+        background_tasks,
+        |current, waiting_on_background| {
+            observed_status(
+                &agent.adapter,
+                &notification.event,
+                &notification.payload,
+                observation,
+                waiting_on_background,
+                current,
+            )
+        },
+    )? {
         state.emit(QmuxEvent::new(
             "agent.updated",
             Some(pane.to_string()),
@@ -244,11 +267,18 @@ fn observed_status(
     payload: &Value,
     observation: Option<HookObservation>,
     waiting_on_background: bool,
+    current: AgentStatus,
 ) -> Option<AgentStatus> {
-    if event == "UserPromptSubmit"
+    if matches!(event, "UserPromptSubmit" | "PreInvocation")
         && payload
             .get("prompt")
-            .or_else(|| payload.get("input"))
+            .or_else(|| {
+                if event == "UserPromptSubmit" {
+                    payload.get("input")
+                } else {
+                    None
+                }
+            })
             .and_then(Value::as_str)
             .is_some_and(crate::turn_queue::is_shell_escape_turn)
     {
@@ -267,7 +297,15 @@ fn observed_status(
         HookObservation::Stop | HookObservation::IdlePrompt | HookObservation::StopFailure => {
             Some(AgentStatus::Done)
         }
-        HookObservation::SessionEnd => Some(AgentStatus::Idle),
+        // Match the live adapters: only a session lost mid-turn settles as a
+        // failure. Resting and attention states retain their current status.
+        HookObservation::SessionEnd
+            if matches!(adapter, "claude" | "grok" | "devin")
+                && matches!(current, AgentStatus::Starting | AgentStatus::Running) =>
+        {
+            Some(AgentStatus::Done)
+        }
+        HookObservation::SessionEnd => None,
         HookObservation::SessionStart => None,
     }
 }
@@ -281,11 +319,25 @@ mod tests {
         for event in ["Stop", "Notification.idle_prompt"] {
             let observation = hook_observation(event, &Value::Null);
             assert_eq!(
-                observed_status("claude", event, &Value::Null, observation, true),
+                observed_status(
+                    "claude",
+                    event,
+                    &Value::Null,
+                    observation,
+                    true,
+                    AgentStatus::Running
+                ),
                 Some(AgentStatus::Running)
             );
             assert_eq!(
-                observed_status("claude", event, &Value::Null, observation, false),
+                observed_status(
+                    "claude",
+                    event,
+                    &Value::Null,
+                    observation,
+                    false,
+                    AgentStatus::Running
+                ),
                 Some(AgentStatus::Done)
             );
         }
@@ -300,7 +352,8 @@ mod tests {
                     event,
                     &Value::Null,
                     hook_observation(event, &Value::Null),
-                    false
+                    false,
+                    AgentStatus::Running
                 ),
                 Some(AgentStatus::Running)
             );
@@ -311,7 +364,8 @@ mod tests {
                 "Stop",
                 &Value::Null,
                 Some(HookObservation::Stop),
-                false
+                false,
+                AgentStatus::Running
             ),
             None
         );
@@ -321,7 +375,8 @@ mod tests {
                 "UserPromptSubmit",
                 &json!({"prompt":"!pwd"}),
                 Some(HookObservation::Running),
-                false
+                false,
+                AgentStatus::Running
             ),
             None
         );

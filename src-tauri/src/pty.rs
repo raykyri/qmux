@@ -2906,6 +2906,10 @@ fn remote_hook_report(output: Result<Output, String>) -> RemoteHookReport {
                 }
                 _ => {}
             }
+            if health == RemoteHookHealth::Healthy && delivery["lastRejected"].as_u64().is_some() {
+                health = RemoteHookHealth::Unavailable;
+                error = Some("Invalid queued hook notifications were rejected".into());
+            }
         }
     }
     RemoteHookReport {
@@ -6539,6 +6543,29 @@ mod tests {
             full.error.as_deref(),
             Some("Hook notification queue is full")
         );
+    }
+
+    #[test]
+    fn remote_hook_report_keeps_rejection_visible_after_later_success() {
+        use std::os::unix::process::ExitStatusExt;
+        for status in ["healthy", "rejected"] {
+            let report = remote_hook_report(Ok(Output {
+                status: std::process::ExitStatus::from_raw(0),
+                stdout: serde_json::to_vec(&serde_json::json!({
+                    "ok":true,"data":{"status":"ok","delivery":{
+                        "status":status,"pending":0,"lastSuccess":1234,"lastRejected":1200
+                    }}
+                }))
+                .unwrap(),
+                stderr: b"never expose this secret".to_vec(),
+            }));
+            assert_eq!(report.health, RemoteHookHealth::Unavailable);
+            assert_eq!(
+                report.error.as_deref(),
+                Some("Invalid queued hook notifications were rejected")
+            );
+            assert_eq!(report.last_delivered_at, Some(1234000));
+        }
     }
 
     #[test]

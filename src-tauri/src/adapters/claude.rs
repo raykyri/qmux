@@ -4155,6 +4155,180 @@ mod tests {
     }
 
     #[test]
+    fn unpause_honors_a_live_typing_hold_and_typing_clear_drains() {
+        // unpause used to drain without checking the typing hold, pasting a
+        // queued turn into a terminal the user was typing into.
+        let state = test_state();
+        let bytes = install_agent_pane(&state);
+        state
+            .enqueue_agent_turn("agent-1", "held".to_string())
+            .unwrap();
+        state
+            .set_agent_status("agent-1", AgentStatus::Done)
+            .unwrap();
+        state.set_agent_paused("agent-1", true).unwrap();
+        crate::turn_queue::set_agent_typing(&state, "agent-1", true).unwrap();
+
+        let result = crate::turn_queue::unpause_agent(&state, "agent-1").unwrap();
+        assert!(!result.sent);
+        assert!(!state.agent("agent-1").unwrap().unwrap().paused);
+        assert!(!written_text(&bytes).contains("held"));
+
+        // Releasing the hold is the wakeup: the pause is already cleared.
+        let result = crate::turn_queue::set_agent_typing(&state, "agent-1", false).unwrap();
+        assert!(result.sent);
+        assert!(written_text(&bytes).contains("held"));
+    }
+
+    #[test]
+    fn typing_document_reload_rejects_late_updates_and_preserves_new_holds() {
+        let state = test_state();
+        let bytes = install_agent_pane(&state);
+        state
+            .enqueue_agent_turn("agent-1", "held".to_string())
+            .unwrap();
+        let old = state.agent_typing_document().unwrap();
+        crate::turn_queue::set_agent_typing_for_document(&state, "agent-1", &old, 1, true).unwrap();
+        ingest(&state, hook("Stop", json!({})));
+        assert!(!written_text(&bytes).contains("held"));
+
+        // Delay the reload worker until after the replacement document starts typing.
+        let held = state.invalidate_agent_typing_document().unwrap();
+        assert_eq!(held, vec!["agent-1"]);
+        let new = state.agent_typing_document().unwrap();
+        assert_ne!(new, old);
+        crate::turn_queue::set_agent_typing_for_document(&state, "agent-1", &new, 1, true).unwrap();
+        assert!(
+            crate::turn_queue::set_agent_typing_for_document(&state, "agent-1", &old, 2, false)
+                .is_err()
+        );
+        assert!(
+            crate::turn_queue::set_agent_typing_for_document(&state, "agent-1", &old, 3, true)
+                .is_err()
+        );
+        crate::turn_queue::resume_after_typing_holds(&state, held);
+        assert!(state.agent_is_typing("agent-1").unwrap());
+        assert!(!written_text(&bytes).contains("held"));
+        let result =
+            crate::turn_queue::set_agent_typing_for_document(&state, "agent-1", &new, 2, false)
+                .unwrap();
+        assert!(result.sent);
+        assert!(written_text(&bytes).contains("held"));
+    }
+
+    #[test]
+    fn typing_document_lost_release_expires_and_wakes_real_queue() {
+        let state = test_state();
+        let bytes = install_agent_pane(&state);
+        state
+            .enqueue_agent_turn("agent-1", "leased".to_string())
+            .unwrap();
+        let document = state.agent_typing_document().unwrap();
+        // Exercise the real worker, not a hand-driven model of expiry.
+        crate::turn_queue::set_agent_typing_for_document(&state, "agent-1", &document, 1, true)
+            .unwrap();
+        ingest(&state, hook("Stop", json!({})));
+        assert!(!written_text(&bytes).contains("leased"));
+        let limit = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while std::time::Instant::now() < limit {
+            if written_text(&bytes).contains("leased")
+                && state.agent("agent-1").unwrap().unwrap().status == AgentStatus::Running
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(written_text(&bytes).contains("leased"));
+        assert!(!state.agent_is_typing("agent-1").unwrap());
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        );
+    }
+
+    #[test]
+    fn typing_document_expired_wakeup_does_not_clear_a_renewed_hold() {
+        let state = test_state();
+        let bytes = install_agent_pane(&state);
+        state
+            .enqueue_agent_turn("agent-1", "renewed".to_string())
+            .unwrap();
+        state
+            .set_agent_status("agent-1", AgentStatus::Done)
+            .unwrap();
+        let document = state.agent_typing_document().unwrap();
+        state
+            .update_agent_typing("agent-1", &document, 1, true)
+            .unwrap();
+        let (expired, running) = state
+            .expire_agent_typing(std::time::Instant::now() + std::time::Duration::from_secs(6))
+            .unwrap();
+        assert!(!running);
+        state
+            .update_agent_typing("agent-1", &document, 2, true)
+            .unwrap();
+        crate::turn_queue::resume_after_typing_holds(&state, expired);
+        assert!(state.agent_is_typing("agent-1").unwrap());
+        assert!(!written_text(&bytes).contains("renewed"));
+        assert!(
+            crate::turn_queue::set_agent_typing_for_document(
+                &state, "agent-1", &document, 3, false
+            )
+            .unwrap()
+            .sent
+        );
+    }
+
+    #[test]
+    fn automatic_drain_after_competing_send_rechecks_running_and_explicit_send_bypasses_typing() {
+        let state = test_state();
+        let bytes = install_agent_pane(&state);
+        state
+            .set_agent_status("agent-1", AgentStatus::Done)
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "first".to_string())
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "second".to_string())
+            .unwrap();
+        let ready = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let resume = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let delayed = {
+            let state = state.clone();
+            let ready = ready.clone();
+            let resume = resume.clone();
+            std::thread::spawn(move || {
+                // This is the unlocked caller snapshot used by enqueue/reorder/waiter wakes.
+                assert_eq!(
+                    state.agent("agent-1").unwrap().unwrap().status,
+                    AgentStatus::Done
+                );
+                ready.wait();
+                resume.wait();
+                crate::turn_queue::drain_agent_turn_queue_when_ready(&state, "agent-1").unwrap()
+            })
+        };
+        ready.wait();
+        assert!(crate::turn_queue::drain_agent_turn_queue_when_ready(&state, "agent-1").unwrap());
+        resume.wait();
+        assert!(!delayed.join().unwrap());
+        assert!(!written_text(&bytes).contains("second"));
+        let document = state.agent_typing_document().unwrap();
+        state
+            .update_agent_typing("agent-1", &document, 1, true)
+            .unwrap();
+        state.set_agent_paused("agent-1", true).unwrap();
+        assert!(
+            crate::turn_queue::send_next_queued_agent_turn(&state, "agent-1")
+                .unwrap()
+                .sent
+        );
+        assert!(written_text(&bytes).contains("second"));
+        assert!(state.agent_is_typing("agent-1").unwrap());
+    }
+
+    #[test]
     fn idle_prompt_drains_one_queued_turn() {
         let state = test_state();
         let bytes = install_agent_pane(&state);

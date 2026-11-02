@@ -93,6 +93,11 @@ pub struct PersistedState {
     /// mid-delivery re-sends rather than loses it. Absent in older state files.
     #[serde(default)]
     pub inflight: HashMap<String, QueuedTurn>,
+    /// Agents whose delivered queued turn requested a pause at its next settlement.
+    /// A resumed local session or reattached remote process still owns that fence.
+    /// Additive: older state files have no pending pauses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_pause: Vec<String>,
     /// Vertical terminal split groups. Each group glues adjacent pane tabs into a
     /// shared top-to-bottom terminal viewport; older state files simply have none.
     #[serde(default)]
@@ -150,6 +155,7 @@ impl Default for PersistedState {
             drafts: HashMap::new(),
             global_drafts: Vec::new(),
             inflight: HashMap::new(),
+            pending_pause: Vec::new(),
             pane_splits: Vec::new(),
             active_tab_id: None,
             threads: HashMap::new(),
@@ -751,6 +757,7 @@ fn deserialize_lenient(value: Value) -> (PersistedState, Vec<String>) {
     state.group_order = take_string_vec(&mut map, "groupOrder");
     state.queues = take_map_of_vecs(&mut map, "queues", "queued turn", &mut dropped);
     state.inflight = take_typed_map(&mut map, "inflight", "in-flight turn", &mut dropped);
+    state.pending_pause = take_string_vec(&mut map, "pendingPause");
     state.drafts = take_string_map(&mut map, "drafts");
     state.global_drafts = take_vec(&mut map, "globalDrafts", "global draft", &mut dropped);
     state.threads = take_typed_map(&mut map, "threads", "thread", &mut dropped);

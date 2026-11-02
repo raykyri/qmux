@@ -23,10 +23,14 @@ pub fn hook_observation(event: &str, payload: &Value) -> Option<HookObservation>
     Some(match event {
         "SessionStart" | "sessionStart" => SessionStart,
         "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
-        | "PermissionDenied" | "ElicitationResult" | "PreCompact" | "PostCompact" => Running,
+        | "PermissionDenied" | "ElicitationResult" | "PreCompact" | "PostCompact"
+        | "PreInvocation" | "PostCompaction" => Running,
         "PermissionRequest" | "Notification.permission_prompt" => AwaitingPermission,
         "Elicitation" | "Notification.elicitation_dialog" => AwaitingInput,
         "Notification.idle_prompt" => IdlePrompt,
+        // Antigravity ends a step while background work continues. Keep this
+        // running observation in the outbox snapshot instead of a terminal Stop.
+        "Stop" if payload.get("fullyIdle").and_then(Value::as_bool) == Some(false) => Running,
         "Stop" => Stop,
         "StopFailure" => StopFailure,
         "SessionEnd" => SessionEnd,
@@ -60,6 +64,18 @@ fn contains(value: &Value, needle: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn replay08_adapter_observations_keep_partial_work_running() {
+        for event in ["PreInvocation", "PostCompaction"] {
+            assert_eq!(hook_observation(event, &Value::Null), Some(HookObservation::Running));
+        }
+        assert_eq!(hook_observation("Stop", &json!({"fullyIdle": false})), Some(HookObservation::Running));
+        for payload in [Value::Null, json!({"fullyIdle": true}), json!({"fullyIdle": "false"})] {
+            assert_eq!(hook_observation("Stop", &payload), Some(HookObservation::Stop));
+        }
+        assert_eq!(hook_observation("PostInvocation", &Value::Null), None);
+    }
 
     #[test]
     fn blocking_and_resolved_events_share_the_snapshot_vocabulary() {

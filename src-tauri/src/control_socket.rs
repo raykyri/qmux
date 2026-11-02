@@ -904,6 +904,7 @@ fn handle_client_with_timeout(state: AppState, mut stream: UnixStream, read_time
             }
         };
         let streamed_file = request.command == "browser.open_file";
+        let hook_delivery = request.command == "hook.deliver";
         let result = if streamed_file {
             let _ = reader
                 .get_ref()
@@ -913,7 +914,7 @@ fn handle_client_with_timeout(state: AppState, mut stream: UnixStream, read_time
             handle_request_with_peer(&state, request, same_user_peer)
         };
 
-        if write_response(&mut stream, result).is_err() || streamed_file {
+        if write_command_response(&mut stream, result, hook_delivery).is_err() || streamed_file {
             return;
         }
     }
@@ -1653,7 +1654,24 @@ fn ensure_agent_scope(state: &AppState, authed_pane: &str, agent_id: &str) -> Re
 }
 
 fn write_response(stream: &mut UnixStream, result: Result<Value, String>) -> std::io::Result<()> {
+    write_command_response(stream, result, false)
+}
+
+fn write_command_response(
+    stream: &mut UnixStream,
+    result: Result<Value, String>,
+    hook_delivery: bool,
+) -> std::io::Result<()> {
     let response = match result {
+        // Keep this a negative acknowledgment for old workers: they must
+        // retry rather than deleting the event without clearing their snapshot.
+        Ok(data) if hook_delivery && data["rejected"] == "invalid_notification" => {
+            ControlResponse {
+                ok: false,
+                data,
+                error: Some("hook.invalid_notification".into()),
+            }
+        }
         Ok(data) => ControlResponse {
             ok: true,
             data,
@@ -2266,6 +2284,87 @@ mod tests {
             "id": id, "replay": replay, "latest": latest,
             "notification": { "event": event, "agentId": "agent-1", "adapterId": "claude", "payload": {} }
         })
+    }
+
+    #[test]
+    fn remote_hook_invalid_notification_is_a_correlated_terminal_rejection() {
+        let state = test_state();
+        insert_remote_shell(&state, "pane-1");
+        state.insert_agent(agent_bound_to("pane-1")).unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "must remain queued".into())
+            .unwrap();
+        let token = state.pane_remote_token("pane-1").unwrap();
+        let mut payload = delivered_hook("invalid-1", "Stop", true, true);
+        payload["notification"]
+            .as_object_mut()
+            .unwrap()
+            .remove("event");
+        let ack = handle_line(
+            &state,
+            &request_line(&token, "hook.deliver", payload.clone()),
+        )
+        .unwrap();
+        assert_eq!(ack["id"], "invalid-1");
+        assert_eq!(ack["rejected"], "invalid_notification");
+        assert_eq!(ack["discarded"], true);
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        );
+        assert_eq!(state.agent_queued_turns("agent-1").unwrap().len(), 1);
+        // A lost rejection acknowledgment is idempotent.
+        assert_eq!(
+            handle_line(
+                &state,
+                &request_line(&token, "hook.deliver", payload.clone())
+            )
+            .unwrap(),
+            ack
+        );
+        // Authentication and unknown protocol envelopes never become terminal.
+        assert!(
+            handle_line(
+                &state,
+                &request_line("wrong-token", "hook.deliver", payload.clone())
+            )
+            .is_err()
+        );
+        payload["futureField"] = json!(true);
+        assert!(handle_line(&state, &request_line(&token, "hook.deliver", payload)).is_err());
+    }
+
+    #[test]
+    fn remote_hook_rejection_wire_response_preserves_old_worker_retry_behavior() {
+        let state = test_state();
+        insert_remote_shell(&state, "pane-1");
+        state.insert_agent(agent_bound_to("pane-1")).unwrap();
+        let token = state.pane_remote_token("pane-1").unwrap();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let worker = std::thread::spawn(move || handle_client(state, server));
+        let mut payload = delivered_hook("invalid-wire", "Stop", true, true);
+        payload["notification"]
+            .as_object_mut()
+            .unwrap()
+            .remove("event");
+        writeln!(client, "{}", request_line(&token, "hook.deliver", payload)).unwrap();
+        let mut line = String::new();
+        BufReader::new(client.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let response: ControlResponse = serde_json::from_str(&line).unwrap();
+        assert!(
+            !response.ok,
+            "old worker must not treat rejection as a successful delivery"
+        );
+        assert_eq!(response.error.as_deref(), Some("hook.invalid_notification"));
+        assert_eq!(response.data["id"], "invalid-wire");
+        assert_eq!(response.data["rejected"], "invalid_notification");
+        drop(client);
+        worker.join().unwrap();
     }
 
     #[test]
@@ -3057,5 +3156,444 @@ mod tests {
         drop(_held_b);
         wait_for_ping(&socket_path, &token, Duration::from_secs(1));
         runtime.shutdown();
+    }
+    struct Replay08NoWrites;
+
+    impl std::io::Write for Replay08NoWrites {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            panic!("recovered observation must not write to the terminal")
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn replay08_fixture(adapter: &str, status: AgentStatus) -> AppState {
+        let state = test_state();
+        state.restore_session(); // Enable real synchronous persistence in tests.
+        insert_remote_shell(&state, "pane-1");
+        *state
+            .pane_writer("pane-1")
+            .unwrap()
+            .unwrap()
+            .lock()
+            .unwrap() = Box::new(Replay08NoWrites);
+        // Exercise remote credentials and delivery without starting an SSH
+        // transcript reader when the identity tests recover a session hint.
+        let mut group = state.group("group-1").unwrap().unwrap();
+        group.remote = None;
+        state.update_group(group).unwrap();
+        let mut agent = agent_bound_to("pane-1");
+        agent.adapter = adapter.into();
+        agent.status = status;
+        state.insert_agent(agent).unwrap();
+        state
+    }
+
+    fn replay08_deliver(
+        state: &AppState,
+        id: &str,
+        adapter: &str,
+        event: &str,
+        body: Value,
+        replay: bool,
+    ) -> Value {
+        let token = state.pane_remote_token("pane-1").unwrap();
+        let mut payload = delivered_hook(id, event, replay, true);
+        payload["notification"]["adapterId"] = json!(adapter);
+        payload["notification"]["payload"] = body;
+        if !replay {
+            payload["lease"] = handle_line(
+                state,
+                &request_line(&token, "hook.delivery-lease", json!({})),
+            )
+            .unwrap()["lease"]
+                .clone();
+        }
+        handle_line(state, &request_line(&token, "hook.deliver", payload)).unwrap()
+    }
+
+    #[test]
+    fn replay08_adapter_status_parity_on_supported_hooks() {
+        // Empty queues isolate observational status from intentionally live-only dispatch.
+        let cases = [
+            (
+                "antigravity",
+                "PreInvocation",
+                json!({"prompt":"work"}),
+                AgentStatus::Done,
+                AgentStatus::Running,
+            ),
+            (
+                "antigravity",
+                "PreInvocation",
+                json!({"prompt":"!pwd"}),
+                AgentStatus::Done,
+                AgentStatus::Done,
+            ),
+            (
+                "antigravity",
+                "PostInvocation",
+                json!({}),
+                AgentStatus::Running,
+                AgentStatus::Running,
+            ),
+            (
+                "antigravity",
+                "Stop",
+                json!({"fullyIdle":false}),
+                AgentStatus::Running,
+                AgentStatus::Running,
+            ),
+            (
+                "antigravity",
+                "Stop",
+                json!({"fullyIdle":true}),
+                AgentStatus::Running,
+                AgentStatus::Done,
+            ),
+            (
+                "devin",
+                "PostCompaction",
+                json!({}),
+                AgentStatus::AwaitingPermission,
+                AgentStatus::Running,
+            ),
+            (
+                "devin",
+                "SessionEnd",
+                json!({}),
+                AgentStatus::Starting,
+                AgentStatus::Done,
+            ),
+            (
+                "devin",
+                "SessionEnd",
+                json!({}),
+                AgentStatus::Done,
+                AgentStatus::Done,
+            ),
+            (
+                "claude",
+                "SessionEnd",
+                json!({}),
+                AgentStatus::Running,
+                AgentStatus::Done,
+            ),
+            (
+                "claude",
+                "SessionEnd",
+                json!({}),
+                AgentStatus::AwaitingInput,
+                AgentStatus::AwaitingInput,
+            ),
+            (
+                "claude",
+                "StopFailure",
+                json!({}),
+                AgentStatus::AwaitingPermission,
+                AgentStatus::Done,
+            ),
+            (
+                "claude",
+                "PermissionRequest",
+                json!({}),
+                AgentStatus::Running,
+                AgentStatus::AwaitingPermission,
+            ),
+            (
+                "claude",
+                "Elicitation",
+                json!({}),
+                AgentStatus::Running,
+                AgentStatus::AwaitingInput,
+            ),
+            (
+                "claude",
+                "PermissionDenied",
+                json!({}),
+                AgentStatus::AwaitingPermission,
+                AgentStatus::Running,
+            ),
+            (
+                "codex",
+                "Stop",
+                json!({}),
+                AgentStatus::Running,
+                AgentStatus::Running,
+            ),
+            (
+                "codex",
+                "UserPromptSubmit",
+                json!({"prompt":"work"}),
+                AgentStatus::Done,
+                AgentStatus::Running,
+            ),
+        ];
+        let mut failures = Vec::new();
+        for (adapter, event, payload, initial, expected) in cases {
+            for replay in [false, true] {
+                let state = replay08_fixture(adapter, initial);
+                replay08_deliver(
+                    &state,
+                    "observation",
+                    adapter,
+                    event,
+                    payload.clone(),
+                    replay,
+                );
+                let actual = state.agent("agent-1").unwrap().unwrap().status;
+                if actual != expected {
+                    failures.push(format!(
+                        "{adapter} {event} replay={replay}: {actual:?} != {expected:?}"
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn replay08_failed_turn_consumes_pause_cancels_sends_and_persists_hold() {
+        use crate::state::{AgentSendSource, SubmitWatchStatus};
+        for (adapter, event) in [
+            ("claude", "StopFailure"),
+            ("claude", "SessionEnd"),
+            ("devin", "SessionEnd"),
+        ] {
+            for (has_queue, pending_pause) in
+                [(false, false), (false, true), (true, false), (true, true)]
+            {
+                let should_pause = has_queue || pending_pause;
+                let state = replay08_fixture(adapter, AgentStatus::Running);
+                if has_queue {
+                    state
+                        .enqueue_agent_turn("agent-1", "follow up".into())
+                        .unwrap();
+                }
+                let before_queue = state.agent_queued_turns("agent-1").unwrap();
+                if pending_pause {
+                    state.mark_agent_pending_pause("agent-1").unwrap();
+                }
+                let send = state
+                    .record_agent_send("agent-1", "in flight".into(), AgentSendSource::QueuedTurn)
+                    .unwrap();
+                state
+                    .record_agent_send("agent-1", "steer".into(), AgentSendSource::DirectSend)
+                    .unwrap();
+                replay08_deliver(&state, "failure", adapter, event, json!({}), true);
+                assert_eq!(
+                    (
+                        state.agent_is_paused("agent-1").unwrap(),
+                        state.agent_delivery_debug("agent-1").unwrap().pending_pause,
+                        state.check_agent_submit_watch("agent-1", send).unwrap(),
+                        state.outstanding_agent_sends("agent-1").unwrap().len(),
+                    ),
+                    (should_pause, false, SubmitWatchStatus::Confirmed, 0),
+                    "{adapter}/{event} queue={has_queue}"
+                );
+                assert_eq!(state.agent_queued_turns("agent-1").unwrap(), before_queue);
+                let persisted =
+                    crate::persistence::load_with_diagnostics(&state.config().workspace_root).state;
+                let saved = persisted.agents.iter().find(|a| a.id == "agent-1").unwrap();
+                assert_eq!(saved.paused, should_pause);
+                assert_eq!(saved.status, AgentStatus::Done);
+                assert_eq!(
+                    persisted.queues.get("agent-1").cloned().unwrap_or_default(),
+                    before_queue
+                );
+                // A reconnect/reload must retain the hold. Advisory sends and pending
+                // pause markers intentionally do not survive process restart.
+                let restored = AppState::new(state.config().clone());
+                restored.restore_session();
+                assert_eq!(restored.agent_is_paused("agent-1").unwrap(), should_pause);
+                assert_eq!(
+                    restored.agent_queued_turns("agent-1").unwrap(),
+                    before_queue
+                );
+                if adapter == "claude" {
+                    replay08_deliver(
+                        &state,
+                        "later-idle",
+                        adapter,
+                        "Notification.idle_prompt",
+                        json!({}),
+                        false,
+                    );
+                    assert_eq!(state.agent_queued_turns("agent-1").unwrap(), before_queue);
+                }
+                // Lost acknowledgement retry must not erase a newer outstanding send.
+                let newer = state
+                    .record_agent_send("agent-1", "newer".into(), AgentSendSource::DirectSend)
+                    .unwrap();
+                assert_eq!(
+                    replay08_deliver(&state, "failure", adapter, event, json!({}), true)["duplicate"],
+                    true
+                );
+                assert_eq!(
+                    state.check_agent_submit_watch("agent-1", newer).unwrap(),
+                    SubmitWatchStatus::StillPending
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn replay08_session_end_clears_background_even_when_already_resting() {
+        for initial in [
+            AgentStatus::Running,
+            AgentStatus::Done,
+            AgentStatus::AwaitingInput,
+        ] {
+            let state = replay08_fixture("claude", initial);
+            state
+                .agent_subagent_started("agent-1", Some("child"))
+                .unwrap();
+            state
+                .set_agent_background_tasks_reported("agent-1", true)
+                .unwrap();
+            replay08_deliver(&state, "end", "claude", "SessionEnd", json!({}), true);
+            assert!(!state.agent_has_active_subagents("agent-1").unwrap());
+            assert!(
+                !state
+                    .agent_has_reported_background_tasks("agent-1")
+                    .unwrap()
+            );
+            replay08_deliver(
+                &state,
+                "idle",
+                "claude",
+                "Notification.idle_prompt",
+                json!({}),
+                true,
+            );
+            assert_eq!(
+                state.agent("agent-1").unwrap().unwrap().status,
+                AgentStatus::Done
+            );
+        }
+    }
+
+    #[test]
+    fn replay08_recovery_never_completes_research_or_releases_waiters() {
+        use crate::research::{CreateResearchTreeRequest, ResearchNodeStatus};
+        use crate::state::{QueuedTurn, QueuedTurnWait};
+        for event in ["StopFailure", "SessionEnd", "Stop"] {
+            let state = replay08_fixture("claude", AgentStatus::Running);
+            let mut group = state
+                .list_groups()
+                .unwrap()
+                .into_iter()
+                .find(|g| g.id == "group-1")
+                .unwrap();
+            group.scope = WorkspaceScope::Research;
+            state.update_group(group).unwrap();
+            let detail = state
+                .create_research_tree(CreateResearchTreeRequest {
+                    prompt: "Recover question".into(),
+                    title: None,
+                    adapter: "claude".into(),
+                    model: None,
+                    effort: None,
+                    group_id: "group-1".into(),
+                })
+                .unwrap();
+            let root = detail.tree.root_node_id;
+            state
+                .mutate_agent("agent-1", |a| a.group_id = detail.tree.workspace_id.clone())
+                .unwrap();
+            let agent = state.agent("agent-1").unwrap().unwrap();
+            state
+                .bind_research_node_run(&root, &agent, "pane-1")
+                .unwrap();
+            let mut dependent = agent_bound_to("pane-2");
+            dependent.id = "dependent".into();
+            dependent.status = AgentStatus::Done;
+            state.insert_agent(dependent).unwrap();
+            state
+                .enqueue_agent_queued_turn(
+                    "dependent",
+                    QueuedTurn::waiting(
+                        "wait".into(),
+                        QueuedTurnWait {
+                            agent_id: "agent-1".into(),
+                            pane_id: Some("pane-1".into()),
+                            label: None,
+                        },
+                    ),
+                )
+                .unwrap();
+            let before = state.agent_queued_turns("dependent").unwrap();
+            state
+                .enqueue_agent_turn("agent-1", "must not dispatch".into())
+                .unwrap();
+            replay08_deliver(&state, "settle", "claude", event, json!({}), true);
+            assert_eq!(
+                state.research_node(&root).unwrap().status,
+                ResearchNodeStatus::Running
+            );
+            assert!(state.research_node(&root).unwrap().completed_at.is_none());
+            assert_eq!(state.agent_queued_turns("dependent").unwrap(), before);
+            assert_eq!(state.agent_queued_turns("agent-1").unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn replay08_ignored_history_and_foreign_identity_never_cleanup_current_turn() {
+        use crate::state::AgentSendSource;
+        for (id, body) in [
+            ("child", json!({"agent_id":"child"})),
+            ("fork", json!({"session_id":"parent"})),
+        ] {
+            let state = replay08_fixture("claude", AgentStatus::Running);
+            state
+                .mutate_agent("agent-1", |a| a.fork_point = Some("parent".into()))
+                .unwrap();
+            state.mark_agent_pending_pause("agent-1").unwrap();
+            state
+                .record_agent_send("agent-1", "work".into(), AgentSendSource::QueuedTurn)
+                .unwrap();
+            state
+                .agent_subagent_started("agent-1", Some("child"))
+                .unwrap();
+            replay08_deliver(&state, id, "claude", "SessionEnd", body, true);
+            assert_eq!(
+                state.agent("agent-1").unwrap().unwrap().status,
+                AgentStatus::Running
+            );
+            assert!(!state.agent_is_paused("agent-1").unwrap());
+            assert!(state.agent_delivery_debug("agent-1").unwrap().pending_pause);
+            assert_eq!(state.outstanding_agent_sends("agent-1").unwrap().len(), 1);
+            assert!(state.agent_has_active_subagents("agent-1").unwrap());
+        }
+    }
+
+    #[test]
+    fn replay08_antigravity_conversation_identity_matches_cli_snapshot() {
+        for key in ["conversation_id", "conversationId"] {
+            let state = replay08_fixture("antigravity", AgentStatus::Running);
+            state
+                .mutate_agent("agent-1", |a| a.fork_point = Some("parent".into()))
+                .unwrap();
+            let mut payload = json!({"fullyIdle":true});
+            payload[key] = json!("parent");
+            replay08_deliver(
+                &state,
+                "source",
+                "antigravity",
+                "Stop",
+                payload.clone(),
+                true,
+            );
+            assert_eq!(
+                state.agent("agent-1").unwrap().unwrap().status,
+                AgentStatus::Running
+            );
+            payload[key] = json!("child-session");
+            replay08_deliver(&state, "child", "antigravity", "Stop", payload, true);
+            let agent = state.agent("agent-1").unwrap().unwrap();
+            assert_eq!(agent.status, AgentStatus::Done);
+            assert_eq!(agent.session_id.as_deref(), Some("child-session"));
+        }
     }
 }

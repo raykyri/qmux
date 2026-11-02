@@ -2,6 +2,7 @@ mod credentials;
 mod journal_state;
 mod pane_lifecycle;
 mod research_state;
+mod typing;
 
 use crate::adapters::MessageAnchor;
 use crate::config::QmuxConfig;
@@ -533,6 +534,10 @@ impl ActiveSubagents {
 #[derive(Default)]
 struct Model {
     panes: HashMap<String, PaneRuntime>,
+    // Saved launch descriptors awaiting recovery. These do not expose a fake
+    // runtime to commands or the terminal UI. Failed descriptors remain durable
+    // until recovery succeeds or a permanent removal explicitly discards them.
+    recovery_panes: Vec<PaneInfo>,
     pane_order: Vec<String>,
     pane_splits: Vec<PaneSplitInfo>,
     groups: HashMap<String, GroupInfo>,
@@ -566,6 +571,10 @@ struct Model {
     /// claim and persisted here so a crash mid-delivery re-queues it on restart
     /// instead of losing it; cleared once the write lands. At-most-one per agent.
     agent_inflight: HashMap<String, QueuedTurn>,
+    /// Live delivery ownership, independent of the durable replay record. New-pane
+    /// delivery drops `agent_inflight` before spawning but retains this claim until
+    /// dispatch settles. Tokens distinguish retries and agents restored by Undo.
+    agent_queue_claims: HashMap<String, AgentQueueClaim>,
     agent_send_tracking: HashMap<String, AgentSendTracking>,
     /// Monotonic per-agent counter bumped on every agent mutation and transcript
     /// write. Lets a watcher ask "did anything happen to this agent since I looked?"
@@ -609,13 +618,18 @@ struct Model {
     /// first — the per-workspace artifact tray. Persisted; capped per group.
     artifacts: Vec<ArtifactInfo>,
     /// Agents whose currently-running (just-sent) queued turn requested a pause; when
-    /// that turn finishes the agent enters paused mode. Transient (not persisted).
+    /// that turn finishes the agent enters paused mode. Persisted across restarts.
     agent_pending_pause: HashSet<String>,
     /// Agents whose user is actively typing (in the composer or terminal). While set,
     /// the queue is not auto-drained on idle, so a finishing turn can't spam a queued
     /// message into what the user is typing. Set/cleared by the frontend (debounced);
     /// transient (not persisted).
     agent_typing: HashSet<String>,
+    /// Typing IPC belongs to a webview generation. Sequence tombstones prevent
+    /// delayed true/false commands from reversing newer input in that document.
+    agent_typing_document: u64,
+    agent_typing_updates: HashMap<String, typing::TypingUpdate>,
+    agent_typing_expiry_running: bool,
     /// Agents with a queued turn currently being drained (claimed and mid-send).
     /// Serializes draining per agent: a turn is claimed under the model lock and the
     /// agent id inserted here, so a concurrent drain trigger (idle hook, wait release,
@@ -1076,11 +1090,147 @@ impl<'de> Deserialize<'de> for QueuedTurn {
     }
 }
 
+#[derive(Clone, Debug)]
+struct AgentQueueClaim {
+    id: u64,
+    turn_id: String,
+    home_pane_id: String,
+}
+
+static NEXT_AGENT_QUEUE_CLAIM: AtomicU64 = AtomicU64::new(1);
+
+fn record_queue_claim_locked(model: &mut Model, agent_id: &str, turn: &QueuedTurn) -> u64 {
+    let id = NEXT_AGENT_QUEUE_CLAIM.fetch_add(1, Ordering::Relaxed);
+    let home_pane_id = model.agents[agent_id]
+        .pane_id
+        .clone()
+        .or_else(|| model.agents[agent_id].orphaned_queue_pane_id.clone())
+        .expect("attached or recovered claimant");
+    model.agent_queue_claims.insert(
+        agent_id.to_string(),
+        AgentQueueClaim {
+            id,
+            turn_id: turn.id.clone(),
+            home_pane_id,
+        },
+    );
+    id
+}
+
+fn owns_queue_claim_locked(model: &Model, agent_id: &str, claim_id: u64) -> bool {
+    model.agents.contains_key(agent_id)
+        && model
+            .agent_queue_claims
+            .get(agent_id)
+            .is_some_and(|claim| claim.id == claim_id)
+}
+
+fn finish_agent_fork_dispatch_locked(
+    model: &mut Model,
+    source_agent_id: &str,
+) -> FinishedAgentForkDispatch {
+    model.agent_draining.remove(source_agent_id);
+    model.agent_queue_claims.remove(source_agent_id);
+    let (ready, resume_queue) = model
+        .agent_fork_barriers
+        .get(source_agent_id)
+        .map(|barrier| (barrier.ready, barrier.resume_queue))
+        .unwrap_or((true, false));
+    if ready {
+        model.agent_fork_barriers.remove(source_agent_id);
+    }
+    FinishedAgentForkDispatch {
+        ready,
+        resume_queue,
+    }
+}
+
+/// Park under the same lock used by queue admission and claims. A live dispatch
+/// counts even when its durable copy was deliberately cleared before spawning.
+fn park_agent_locked(model: &mut Model, agent_id: &str, home_pane_id: &str) -> Option<AgentInfo> {
+    let has_work = model
+        .agent_turn_queues
+        .get(agent_id)
+        .is_some_and(|queue| !queue.is_empty())
+        || model.agent_inflight.contains_key(agent_id)
+        || model.agent_queue_claims.contains_key(agent_id);
+    let agent = model.agents.get_mut(agent_id)?;
+    agent.pane_id = None;
+    agent.orphaned_queue_pane_id = has_work.then(|| home_pane_id.to_string());
+    agent.status = AgentStatus::Idle;
+    if has_work {
+        agent.paused = true;
+    }
+    let agent = agent.clone();
+    bump_agent_activity_locked(model, agent_id);
+    Some(agent)
+}
+
+fn recover_turn_locked(
+    model: &mut Model,
+    agent_id: &str,
+    index: usize,
+    mut turn: QueuedTurn,
+    fallback_home: Option<&str>,
+) -> Result<usize, String> {
+    let agent = model
+        .agents
+        .get(agent_id)
+        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    let detached = agent.pane_id.is_none();
+    let home = if detached {
+        let preferred = agent
+            .orphaned_queue_pane_id
+            .as_deref()
+            .or(fallback_home)
+            .ok_or_else(|| format!("agent {agent_id} is no longer attached"))?;
+        Some(if model.panes.contains_key(preferred) {
+            preferred.to_string()
+        } else {
+            model
+                .panes
+                .values()
+                .find(|pane| pane.info.group_id == agent.group_id)
+                .map(|pane| pane.info.id.clone())
+                .unwrap_or_else(|| preferred.to_string())
+        })
+    } else {
+        None
+    };
+    // A failed send into a departed process must paste again when recovered.
+    let departed_composer =
+        detached || fallback_home.is_some_and(|home| agent.pane_id.as_deref() != Some(home));
+    if departed_composer {
+        turn.possibly_pasted = false;
+    }
+    let queue = model
+        .agent_turn_queues
+        .entry(agent_id.to_string())
+        .or_default();
+    if let Some(existing) = queue.iter_mut().find(|existing| existing.id == turn.id) {
+        existing.possibly_pasted =
+            !departed_composer && (existing.possibly_pasted || turn.possibly_pasted);
+    } else {
+        queue.insert(index.min(queue.len()), turn);
+    }
+    let len = queue.len();
+    if let Some(home) = home {
+        let agent = model.agents.get_mut(agent_id).expect("checked above");
+        agent.orphaned_queue_pane_id = Some(home);
+        agent.paused = true;
+    }
+    Ok(len)
+}
+
 /// Result of [`AppState::claim_ready_agent_turn`].
 pub enum AgentTurnClaim {
     /// A ready turn was claimed and popped; the agent is now marked draining. The caller
-    /// must send it and then call [`AppState::finish_agent_drain`].
-    Ready { turn: QueuedTurn, pending: usize },
+    /// must settle it with the returned token (success or failed-send rollback).
+    Ready {
+        turn: QueuedTurn,
+        pending: usize,
+        claim_id: u64,
+    },
     /// Another drain already holds this agent; the caller must not send or change status.
     Draining,
     /// Nothing is ready to send (empty queue or the front turn is still waiting).
@@ -1090,7 +1240,11 @@ pub enum AgentTurnClaim {
 /// Result of [`AppState::claim_next_turn_or_settle`].
 pub enum IdleAdvance {
     /// A ready turn was claimed; the agent is marked draining and the caller must send it.
-    Sent { turn: QueuedTurn, pending: usize },
+    Sent {
+        turn: QueuedTurn,
+        pending: usize,
+        claim_id: u64,
+    },
     /// Another drain owns the agent; the caller must leave its status untouched.
     Busy,
     /// Nothing was sent; the agent has been settled to the requested ready status.
@@ -1102,6 +1256,15 @@ fn enqueue_queued_turn_locked(
     agent_id: &str,
     turn: QueuedTurn,
 ) -> Result<usize, String> {
+    let agent = model
+        .agents
+        .get(agent_id)
+        .ok_or_else(|| format!("agent {agent_id} was not found"))?;
+    // Stale requests that raced an empty detach must fail before accepting work.
+    // Existing recovered queues may still be edited/appended, and stay paused.
+    if agent.pane_id.is_none() && agent.orphaned_queue_pane_id.is_none() {
+        return Err(format!("agent {agent_id} is no longer attached"));
+    }
     let queue = model
         .agent_turn_queues
         .entry(agent_id.to_string())
@@ -1112,7 +1275,13 @@ fn enqueue_queued_turn_locked(
         ));
     }
     queue.push_back(turn);
-    Ok(queue.len())
+    let len = queue.len();
+    if let Some(agent) = model.agents.get_mut(agent_id)
+        && agent.pane_id.is_none()
+    {
+        agent.paused = true;
+    }
+    Ok(len)
 }
 
 fn wait_target_label_locked(model: &Model, target: &AgentInfo) -> Option<String> {
@@ -1206,7 +1375,11 @@ fn pop_ready_locked(model: &mut Model, agent_id: &str) -> Option<(QueuedTurn, us
     let pending_count = queue.len();
     if queue.is_empty() {
         model.agent_turn_queues.remove(agent_id);
-        if let Some(agent) = model.agents.get_mut(agent_id) {
+        // A recovered delivery can be explicitly dispatched without an attached
+        // source pane. Retain its home until that live claim settles or rolls back.
+        if let Some(agent) = model.agents.get_mut(agent_id)
+            && agent.pane_id.is_some()
+        {
             agent.orphaned_queue_pane_id = None;
         }
     }
@@ -2464,6 +2637,13 @@ impl AppState {
             .persist_lock
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        {
+            let mut model = self.inner.model.lock().unwrap_or_else(|e| e.into_inner());
+            let live_ids = model.panes.keys().cloned().collect::<HashSet<_>>();
+            model
+                .recovery_panes
+                .retain(|pane| !live_ids.contains(&pane.id));
+        }
         self.inner.startup_restoring.store(false, Ordering::SeqCst);
         if let Err(err) = self.persist_snapshot_locked() {
             eprintln!("qmux: failed to persist restored session: {err}");
@@ -2474,7 +2654,10 @@ impl AppState {
         let mut model = self.inner.model.lock().unwrap_or_else(|e| e.into_inner());
         let mut ids: Vec<String> = saved
             .iter()
-            .filter(|id| model.panes.contains_key(*id))
+            .filter(|id| {
+                model.panes.contains_key(*id)
+                    || model.recovery_panes.iter().any(|pane| pane.id == **id)
+            })
             .cloned()
             .collect();
         for id in ordered_pane_ids(&model) {
@@ -2853,10 +3036,15 @@ impl AppState {
                 model.agents.insert(agent.id.clone(), agent);
             }
             for (agent_id, turns) in persisted.queues {
-                if !turns.is_empty() {
-                    model
-                        .agent_turn_queues
-                        .insert(agent_id, turns.into_iter().collect());
+                if !turns.is_empty() && model.agents.contains_key(&agent_id) {
+                    let mut seen = HashSet::new();
+                    model.agent_turn_queues.insert(
+                        agent_id,
+                        turns
+                            .into_iter()
+                            .filter(|turn| seen.insert(turn.id.clone()))
+                            .collect(),
+                    );
                 }
             }
             // Re-queue any in-flight turn (claimed for delivery but not confirmed before
@@ -2865,11 +3053,24 @@ impl AppState {
             // cleared re-sends it — at-least-once, preferred over a silent drop. Live
             // in-flight state starts empty after restore.
             for (agent_id, turn) in persisted.inflight {
-                model
-                    .agent_turn_queues
-                    .entry(agent_id)
-                    .or_default()
-                    .push_front(turn);
+                if model.agents.contains_key(&agent_id) {
+                    let queue = model.agent_turn_queues.entry(agent_id).or_default();
+                    if !queue.iter().any(|queued| queued.id == turn.id) {
+                        queue.push_front(turn);
+                    }
+                }
+            }
+            // Keep a delivered turn's fence until settlement after reconnect/resume.
+            // Already-paused agents have fulfilled it, including parked shell queues.
+            // Drop removed owners and avoid re-pausing after explicit Unpause.
+            for agent_id in persisted.pending_pause {
+                if model
+                    .agents
+                    .get(&agent_id)
+                    .is_some_and(|agent| !agent.paused)
+                {
+                    model.agent_pending_pause.insert(agent_id);
+                }
             }
             for (agent_id, draft) in persisted.drafts {
                 // Drop drafts whose agent no longer exists so dead entries don't
@@ -2914,6 +3115,17 @@ impl AppState {
                 .collect();
             model.active_tab_id = active_tab_id;
             model.pane_splits = persisted.pane_splits;
+            model.recovery_panes = persisted
+                .panes
+                .iter()
+                .filter(|pane| {
+                    !matches!(
+                        pane.status,
+                        PaneStatus::Exited | PaneStatus::Killed | PaneStatus::Failed
+                    )
+                })
+                .cloned()
+                .collect();
             hydrated_agents = model.agents.values().cloned().collect::<Vec<_>>();
             hydrated_research_group_ids = model
                 .groups
@@ -3086,7 +3298,7 @@ impl AppState {
                     persistence::STATE_VERSION_PRE_CONVERSATIONS
                 },
                 next_id: self.inner.next_id.load(Ordering::Relaxed),
-                panes: ordered_panes(&model),
+                panes: durable_panes(&model),
                 groups: model.groups.values().cloned().collect(),
                 group_order: ordered_group_ids(&model),
                 agents: model.agents.values().cloned().collect(),
@@ -3100,6 +3312,15 @@ impl AppState {
                 drafts: model.agent_drafts.clone(),
                 global_drafts: model.global_drafts.clone(),
                 inflight: model.agent_inflight.clone(),
+                pending_pause: {
+                    let mut ids = model
+                        .agent_pending_pause
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    ids.sort();
+                    ids
+                },
                 pane_splits: normalized_pane_splits(&model, model.pane_splits.clone(), false)
                     .unwrap_or_default(),
                 active_tab_id: model.active_tab_id.clone(),
@@ -3185,7 +3406,8 @@ impl AppState {
         }
         self.inner.persist_enabled.store(false, Ordering::Relaxed);
         // Thread-graph writes are debounced the same way state.json is; commit
-        // anything still buffered so a clean quit never loses graph updates.
+        // anything still buffered. Storage failures are logged and remain
+        // best-effort during exit; retries require the process to stay alive.
         thread_graph::flush_dirty_thread_graphs();
     }
 
@@ -3310,6 +3532,20 @@ impl AppState {
                     .count()
             })
             .unwrap_or_default()
+    }
+
+    /// Logs for failed recovery descriptors still belong to recoverable panes.
+    /// A poisoned model must skip cleanup rather than yield an empty keep-set.
+    pub fn pane_scrollback_keep_ids(&self) -> Result<HashSet<String>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(durable_panes(&model)
+            .into_iter()
+            .map(|pane| pane.id)
+            .collect())
     }
 
     pub fn list_panes(&self) -> Result<Vec<PaneInfo>, String> {
@@ -4633,6 +4869,13 @@ impl AppState {
                 return Err("group still has open panes".to_string());
             }
             if model
+                .recovery_panes
+                .iter()
+                .any(|pane| pane.group_id == group_id)
+            {
+                return Err("group still has panes awaiting recovery".to_string());
+            }
+            if model
                 .research_trees
                 .values()
                 .any(|tree| tree.workspace_id == group_id)
@@ -4670,6 +4913,36 @@ impl AppState {
         self.sync_research_node_from_agent(&agent_for_sessions)?;
         self.persist();
         Ok(())
+    }
+
+    /// Detaches only the binding observed by the caller; a later reattachment to
+    /// a different pane cannot be cleared by a stale process-exit callback.
+    pub fn park_agent_from_pane(
+        &self,
+        agent_id: &str,
+        pane_id: &str,
+    ) -> Result<Option<AgentInfo>, String> {
+        let updated = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if model
+                .agents
+                .get(agent_id)
+                .is_none_or(|agent| agent.pane_id.as_deref() != Some(pane_id))
+            {
+                return Ok(None);
+            }
+            park_agent_locked(&mut model, agent_id, pane_id)
+        };
+        if let Some(agent) = updated.as_ref() {
+            self.upsert_recent_session_for_agent(agent, now_millis(), true);
+            self.sync_research_node_from_agent(agent)?;
+            self.persist();
+        }
+        Ok(updated)
     }
 
     /// Mutates an agent in place under the lock, applying `f` to the live entry and
@@ -4962,20 +5235,72 @@ impl AppState {
         pane_id: &str,
         agent_id: &str,
         session: Option<&str>,
-        status: Option<AgentStatus>,
+        observation: Option<qmux_proto::HookObservation>,
+        background_tasks: Option<bool>,
+        // Pure classification only: called under the model lock so SessionEnd
+        // and background-work policy use the same state as the cleanup below.
+        status: impl FnOnce(AgentStatus, bool) -> Option<AgentStatus>,
     ) -> Result<Option<AgentInfo>, String> {
+        use qmux_proto::HookObservation;
         let updated = {
             let mut model = self.inner.model.lock().map_err(|_| "model lock poisoned")?;
-            let Some(agent) = model.agents.get_mut(agent_id) else {
+            let Some(agent) = model.agents.get(agent_id) else {
                 return Ok(None);
             };
-            if agent.pane_id.as_deref() != Some(pane_id) {
+            if agent.pane_id.as_deref() != Some(pane_id)
+                || session.is_some_and(|session| agent.fork_point.as_deref() == Some(session))
+            {
                 return Ok(None);
             }
-            if let Some(session) = session {
-                if agent.fork_point.as_deref() == Some(session) {
-                    return Ok(None);
+            let current = agent.status;
+            let is_claude = agent.adapter == "claude";
+            let clears_background = observation == Some(HookObservation::SessionEnd)
+                && matches!(agent.adapter.as_str(), "claude" | "grok");
+            if clears_background || background_tasks == Some(false) {
+                model.agent_active_subagents.remove(agent_id);
+            }
+            if is_claude {
+                if clears_background || background_tasks == Some(false) {
+                    model.agents_with_reported_background_tasks.remove(agent_id);
+                } else if background_tasks == Some(true) {
+                    model
+                        .agents_with_reported_background_tasks
+                        .insert(agent_id.to_string());
                 }
+            }
+            let waiting_on_background = is_claude
+                && (model
+                    .agents_with_reported_background_tasks
+                    .contains(agent_id)
+                    || model
+                        .agent_active_subagents
+                        .get(agent_id)
+                        .is_some_and(|active| !active.is_empty()));
+            let status = status(current, waiting_on_background);
+            let failed = observation == Some(HookObservation::StopFailure)
+                || (observation == Some(HookObservation::SessionEnd)
+                    && status == Some(AgentStatus::Done));
+            let pause = if failed {
+                // Match the non-releasing part of failure settlement. Do not
+                // call set_agent_status/advance_after_failure: their research
+                // synchronization is a live lifecycle action, not recovery.
+                if let Some(tracking) = model.agent_send_tracking.get_mut(agent_id) {
+                    tracking.outstanding_sends.clear();
+                }
+                let pending_pause = model.agent_pending_pause.remove(agent_id);
+                pending_pause
+                    || model
+                        .agent_turn_queues
+                        .get(agent_id)
+                        .is_some_and(|queue| !queue.is_empty())
+            } else {
+                false
+            };
+            let agent = model
+                .agents
+                .get_mut(agent_id)
+                .expect("agent checked under model lock");
+            if let Some(session) = session {
                 if agent.session_id.as_deref() != Some(session) {
                     agent.session_id = Some(session.to_string());
                     // A remote-reported path is never a local transcript binding.
@@ -4984,6 +5309,9 @@ impl AppState {
             }
             if let Some(status) = status {
                 agent.status = status;
+            }
+            if pause {
+                agent.paused = true;
             }
             let updated = agent.clone();
             bump_agent_activity_locked(&mut model, agent_id);
@@ -5589,23 +5917,51 @@ impl AppState {
     }
 
     /// Claims the next ready queued turn for draining, marking the agent as draining so
-    /// no concurrent trigger can claim a second turn until [`finish_agent_drain`] runs.
+    /// no concurrent trigger can claim a second turn until the owner settles it.
     /// Returns [`AgentTurnClaim::Draining`] when another drain already holds the agent,
     /// [`AgentTurnClaim::Idle`] when nothing is ready, else [`AgentTurnClaim::Ready`]
     /// with the popped turn. The check-and-claim is atomic under the model lock, which
     /// is what prevents the double-send race.
     pub fn claim_ready_agent_turn(&self, agent_id: &str) -> Result<AgentTurnClaim, String> {
+        self.claim_ready_agent_turn_gated(agent_id, None)
+    }
+
+    /// [`claim_ready_agent_turn`] for automatic drains. With `ready_statuses` set, the
+    /// whole readiness predicate — not paused, user not typing, status in the adapter's
+    /// ready set — is evaluated under the same model lock that pops the turn, so a pause,
+    /// typing hold or status change that lands after the caller's unlocked pre-check can
+    /// no longer slip a turn through. `None` is the explicit (user-initiated "send now")
+    /// claim, which deliberately bypasses pause and typing.
+    pub fn claim_ready_agent_turn_gated(
+        &self,
+        agent_id: &str,
+        ready_statuses: Option<&[AgentStatus]>,
+    ) -> Result<AgentTurnClaim, String> {
         let claim = {
             let mut model = self
                 .inner
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            if model.agents.get(agent_id).is_none_or(|agent| {
+                agent.pane_id.is_none() && agent.orphaned_queue_pane_id.is_none()
+            }) {
+                return Ok(AgentTurnClaim::Idle);
+            }
             if model.agent_draining.contains(agent_id) {
                 return Ok(AgentTurnClaim::Draining);
             }
             if model.agent_fork_barriers.contains_key(agent_id) {
                 return Ok(AgentTurnClaim::Idle);
+            }
+            if let Some(ready_statuses) = ready_statuses {
+                let ready =
+                    model.agents.get(agent_id).is_some_and(|agent| {
+                        !agent.paused && ready_statuses.contains(&agent.status)
+                    }) && !model.agent_typing.contains(agent_id);
+                if !ready {
+                    return Ok(AgentTurnClaim::Idle);
+                }
             }
             match pop_ready_locked(&mut model, agent_id) {
                 Some((turn, pending)) => {
@@ -5615,7 +5971,12 @@ impl AppState {
                     model
                         .agent_inflight
                         .insert(agent_id.to_string(), turn.clone());
-                    AgentTurnClaim::Ready { turn, pending }
+                    let claim_id = record_queue_claim_locked(&mut model, agent_id, &turn);
+                    AgentTurnClaim::Ready {
+                        turn,
+                        pending,
+                        claim_id,
+                    }
                 }
                 None => return Ok(AgentTurnClaim::Idle),
             }
@@ -5648,20 +6009,30 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
+            if !model.agents.contains_key(agent_id) {
+                return Ok(IdleAdvance::Idle);
+            }
             if model.agent_draining.contains(agent_id) {
                 // Another drain is mid-send; it owns the status transition. Leave the
                 // agent untouched (do not persist) so we can't clobber its Running.
                 return Ok(IdleAdvance::Busy);
             }
-            if model.agent_fork_barriers.contains_key(agent_id) {
+            if model.agent_fork_barriers.contains_key(agent_id)
+                || (model.agents[agent_id].pane_id.is_none()
+                    && model.agents[agent_id].orphaned_queue_pane_id.is_none())
+            {
                 let settled_agent = model.agents.get_mut(agent_id).map(|agent| {
                     agent.status = settled_status;
                     agent.clone()
                 });
                 (IdleAdvance::Idle, settled_agent)
-            } else if model.agent_typing.contains(agent_id) {
-                // User is mid-keystroke: hold the queue and settle atomically with
-                // reading the typing flag (see the doc comment).
+            } else if model.agent_typing.contains(agent_id)
+                || model.agents.get(agent_id).is_some_and(|agent| agent.paused)
+            {
+                // User is mid-keystroke, or the queue is paused: hold the queue and
+                // settle atomically with reading the flags (see the doc comment). The
+                // in-lock check closes the pause-vs-claim race and makes an unpause
+                // racing settlement observe the settled status.
                 let settled_agent = model.agents.get_mut(agent_id).map(|agent| {
                     agent.status = settled_status;
                     agent.clone()
@@ -5673,7 +6044,15 @@ impl AppState {
                 model
                     .agent_inflight
                     .insert(agent_id.to_string(), turn.clone());
-                (IdleAdvance::Sent { turn, pending }, None)
+                let claim_id = record_queue_claim_locked(&mut model, agent_id, &turn);
+                (
+                    IdleAdvance::Sent {
+                        turn,
+                        pending,
+                        claim_id,
+                    },
+                    None,
+                )
             } else {
                 let settled_agent = model.agents.get_mut(agent_id).map(|agent| {
                     agent.status = settled_status;
@@ -5700,6 +6079,10 @@ impl AppState {
     /// safe (no further auto-drain) rather than risking a double-send.
     pub fn finish_agent_drain(&self, agent_id: &str) -> bool {
         if let Ok(mut model) = self.inner.model.lock() {
+            // A late direct-send finalizer cannot release a newer queued claim.
+            if model.agent_queue_claims.contains_key(agent_id) {
+                return false;
+            }
             model.agent_draining.remove(agent_id);
             return model.agent_deferred_queue_resume.remove(agent_id);
         }
@@ -5763,17 +6146,41 @@ impl AppState {
     /// race: a fast child that accepted its prompt before spawn returned needs no
     /// barrier, while a later hook observes the inserted barrier and releases it.
     /// Returns whether the source is now blocked.
+    #[cfg(test)]
     pub fn begin_agent_fork_barrier(
         &self,
         source_agent_id: &str,
         child_agent_id: &str,
         resume_queue: bool,
     ) -> Result<bool, String> {
+        self.begin_agent_fork_barrier_with_claim(
+            source_agent_id,
+            child_agent_id,
+            resume_queue,
+            None,
+        )
+    }
+
+    pub fn begin_agent_fork_barrier_with_claim(
+        &self,
+        source_agent_id: &str,
+        child_agent_id: &str,
+        resume_queue: bool,
+        claim_id: Option<u64>,
+    ) -> Result<bool, String> {
         let mut model = self
             .inner
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
+        if let Some(claim_id) = claim_id
+            && (!owns_queue_claim_locked(&model, source_agent_id, claim_id)
+                || model.agents.get(source_agent_id).is_none_or(|agent| {
+                    agent.pane_id.is_none() && agent.orphaned_queue_pane_id.is_none()
+                }))
+        {
+            return Ok(false);
+        }
         // The child id comes from the PaneInfo returned by the internal fork spawn,
         // never caller input. If its record has already vanished, the pane's teardown
         // won the race and the child process is dead; treating that as already safe
@@ -5838,6 +6245,7 @@ impl AppState {
     /// held marks the barrier ready instead of removing it; this method then consumes
     /// it and tells the dispatching caller to continue. If readiness has not arrived,
     /// the barrier remains for the hook-side resume path.
+    #[cfg(test)]
     pub fn finish_agent_fork_dispatch(
         &self,
         source_agent_id: &str,
@@ -5847,19 +6255,48 @@ impl AppState {
             .model
             .lock()
             .map_err(|_| "model lock poisoned".to_string())?;
-        model.agent_draining.remove(source_agent_id);
-        let (ready, resume_queue) = model
-            .agent_fork_barriers
-            .get(source_agent_id)
-            .map(|barrier| (barrier.ready, barrier.resume_queue))
-            .unwrap_or((true, false));
-        if ready {
-            model.agent_fork_barriers.remove(source_agent_id);
+        Ok(finish_agent_fork_dispatch_locked(
+            &mut model,
+            source_agent_id,
+        ))
+    }
+
+    pub fn finish_claimed_agent_fork_dispatch(
+        &self,
+        source_agent_id: &str,
+        claim_id: u64,
+        settled_status: Option<AgentStatus>,
+    ) -> Result<Option<FinishedAgentForkDispatch>, String> {
+        let (result, settled_agent) = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if !owns_queue_claim_locked(&model, source_agent_id, claim_id) {
+                return Ok(None);
+            }
+            let mut settled_agent = None;
+            if let Some(status) = settled_status
+                && let Some(agent) = model.agents.get_mut(source_agent_id)
+                && agent.pane_id.is_some()
+            {
+                agent.status = status;
+                settled_agent = Some(agent.clone());
+                bump_agent_activity_locked(&mut model, source_agent_id);
+                bump_agent_status_activity_locked(&mut model, source_agent_id);
+            }
+            (
+                finish_agent_fork_dispatch_locked(&mut model, source_agent_id),
+                settled_agent,
+            )
+        };
+        if let Some(agent) = settled_agent.as_ref() {
+            self.sync_research_node_from_agent(agent)?;
+            self.upsert_recent_session_for_agent(agent, now_millis(), true);
         }
-        Ok(FinishedAgentForkDispatch {
-            ready,
-            resume_queue,
-        })
+        self.persist();
+        Ok(Some(result))
     }
 
     pub fn agent_fork_barrier_active(&self, source_agent_id: &str) -> Result<bool, String> {
@@ -5975,42 +6412,131 @@ impl AppState {
             }))
     }
 
-    /// Clears a delivered turn's in-flight record. Called once its bytes reach the PTY,
-    /// so a crash before this leaves the turn in the persisted queue (via
-    /// `restore_session`) to be re-delivered rather than lost.
-    pub fn clear_agent_inflight(&self, agent_id: &str) {
+    /// Resolves a claimed sender's agent without admitting an old attempt after
+    /// Undo or a retry has established a different delivery owner.
+    pub fn agent_for_queue_claim(
+        &self,
+        agent_id: &str,
+        claim_id: u64,
+    ) -> Result<Option<AgentInfo>, String> {
+        let model = self
+            .inner
+            .model
+            .lock()
+            .map_err(|_| "model lock poisoned".to_string())?;
+        Ok(owns_queue_claim_locked(&model, agent_id, claim_id)
+            .then(|| model.agents[agent_id].clone()))
+    }
+
+    /// Drops only the durable replay record, retaining live ownership across an
+    /// at-most-once new-pane dispatch. A retired sender cannot clear a newer claim.
+    pub fn clear_agent_inflight(&self, agent_id: &str, claim_id: u64) -> bool {
         let changed = match self.inner.model.lock() {
-            Ok(mut model) => model.agent_inflight.remove(agent_id).is_some(),
+            Ok(mut model) => {
+                if !owns_queue_claim_locked(&model, agent_id, claim_id) {
+                    return false;
+                }
+                model.agent_inflight.remove(agent_id).is_some()
+            }
+            Err(_) => return false,
+        };
+        if changed {
+            self.persist();
+        }
+        true
+    }
+
+    /// Reclaims one live claim, preserving ordering and merging a close-time copy
+    /// by turn id. Pruning/Undo revokes the claim; late failures then do nothing.
+    pub fn requeue_inflight_after_failed_drain(
+        &self,
+        agent_id: &str,
+        claim_id: u64,
+        turn: QueuedTurn,
+    ) -> bool {
+        let changed = match self.inner.model.lock() {
+            Ok(mut model) => {
+                if !owns_queue_claim_locked(&model, agent_id, claim_id) {
+                    return false;
+                }
+                let claim = model
+                    .agent_queue_claims
+                    .get(agent_id)
+                    .expect("checked")
+                    .clone();
+                if claim.turn_id != turn.id {
+                    return false;
+                }
+                if recover_turn_locked(&mut model, agent_id, 0, turn, Some(&claim.home_pane_id))
+                    .is_err()
+                {
+                    return false;
+                }
+                model.agent_inflight.remove(agent_id);
+                model.agent_queue_claims.remove(agent_id);
+                model.agent_draining.remove(agent_id);
+                model.agent_deferred_queue_resume.remove(agent_id);
+                true
+            }
             Err(_) => false,
         };
         if changed {
             self.persist();
         }
+        changed
     }
 
-    /// Rolls a turn that failed to send back to the front of its queue and clears its
-    /// in-flight record in one locked step, so the persisted snapshot never holds the
-    /// same turn in both places (which would double-send it on restart).
-    pub fn requeue_inflight_after_failed_drain(&self, agent_id: &str, turn: QueuedTurn) {
-        let ok = match self.inner.model.lock() {
-            Ok(mut model) => {
-                model.agent_inflight.remove(agent_id);
-                model
-                    .agent_turn_queues
-                    .entry(agent_id.to_string())
-                    .or_default()
-                    .push_front(turn);
-                true
+    /// Completes the exact dispatch, including its pause directive and drain guard.
+    /// The live claim survives a pending fork until its caller hands off ownership.
+    /// Ordinary delivery exchanges the durable in-flight turn for its pending pause
+    /// in this ownership-checked transaction, so a snapshot cannot lose both fences.
+    pub fn complete_claimed_agent_turn(
+        &self,
+        agent_id: &str,
+        claim_id: u64,
+        pause_after: bool,
+        delivers_to_new_pane: bool,
+        keep_for_fork: bool,
+    ) -> Option<bool> {
+        let resume = {
+            let mut model = self.inner.model.lock().ok()?;
+            if !owns_queue_claim_locked(&model, agent_id, claim_id) {
+                return None;
             }
-            Err(_) => false,
+            let turn_id = model.agent_queue_claims[agent_id].turn_id.clone();
+            model.agent_inflight.remove(agent_id);
+            // A close may already have recovered this exact turn while its write
+            // was settling. Confirmed delivery consumes that copy as well.
+            if let Some(queue) = model.agent_turn_queues.get_mut(agent_id) {
+                queue.retain(|turn| turn.id != turn_id);
+            }
+            let empty = model
+                .agent_turn_queues
+                .get(agent_id)
+                .is_none_or(|queue| queue.is_empty());
+            if empty {
+                model.agent_turn_queues.remove(agent_id);
+            }
+            let agent = model.agents.get_mut(agent_id).expect("checked");
+            if empty {
+                agent.orphaned_queue_pane_id = None;
+            }
+            if pause_after && delivers_to_new_pane {
+                agent.paused = true;
+            }
+            if pause_after && !delivers_to_new_pane && agent.pane_id.is_some() {
+                model.agent_pending_pause.insert(agent_id.to_string());
+            }
+            if keep_for_fork {
+                false
+            } else {
+                model.agent_queue_claims.remove(agent_id);
+                model.agent_draining.remove(agent_id);
+                model.agent_deferred_queue_resume.remove(agent_id)
+            }
         };
-        if ok {
-            self.persist();
-        } else {
-            eprintln!(
-                "qmux: dropped queued turn for agent {agent_id} after failed re-queue (model lock poisoned)"
-            );
-        }
+        self.persist();
+        Some(resume)
     }
 
     /// Test-only direct pop of the next ready turn (no draining guard), used to assert
@@ -6062,6 +6588,7 @@ impl AppState {
         agent_id: &str,
         index: usize,
         turn: QueuedTurn,
+        recovery_pane_id: Option<&str>,
     ) -> Result<usize, String> {
         let len = {
             let mut model = self
@@ -6069,13 +6596,7 @@ impl AppState {
                 .model
                 .lock()
                 .map_err(|_| "model lock poisoned".to_string())?;
-            let queue = model
-                .agent_turn_queues
-                .entry(agent_id.to_string())
-                .or_default();
-            let at = index.min(queue.len());
-            queue.insert(at, turn);
-            queue.len()
+            recover_turn_locked(&mut model, agent_id, index, turn, recovery_pane_id)?
         };
         self.persist();
         Ok(len)
@@ -6108,26 +6629,66 @@ impl AppState {
         Ok(updated)
     }
 
-    /// Marks that the agent's currently-running queued turn requested a pause; the
-    /// agent enters paused mode when that turn finishes (see `take_agent_pending_pause`).
+    /// Test setup for an already-delivered pause-after turn. Production delivery
+    /// uses `complete_claimed_agent_turn` to atomically clear in-flight and arm the pause.
+    #[cfg(test)]
     pub fn mark_agent_pending_pause(&self, agent_id: &str) -> Result<(), String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        model.agent_pending_pause.insert(agent_id.to_string());
+        let inserted = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            model.agents.contains_key(agent_id)
+                && model.agent_pending_pause.insert(agent_id.to_string())
+        };
+        if inserted {
+            self.persist();
+        }
         Ok(())
     }
 
-    /// Consumes the pending-pause marker, returning whether one was set.
-    pub fn take_agent_pending_pause(&self, agent_id: &str) -> Result<bool, String> {
-        let mut model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model.agent_pending_pause.remove(agent_id))
+    /// Consumes a delivered turn's pending pause and settles its status in one
+    /// model-lock transaction. Snapshots cannot lose the fence, and Unpause must
+    /// see a ready status when it clears this pause so it can resume the queue.
+    pub fn pause_agent_if_pending(
+        &self,
+        agent_id: &str,
+        settled_status: AgentStatus,
+    ) -> Result<bool, String> {
+        debug_assert!(matches!(
+            settled_status,
+            AgentStatus::AwaitingInput | AgentStatus::Done | AgentStatus::Idle
+        ));
+        let updated = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            if !model.agent_pending_pause.remove(agent_id) {
+                return Ok(false);
+            }
+            match model.agents.get_mut(agent_id) {
+                Some(agent) => {
+                    agent.paused = true;
+                    agent.status = settled_status;
+                    let updated = agent.clone();
+                    bump_agent_activity_locked(&mut model, agent_id);
+                    bump_agent_status_activity_locked(&mut model, agent_id);
+                    Some(updated)
+                }
+                None => None,
+            }
+        };
+        // Preserve set_agent_status's post-write synchronization without taking
+        // another status lock after Unpause may have started the next turn.
+        if let Some(agent) = updated.as_ref() {
+            self.sync_research_node_from_agent(agent)?;
+            self.upsert_recent_session_for_agent(agent, now_millis(), true);
+        }
+        self.persist();
+        Ok(updated.is_some())
     }
 
     pub fn agent_is_paused(&self, agent_id: &str) -> Result<bool, String> {
@@ -6145,6 +6706,7 @@ impl AppState {
 
     /// Records whether the user is actively typing for an agent; while set, the idle
     /// handler holds off auto-draining the queue.
+    #[cfg(test)]
     pub fn set_agent_typing(&self, agent_id: &str, typing: bool) -> Result<(), String> {
         let mut model = self
             .inner
@@ -6155,6 +6717,7 @@ impl AppState {
             model.agent_typing.insert(agent_id.to_string());
         } else {
             model.agent_typing.remove(agent_id);
+            model.agent_typing_updates.remove(agent_id);
         }
         Ok(())
     }
@@ -7953,12 +8516,21 @@ fn restore_closed_agent_snapshot_locked(
     attach_to_pane: bool,
     queue_shell_resume: bool,
 ) {
+    model.agent_queue_claims.remove(&agent_snapshot.agent.id);
+    // Undo can race a sender after the close snapshot was captured. Preserve a
+    // plain turn's still-durable obligation while revoking the old delivery owner.
+    // An at-most-once new-pane dispatch has no durable copy to replay here.
+    let interrupted_turn = model.agent_inflight.remove(&agent_snapshot.agent.id);
+    model.agent_draining.remove(&agent_snapshot.agent.id);
+    model
+        .agent_deferred_queue_resume
+        .remove(&agent_snapshot.agent.id);
     let mut agent = agent_snapshot.agent.clone();
     if attach_to_pane {
         agent.pane_id = Some(pane.id.clone());
         agent.orphaned_queue_pane_id = None;
     } else {
-        let has_queue = !agent_snapshot.queued_turns.is_empty();
+        let has_queue = !agent_snapshot.queued_turns.is_empty() || interrupted_turn.is_some();
         agent.pane_id = None;
         agent.orphaned_queue_pane_id = has_queue.then(|| pane.id.clone());
         agent.status = AgentStatus::Idle;
@@ -7988,6 +8560,12 @@ fn restore_closed_agent_snapshot_locked(
             agent_snapshot.queued_turns.iter().cloned().collect(),
         );
     }
+    if let Some(turn) = interrupted_turn {
+        let queue = model.agent_turn_queues.entry(agent_id.clone()).or_default();
+        if !queue.iter().any(|queued| queued.id == turn.id) {
+            queue.push_front(turn);
+        }
+    }
     match agent_snapshot
         .draft
         .clone()
@@ -8015,8 +8593,12 @@ fn prune_agent_locked(model: &mut Model, agent_id: &str) {
     model.agents.remove(agent_id);
     model.turns.remove(agent_id);
     model.agent_turn_queues.remove(agent_id);
+    model.agent_inflight.remove(agent_id);
+    model.agent_queue_claims.remove(agent_id);
+    model.agents_with_reported_background_tasks.remove(agent_id);
     model.agent_drafts.remove(agent_id);
     model.agent_typing.remove(agent_id);
+    model.agent_typing_updates.remove(agent_id);
     model.agent_pending_pause.remove(agent_id);
     model.agent_draining.remove(agent_id);
     model.agent_fork_barriers.remove(agent_id);
@@ -8377,8 +8959,8 @@ fn drop_research_recent_sessions(persisted: &mut PersistedState) -> bool {
 fn research_node_has_live_execution(node: &ResearchNode) -> bool {
     node.pane_id.is_some()
         || node.status.is_active()
-        || (node.runtime == ResearchRuntime::Sdk
-            && crate::research_runtime::session_registered(&node.id))
+        // Registration also owns preflight, before the SDK binding exists.
+        || crate::research_runtime::session_registered(&node.id)
 }
 
 fn research_status_for_agent(
@@ -8429,6 +9011,14 @@ fn remove_group_without_open_panes_locked(
         return false;
     }
 
+    if model
+        .recovery_panes
+        .iter()
+        .any(|pane| pane.group_id == group_id)
+    {
+        return false;
+    }
+
     if preserve_research
         && model
             .groups
@@ -8463,6 +9053,31 @@ fn remove_group_without_open_panes_locked(
     let order_len_before = model.group_order.len();
     model.group_order.retain(|id| id != group_id);
     removed || pruned_agents || order_len_before != model.group_order.len()
+}
+
+fn durable_panes(model: &Model) -> Vec<PaneInfo> {
+    let mut panes = ordered_panes(model)
+        .into_iter()
+        .map(|pane| (pane.id.clone(), pane))
+        .collect::<HashMap<_, _>>();
+    for pane in &model.recovery_panes {
+        panes.entry(pane.id.clone()).or_insert_with(|| pane.clone());
+    }
+    let mut ordered = Vec::with_capacity(panes.len());
+    for id in model
+        .pane_order
+        .iter()
+        .chain(model.recovery_panes.iter().map(|pane| &pane.id))
+    {
+        if let Some(pane) = panes.remove(id) {
+            ordered.push(pane);
+        }
+    }
+    // Stable fallback for legacy snapshots without an explicit pane order.
+    let mut remaining = panes.into_values().collect::<Vec<_>>();
+    remaining.sort_by(|left, right| left.id.cmp(&right.id));
+    ordered.extend(remaining);
+    ordered
 }
 
 fn ordered_panes(model: &Model) -> Vec<PaneInfo> {

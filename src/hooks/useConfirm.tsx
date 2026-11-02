@@ -1,6 +1,6 @@
 import { useCallback, useLayoutEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
+import { claimNativeTerminalPointerForWebOverlay } from "../lib/api";
 import { Button, Dialog, DialogActions, DialogRoot } from "../components/ui";
 
 // A promise-based in-app confirmation, used in place of window.confirm (which is a
@@ -50,7 +50,7 @@ export function useConfirm(): {
     // the DOM button can produce a click. Own the full pointer gesture for the
     // lifetime of the modal; the claim is reference-counted with every other
     // web overlay and releases when the confirmation settles.
-    return claimNativeTerminalPointerForWebDrag();
+    return claimNativeTerminalPointerForWebOverlay();
   }, [open]);
 
   const dialog = state ? (

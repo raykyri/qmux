@@ -7,13 +7,27 @@ final class NativeTerminalCallbackRecorder: @unchecked Sendable {
     private var resizeValues: [(columns: Int32, rows: Int32)] = []
     private var annotationViewportValues: [String] = []
     private var writeValues: [Data] = []
+    private var geometryValues: [String] = []
 
     func reset() {
         lock.lock()
         resizeValues.removeAll()
         annotationViewportValues.removeAll()
         writeValues.removeAll()
+        geometryValues.removeAll()
         lock.unlock()
+    }
+
+    func recordGeometry(_ paneID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        geometryValues.append(paneID)
+    }
+
+    var geometryCommits: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return geometryValues
     }
 
     func recordResize(columns: Int32, rows: Int32) {
@@ -159,7 +173,9 @@ func nativeTerminalDidRequestBrowserEscapeStub() -> Int32 {
 }
 
 @_cdecl("qmux_native_terminal_did_commit_geometry")
-func nativeTerminalDidCommitGeometryStub(_: UnsafePointer<CChar>) {}
+func nativeTerminalDidCommitGeometryStub(_ paneID: UnsafePointer<CChar>) {
+    NativeTerminalCallbackRecorder.shared.recordGeometry(String(cString: paneID))
+}
 
 @_cdecl("qmux_native_terminal_did_begin_interface_health_check")
 func nativeTerminalDidBeginInterfaceHealthCheckStub() -> UInt64 {

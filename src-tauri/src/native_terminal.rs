@@ -480,7 +480,8 @@ mod imp {
             revision: u64,
         ) -> i32;
         fn qmux_native_terminal_set_keyboard_owner(pane_id: *const c_char, revision: u64) -> i32;
-        fn qmux_native_terminal_set_web_pointer_claimed(claimed: i32) -> i32;
+        /// `mode`: 0 released, 1 gesture (retired on pointer-up), 2 overlay.
+        fn qmux_native_terminal_set_web_pointer_claimed(mode: i32) -> i32;
         fn qmux_native_terminal_set_web_overlay_region(
             region_id: *const c_char,
             x: f64,
@@ -849,9 +850,14 @@ mod imp {
         }
     }
 
-    pub fn set_web_pointer_claimed(claimed: bool) -> Result<(), String> {
+    pub fn set_web_pointer_claimed(claimed: bool, sticky: bool) -> Result<(), String> {
         // SAFETY: the scalar is copied synchronously on the main actor.
-        if unsafe { qmux_native_terminal_set_web_pointer_claimed(i32::from(claimed)) } == 1 {
+        if unsafe {
+            qmux_native_terminal_set_web_pointer_claimed(super::web_pointer_claim_mode(
+                claimed, sticky,
+            ))
+        } == 1
+        {
             Ok(())
         } else {
             Err("native terminal host is not attached".to_string())
@@ -1292,7 +1298,7 @@ mod imp {
         Err("native terminals are only available on macOS".to_string())
     }
 
-    pub fn set_web_pointer_claimed(_claimed: bool) -> Result<(), String> {
+    pub fn set_web_pointer_claimed(_claimed: bool, _sticky: bool) -> Result<(), String> {
         Err("native terminals are only available on macOS".to_string())
     }
 
@@ -1925,8 +1931,36 @@ pub fn native_terminal_set_keyboard_owner(
 }
 
 #[tauri::command]
-pub fn native_terminal_set_web_pointer_claimed(claimed: bool) -> Result<(), String> {
-    set_web_pointer_claimed(claimed)
+pub fn native_terminal_set_web_pointer_claimed(
+    claimed: bool,
+    sticky: Option<bool>,
+) -> Result<(), String> {
+    // A document loaded before this API change omits `sticky`. Keep its claim
+    // transient so a missed release can still be retired on pointer-up.
+    set_web_pointer_claimed(claimed, sticky.unwrap_or(false))
+}
+
+/// Semantic ABI shared with TerminalWebPointerClaim in the Swift bridge.
+#[cfg(any(target_os = "macos", test))]
+fn web_pointer_claim_mode(claimed: bool, sticky: bool) -> i32 {
+    match (claimed, sticky) {
+        (false, _) => 0,
+        (true, false) => 1,
+        (true, true) => 2,
+    }
+}
+
+#[cfg(test)]
+mod web_pointer_claim_tests {
+    use super::web_pointer_claim_mode;
+
+    #[test]
+    fn web_pointer_claim_modes_match_swift_bridge() {
+        assert_eq!(web_pointer_claim_mode(false, false), 0);
+        assert_eq!(web_pointer_claim_mode(false, true), 0);
+        assert_eq!(web_pointer_claim_mode(true, false), 1);
+        assert_eq!(web_pointer_claim_mode(true, true), 2);
+    }
 }
 
 #[tauri::command]

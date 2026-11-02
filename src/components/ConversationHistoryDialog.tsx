@@ -9,7 +9,7 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { claimNativeTerminalPointerForWebDrag, listConversationHistory } from "../lib/api";
+import { claimNativeTerminalPointerForWebOverlay, listConversationHistory } from "../lib/api";
 import { ADAPTER_ICON_BY_ID, adapterIconClassName } from "../lib/adapterIcons";
 import { formatRelativeTime } from "../lib/transcriptSessions";
 import type {
@@ -94,7 +94,7 @@ export default function ConversationHistoryDialog({
     // The backdrop covers the native terminal stage. Own pointer routing for
     // the dialog's lifetime so AppKit cannot send presses to Ghostty while the
     // layout FFI that blocks terminal input is still in flight.
-    return claimNativeTerminalPointerForWebDrag();
+    return claimNativeTerminalPointerForWebOverlay();
   }, [open]);
 
   useEffect(() => {

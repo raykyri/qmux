@@ -268,3 +268,25 @@ export function pruneResearchNavigationNodes(treeId: string, validNodeIds: Itera
     saveResearchNavigation();
   }
 }
+
+
+/** Submission reconciliation publishes only its own composer identity. Mounted
+ * documents of the same tree adopt the result; disposed instances cannot write
+ * a stale textarea value back over the shared navigation draft. */
+export interface ResearchDraftCompletion {
+  treeId: string;
+  nodeId: string | null;
+  anchor: ResearchHighlightAnchor | null;
+  text: string;
+}
+const draftCompletionListeners = new Set<(event: ResearchDraftCompletion) => void>();
+export function subscribeResearchDraftCompletion(
+  listener: (event: ResearchDraftCompletion) => void,
+): () => void {
+  draftCompletionListeners.add(listener);
+  return () => { draftCompletionListeners.delete(listener); };
+}
+export function publishResearchDraftCompletion(event: ResearchDraftCompletion): void {
+  saveResearchNavigation();
+  for (const listener of draftCompletionListeners) listener(event);
+}

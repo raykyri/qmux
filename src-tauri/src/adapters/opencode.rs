@@ -2096,6 +2096,7 @@ mod tests {
     fn stop_failure_holds_queued_turns() {
         let state = test_state();
         let mut agent = sample_agent();
+        agent.pane_id = Some("test-pane".to_string());
         agent.status = AgentStatus::Running;
         state.insert_agent(agent).unwrap();
         state

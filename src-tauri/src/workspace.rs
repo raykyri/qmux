@@ -1405,16 +1405,7 @@ pub fn attach_agent_pane(
 ) -> Result<AgentInfo, String> {
     for previous in state.list_agents()? {
         if previous.id != agent_id && previous.pane_id.as_deref() == Some(&pane_id) {
-            let has_queue = !state.list_agent_turn_queue(&previous.id)?.is_empty();
-            let orphaned_queue_pane_id = has_queue.then(|| pane_id.clone());
-            let detached = state.mutate_agent(&previous.id, |agent| {
-                agent.pane_id = None;
-                agent.orphaned_queue_pane_id = orphaned_queue_pane_id;
-                agent.status = AgentStatus::Idle;
-                if has_queue {
-                    agent.paused = true;
-                }
-            })?;
+            let detached = state.park_agent_from_pane(&previous.id, &pane_id)?;
             if let Some(detached) = detached {
                 let detached_id = detached.id.clone();
                 // Clear the pane binding before cancelling the barrier. Otherwise a
@@ -1472,16 +1463,7 @@ fn detach_known_pane_agent(
     pane_id: &str,
     current: AgentInfo,
 ) -> Result<Option<AgentInfo>, String> {
-    let has_queue = !state.list_agent_turn_queue(&current.id)?.is_empty();
-    let orphaned_queue_pane_id = has_queue.then(|| pane_id.to_string());
-    let detached = state.mutate_agent(&current.id, |agent| {
-        agent.pane_id = None;
-        agent.orphaned_queue_pane_id = orphaned_queue_pane_id;
-        agent.status = AgentStatus::Idle;
-        if has_queue {
-            agent.paused = true;
-        }
-    })?;
+    let detached = state.park_agent_from_pane(&current.id, pane_id)?;
     if let Some(detached) = &detached {
         // Make the source visibly detached before removing its barrier so neither the
         // dispatch owner nor a child-ready hook can resume into the old pane during

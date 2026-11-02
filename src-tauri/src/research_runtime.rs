@@ -18,20 +18,231 @@ use crate::transcript::{Turn, TurnBlock};
 use crate::workspace::{PrepareAgentWorkspaceRequest, prepare_agent_workspace};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+#[derive(Default)]
+struct SessionTable {
+    shutting_down: bool,
+    slots: HashMap<String, Arc<SessionSlot>>,
+}
+
 struct SessionSlot {
-    pid: Option<u32>,
+    // Spawning, process reaping, and shutdown acquire this gate. No AppState lock is
+    // acquired while holding it, and the global registry never spans I/O.
+    process: Mutex<SessionProcess>,
     interrupt: std::sync::mpsc::Sender<()>,
 }
 
-static SESSIONS: OnceLock<Mutex<HashMap<String, SessionSlot>>> = OnceLock::new();
+#[derive(Default)]
+struct SessionProcess {
+    stopped: bool,
+    pid: Option<u32>,
+}
 
-fn sessions() -> &'static Mutex<HashMap<String, SessionSlot>> {
-    SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+static SESSIONS: OnceLock<Mutex<SessionTable>> = OnceLock::new();
+
+fn sessions() -> &'static Mutex<SessionTable> {
+    SESSIONS.get_or_init(|| Mutex::new(SessionTable::default()))
+}
+
+// Keep PID lifetime and reaping under the same per-session gate as shutdown.
+// Once wait/kill reaps a child its PID must not remain eligible for signalling
+// while response snapshotting continues (the OS could reuse that PID).
+struct RegisteredChild<T> {
+    child: Option<T>,
+    slot: Arc<SessionSlot>,
+}
+
+impl<T> std::ops::Deref for RegisteredChild<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.child.as_ref().expect("registered child is owned")
+    }
+}
+impl<T> std::ops::DerefMut for RegisteredChild<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.child.as_mut().expect("registered child is owned")
+    }
+}
+impl<T> Drop for RegisteredChild<T> {
+    fn drop(&mut self) {
+        let mut process = self
+            .slot
+            .process
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        drop(self.child.take());
+        process.pid = None;
+    }
+}
+impl RegisteredChild<JsonlProcess> {
+    fn kill(&mut self) {
+        let mut process = self
+            .slot
+            .process
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        self.child.as_mut().unwrap().kill();
+        process.pid = None;
+    }
+    fn finish(&mut self, timeout: Duration) -> Result<std::process::ExitStatus, String> {
+        let mut process = self
+            .slot
+            .process
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let result = self.child.as_mut().unwrap().finish(timeout);
+        process.pid = None;
+        result
+    }
+}
+impl RegisteredChild<ClaudeSdkSession> {
+    fn kill(&mut self) {
+        let mut process = self
+            .slot
+            .process
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        self.child.as_mut().unwrap().kill();
+        process.pid = None;
+    }
+    fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
+        let mut process = self
+            .slot
+            .process
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let status = self.child.as_mut().unwrap().try_wait();
+        if status.is_some() {
+            process.pid = None;
+        }
+        status
+    }
+}
+
+struct SessionRegistration {
+    node_id: String,
+    slot: Arc<SessionSlot>,
+}
+
+impl SessionRegistration {
+    fn register(node_id: &str) -> Result<(Arc<Self>, std::sync::mpsc::Receiver<()>), String> {
+        let (interrupt, receiver) = std::sync::mpsc::channel();
+        let slot = Arc::new(SessionSlot {
+            process: Mutex::new(SessionProcess::default()),
+            interrupt,
+        });
+        let mut table = sessions().lock().unwrap_or_else(|err| err.into_inner());
+        if table.shutting_down {
+            return Err("qmux is quitting; research was not started".into());
+        }
+        if table.slots.contains_key(node_id) {
+            return Err("the previous run is still stopping; wait and retry".into());
+        }
+        table.slots.insert(node_id.to_string(), slot.clone());
+        Ok((
+            Arc::new(Self {
+                node_id: node_id.into(),
+                slot,
+            }),
+            receiver,
+        ))
+    }
+
+    fn spawn_child<T>(
+        &self,
+        spawn: impl FnOnce() -> Result<T, String>,
+        pid_of: impl FnOnce(&T) -> Option<u32>,
+    ) -> Result<RegisteredChild<T>, String> {
+        let mut process = self
+            .slot
+            .process
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if process.stopped {
+            return Err("research run was stopped before its process started".into());
+        }
+        // Constructors own their child before doing fallible reader setup.
+        // Catch inside the gate, release it, then propagate to the worker's
+        // outcome handler. A constructor panic must not poison a mutex.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let child = spawn()?;
+            process.pid = pid_of(&child);
+            Ok(RegisteredChild {
+                child: Some(child),
+                slot: self.slot.clone(),
+            })
+        }));
+        drop(process);
+        match result {
+            Ok(result) => result,
+            Err(panic) => resume_unwind(panic),
+        }
+    }
+}
+
+impl Drop for SessionRegistration {
+    fn drop(&mut self) {
+        let mut table = sessions().lock().unwrap_or_else(|err| err.into_inner());
+        if table
+            .slots
+            .get(&self.node_id)
+            .is_some_and(|slot| Arc::ptr_eq(slot, &self.slot))
+        {
+            table.slots.remove(&self.node_id);
+        }
+    }
+}
+
+// The caller retains a registration through spawn failure finalization; the
+// worker retains another through unwind handling and child cleanup. Dropping
+// the failed spawn closure alone must never open the retry gate.
+fn start_worker(
+    state: &AppState,
+    node_id: &str,
+    agent_id: &str,
+    registration: Arc<SessionRegistration>,
+    work: impl FnOnce(&SessionRegistration) + Send + 'static,
+) -> Result<(), String> {
+    start_worker_with(state, node_id, agent_id, registration, work, |worker| {
+        thread::Builder::new()
+            .name(format!("qmux-research-{node_id}"))
+            .spawn(worker)
+            .map(|_| ())
+    })
+}
+
+fn start_worker_with(
+    state: &AppState,
+    node_id: &str,
+    agent_id: &str,
+    registration: Arc<SessionRegistration>,
+    work: impl FnOnce(&SessionRegistration) + Send + 'static,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+) -> Result<(), String> {
+    let runtime_state = state.clone();
+    let worker_node = node_id.to_string();
+    let worker_agent = agent_id.to_string();
+    let worker_registration = registration.clone();
+    let worker = Box::new(move || {
+        if catch_unwind(AssertUnwindSafe(|| work(&worker_registration))).is_err() {
+            let _ = runtime_state.finish_research_sdk_run(
+                &worker_node,
+                &worker_agent,
+                false,
+                Some("research worker panicked".to_string()),
+            );
+        }
+    });
+    spawn(worker).map_err(|err| {
+        let err = format!("failed to start research worker: {err}");
+        let _ = state.finish_research_sdk_run(node_id, agent_id, false, Some(err.clone()));
+        err
+    })
 }
 
 pub fn should_use_research_sdk(state: &AppState, adapter: &str) -> bool {
@@ -43,7 +254,9 @@ pub fn should_use_research_sdk(state: &AppState, adapter: &str) -> bool {
 pub fn session_registered(node_id: &str) -> bool {
     sessions()
         .lock()
-        .is_ok_and(|sessions| sessions.contains_key(node_id))
+        .unwrap_or_else(|err| err.into_inner())
+        .slots
+        .contains_key(node_id)
 }
 
 pub fn wait_for_session_stop(node_id: &str, timeout: Duration) -> bool {
@@ -55,22 +268,28 @@ pub fn wait_for_session_stop(node_id: &str, timeout: Duration) -> bool {
 }
 
 pub fn interrupt_session(node_id: &str) -> bool {
-    let Ok(sessions) = sessions().lock() else {
-        return false;
-    };
-    sessions
+    let slot = sessions()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .slots
         .get(node_id)
-        .is_some_and(|slot| slot.interrupt.send(()).is_ok())
+        .cloned();
+    slot.is_some_and(|slot| slot.interrupt.send(()).is_ok())
 }
 
 pub fn kill_all_sessions() {
-    let slots: Vec<SessionSlot> = sessions()
-        .lock()
-        .map(|mut map| map.drain().map(|(_, slot)| slot).collect())
-        .unwrap_or_default();
+    let slots: Vec<_> = {
+        let mut table = sessions().lock().unwrap_or_else(|err| err.into_inner());
+        table.shutting_down = true;
+        // Ownership survives shutdown until the worker has finalized. Retry
+        // must not race a draining worker, even in tests/embedded callers.
+        table.slots.values().cloned().collect()
+    };
     for slot in slots {
         let _ = slot.interrupt.send(());
-        if let Some(pid) = slot.pid.filter(|pid| *pid > 0) {
+        let mut process = slot.process.lock().unwrap_or_else(|err| err.into_inner());
+        process.stopped = true;
+        if let Some(pid) = process.pid.take().filter(|pid| *pid > 0) {
             claude_sdk::terminate_process_tree(pid);
         }
     }
@@ -84,6 +303,7 @@ pub fn launch(
     resume: Option<String>,
     fork: bool,
 ) -> Result<ResearchNode, String> {
+    let (registration, interrupt_rx) = SessionRegistration::register(&node.id)?;
     let resume = resume
         .map(|session_id| validate_session_id(&session_id, &node.adapter))
         .transpose()
@@ -92,8 +312,26 @@ pub fn launch(
             err
         })?;
     match node.adapter.as_str() {
-        "claude" => launch_claude(state, node, workspace, prompt, resume, fork),
-        "codex" | "grok" => launch_jsonl(state, node, workspace, prompt, resume, fork),
+        "claude" => launch_claude(
+            state,
+            node,
+            workspace,
+            prompt,
+            resume,
+            fork,
+            registration,
+            interrupt_rx,
+        ),
+        "codex" | "grok" => launch_jsonl(
+            state,
+            node,
+            workspace,
+            prompt,
+            resume,
+            fork,
+            registration,
+            interrupt_rx,
+        ),
         adapter => Err(format!("'{adapter}' is not a supported research agent")),
     }
 }
@@ -105,6 +343,8 @@ fn launch_claude(
     prompt: String,
     resume: Option<String>,
     fork: bool,
+    registration: Arc<SessionRegistration>,
+    interrupt_rx: std::sync::mpsc::Receiver<()>,
 ) -> Result<ResearchNode, String> {
     let adapter = ClaudeAdapter::new(state.config());
     let binary = adapter.ensure_binary_for_sdk().map_err(|err| {
@@ -148,29 +388,9 @@ fn launch_claude(
         return Ok(bound);
     }
 
-    let (interrupt_tx, interrupt_rx) = std::sync::mpsc::channel();
-    {
-        let mut map = match sessions().lock() {
-            Ok(map) => map,
-            Err(_) => {
-                let err = "research SDK session table poisoned".to_string();
-                let _ = state.fail_research_node(&node.id, err.clone());
-                state.prune_agent(&agent.id);
-                return Err(err);
-            }
-        };
-        map.insert(
-            node.id.clone(),
-            SessionSlot {
-                pid: None,
-                interrupt: interrupt_tx,
-            },
-        );
-    }
     let current = match state.research_node(&node.id) {
         Ok(current) => current,
         Err(err) => {
-            unregister(&node.id);
             state.prune_agent(&agent.id);
             return Err(err);
         }
@@ -179,7 +399,6 @@ fn launch_claude(
         if let Err(err) = state.finish_research_sdk_run(&node.id, &agent.id, false, None) {
             eprintln!("qmux: failed to preserve pre-thread research cancellation: {err}");
         }
-        unregister(&node.id);
         return Ok(current);
     }
 
@@ -205,10 +424,14 @@ fn launch_claude(
     let workspace_dir = PathBuf::from(&workspace.dir);
     let claude_version = version.display();
 
-    thread::Builder::new()
-        .name(format!("qmux-research-sdk-{node_id}"))
-        .spawn(move || {
+    start_worker(
+        state,
+        &node.id,
+        &agent.id,
+        registration,
+        move |registration| {
             run_session(
+                registration,
                 runtime_state,
                 node_id,
                 agent_id,
@@ -218,17 +441,8 @@ fn launch_claude(
                 interrupt_rx,
                 claude_version,
             );
-        })
-        .map_err(|err| {
-            let err = format!("failed to start research SDK thread: {err}");
-            if let Err(snapshot_err) =
-                state.finish_research_sdk_run(&node.id, &agent.id, false, Some(err.clone()))
-            {
-                eprintln!("qmux: failed to preserve research thread-start failure: {snapshot_err}");
-            }
-            unregister(&node.id);
-            err
-        })?;
+        },
+    )?;
 
     state.research_node(&node.id)
 }
@@ -255,6 +469,8 @@ fn launch_jsonl(
     prompt: String,
     resume: Option<String>,
     fork: bool,
+    registration: Arc<SessionRegistration>,
+    interrupt_rx: std::sync::mpsc::Receiver<()>,
 ) -> Result<ResearchNode, String> {
     let flavor = match node.adapter.as_str() {
         "codex" => JsonlFlavor::Codex,
@@ -325,33 +541,12 @@ fn launch_jsonl(
         return Ok(bound);
     }
 
-    let (interrupt_tx, interrupt_rx) = std::sync::mpsc::channel();
-    {
-        let mut map = match sessions().lock() {
-            Ok(map) => map,
-            Err(_) => {
-                let err = "research SDK session table poisoned".to_string();
-                let _ = state.fail_research_node(&node.id, err.clone());
-                state.prune_agent(&agent.id);
-                return Err(err);
-            }
-        };
-        map.insert(
-            node.id.clone(),
-            SessionSlot {
-                pid: None,
-                interrupt: interrupt_tx,
-            },
-        );
-    }
     let current = state.research_node(&node.id).map_err(|err| {
-        unregister(&node.id);
         state.prune_agent(&agent.id);
         err
     })?;
     if current.status.is_terminal() {
         let _ = state.finish_research_sdk_run(&node.id, &agent.id, false, None);
-        unregister(&node.id);
         return Ok(current);
     }
 
@@ -385,10 +580,14 @@ fn launch_jsonl(
     let node_id = node.id.clone();
     let agent_id = agent.id.clone();
     let initial_session_id = grok_session_id;
-    thread::Builder::new()
-        .name(format!("qmux-research-jsonl-{node_id}"))
-        .spawn(move || {
+    start_worker(
+        state,
+        &node.id,
+        &agent.id,
+        registration,
+        move |registration| {
             run_jsonl_session(
+                registration,
                 runtime_state,
                 node_id,
                 agent_id,
@@ -400,13 +599,9 @@ fn launch_jsonl(
                 initial_session_id,
                 interrupt_rx,
             );
-        })
-        .map_err(|err| {
-            let err = format!("failed to start {} research thread: {err}", flavor.label());
-            let _ = state.finish_research_sdk_run(&node.id, &agent.id, false, Some(err.clone()));
-            unregister(&node.id);
-            err
-        })?;
+        },
+    )?;
+
     state.research_node(&node.id)
 }
 
@@ -521,6 +716,7 @@ fn build_grok_headless_args(
 
 #[allow(clippy::too_many_arguments)]
 fn run_jsonl_session(
+    registration: &SessionRegistration,
     state: AppState,
     node_id: String,
     agent_id: String,
@@ -536,16 +732,22 @@ fn run_jsonl_session(
         JsonlFlavor::Codex => &[][..],
         JsonlFlavor::Grok => GROK_LAUNCH_ENVS,
     };
-    let mut process =
-        match JsonlProcess::spawn(&binary, &args, envs, &cwd, &stderr_log, flavor.label()) {
-            Ok(process) => process,
-            Err(err) => {
-                finish_jsonl_failed(&state, &node_id, &agent_id, flavor, err, &stderr_log);
-                unregister(&node_id);
-                return;
-            }
-        };
-    set_pid(&node_id, Some(process.pid()));
+    let mut process = match registration.spawn_child(
+        || {
+            let child =
+                JsonlProcess::spawn(&binary, &args, envs, &cwd, &stderr_log, flavor.label())?;
+            #[cfg(test)]
+            tests::after_child_spawn(&node_id, child.pid());
+            Ok(child)
+        },
+        |child| Some(child.pid()),
+    ) {
+        Ok(process) => process,
+        Err(err) => {
+            finish_jsonl_failed(&state, &node_id, &agent_id, flavor, err, &stderr_log);
+            return;
+        }
+    };
     let transcript_path = session_id.as_deref().and_then(|id| {
         (flavor == JsonlFlavor::Grok)
             .then(|| research_session_transcript_path(&cwd, id))
@@ -561,7 +763,6 @@ fn run_jsonl_session(
         ) {
             process.kill();
             finish_jsonl_failed(&state, &node_id, &agent_id, flavor, err, &stderr_log);
-            unregister(&node_id);
             return;
         }
     }
@@ -574,7 +775,6 @@ fn run_jsonl_session(
             Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 process.kill();
                 let _ = state.finish_research_sdk_run(&node_id, &agent_id, false, None);
-                unregister(&node_id);
                 return;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -585,7 +785,6 @@ fn run_jsonl_session(
             Err(err) => {
                 process.kill();
                 finish_jsonl_failed(&state, &node_id, &agent_id, flavor, err, &stderr_log);
-                unregister(&node_id);
                 return;
             }
             Ok(JsonlReceive::Value(value)) => {
@@ -615,7 +814,6 @@ fn run_jsonl_session(
                     Err(err) => {
                         process.kill();
                         finish_jsonl_failed(&state, &node_id, &agent_id, flavor, err, &stderr_log);
-                        unregister(&node_id);
                         return;
                     }
                 }
@@ -627,7 +825,6 @@ fn run_jsonl_session(
         Ok(status) => status,
         Err(err) => {
             finish_jsonl_failed(&state, &node_id, &agent_id, flavor, err, &stderr_log);
-            unregister(&node_id);
             return;
         }
     };
@@ -655,7 +852,6 @@ fn run_jsonl_session(
             flavor.label()
         );
     }
-    unregister(&node_id);
 }
 
 enum EventOutcome {
@@ -878,20 +1074,6 @@ fn map_jsonl_error(flavor: JsonlFlavor, err: String, stderr_log: &PathBuf) -> St
     }
 }
 
-fn unregister(node_id: &str) {
-    if let Ok(mut map) = sessions().lock() {
-        map.remove(node_id);
-    }
-}
-
-fn set_pid(node_id: &str, pid: Option<u32>) {
-    if let Ok(mut map) = sessions().lock()
-        && let Some(slot) = map.get_mut(node_id)
-    {
-        slot.pid = pid;
-    }
-}
-
 fn result_after_end_turn_stall() -> Duration {
     #[cfg(test)]
     {
@@ -904,6 +1086,7 @@ fn result_after_end_turn_stall() -> Duration {
 }
 
 fn run_session(
+    registration: &SessionRegistration,
     state: AppState,
     node_id: String,
     agent_id: String,
@@ -914,20 +1097,25 @@ fn run_session(
     claude_version: String,
 ) {
     let stderr_log = spec.stderr_log.clone();
-    let mut session = match ClaudeSdkSession::spawn(spec) {
+    let mut session = match registration.spawn_child(
+        || {
+            let child = ClaudeSdkSession::spawn(spec)?;
+            #[cfg(test)]
+            tests::after_child_spawn(&node_id, child.pid().unwrap());
+            Ok(child)
+        },
+        ClaudeSdkSession::pid,
+    ) {
         Ok(session) => session,
         Err(err) => {
             finish_failed(&state, &node_id, &agent_id, err, &stderr_log);
-            unregister(&node_id);
             return;
         }
     };
-    set_pid(&node_id, session.pid());
 
     if let Err(err) = session.write_initialize() {
         session.kill();
         finish_failed(&state, &node_id, &agent_id, err, &stderr_log);
-        unregister(&node_id);
         return;
     }
 
@@ -976,7 +1164,6 @@ fn run_session(
                 }
                 session.kill();
                 finish_failed(&state, &node_id, &agent_id, err, &stderr_log);
-                unregister(&node_id);
                 return;
             }
         };
@@ -994,7 +1181,6 @@ fn run_session(
                 format!("Claude Code initialize timed out (claude {claude_version})"),
                 &stderr_log,
             );
-            unregister(&node_id);
             return;
         }
 
@@ -1016,7 +1202,6 @@ fn run_session(
                 ),
                 &stderr_log,
             );
-            unregister(&node_id);
             return;
         }
 
@@ -1040,7 +1225,6 @@ fn run_session(
                     "qmux: failed to preserve watchdog-settled response for {node_id}: {err}"
                 );
             }
-            unregister(&node_id);
             return;
         }
 
@@ -1059,7 +1243,6 @@ fn run_session(
                         error.unwrap_or_else(|| "Claude Code initialize failed".to_string()),
                         &stderr_log,
                     );
-                    unregister(&node_id);
                     return;
                 }
                 if session.initialized && !sent_prompt && !cancelled {
@@ -1067,7 +1250,6 @@ fn run_session(
                     if let Err(err) = session.send_user_prompt(&prompt) {
                         session.kill();
                         finish_failed(&state, &node_id, &agent_id, err, &stderr_log);
-                        unregister(&node_id);
                         return;
                     }
                     sent_prompt = true;
@@ -1110,7 +1292,6 @@ fn run_session(
                     {
                         session.kill();
                         finish_failed(&state, &node_id, &agent_id, err, &stderr_log);
-                        unregister(&node_id);
                         return;
                     }
                 } else {
@@ -1121,7 +1302,6 @@ fn run_session(
                     {
                         session.kill();
                         finish_failed(&state, &node_id, &agent_id, err, &stderr_log);
-                        unregister(&node_id);
                         return;
                     }
                 }
@@ -1147,7 +1327,6 @@ fn run_session(
                     if let Err(err) = state.append_harness_turn(mapper.in_flight_turn()) {
                         session.kill();
                         finish_failed(&state, &node_id, &agent_id, err, &stderr_log);
-                        unregister(&node_id);
                         return;
                     }
                 }
@@ -1167,7 +1346,6 @@ fn run_session(
                 if let Err(err) = state.append_harness_turn(mapper.last_committed()) {
                     session.kill();
                     finish_failed(&state, &node_id, &agent_id, err, &stderr_log);
-                    unregister(&node_id);
                     return;
                 }
                 session.note_transcript_candidate(&workspace_dir);
@@ -1182,7 +1360,6 @@ fn run_session(
                 {
                     session.kill();
                     finish_failed(&state, &node_id, &agent_id, err, &stderr_log);
-                    unregister(&node_id);
                     return;
                 }
             }
@@ -1206,7 +1383,6 @@ fn run_session(
                     if let Err(err) = state.append_harness_turn(mapper.last_committed()) {
                         session.kill();
                         finish_failed(&state, &node_id, &agent_id, err, &stderr_log);
-                        unregister(&node_id);
                         return;
                     }
                 }
@@ -1246,7 +1422,6 @@ fn run_session(
                 if let Err(err) = outcome {
                     eprintln!("qmux: failed to preserve research SDK result for {node_id}: {err}");
                 }
-                unregister(&node_id);
                 return;
             }
             _ => {}
@@ -1256,7 +1431,6 @@ fn run_session(
     if cancelled {
         let _ = state.finish_research_sdk_run(&node_id, &agent_id, false, None);
     }
-    unregister(&node_id);
 }
 
 fn finish_failed(
@@ -1453,7 +1627,7 @@ impl TurnMapper {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::{
         AdapterConfigs, ClaudeAdapterConfig, CodexAdapterConfig, GrokAdapterConfig,
@@ -1476,6 +1650,388 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("qmux-research-sdk-{nanos}"));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    type SpawnHook = Box<dyn FnOnce(u32) + Send>;
+    static SPAWN_HOOKS: OnceLock<Mutex<HashMap<String, SpawnHook>>> = OnceLock::new();
+
+    fn hook(node: &str, hook: SpawnHook) {
+        SPAWN_HOOKS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .insert(node.into(), hook);
+    }
+
+    pub(super) fn after_child_spawn(node: &str, pid: u32) {
+        let hook = SPAWN_HOOKS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .remove(node);
+        if let Some(hook) = hook {
+            hook(pid);
+        }
+    }
+
+    static SNAPSHOT_HOOKS: OnceLock<Mutex<HashMap<String, Box<dyn FnOnce() + Send>>>> =
+        OnceLock::new();
+
+    pub(crate) fn before_snapshot(node: &str) {
+        let hook = SNAPSHOT_HOOKS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .remove(node);
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    fn ownership_fixture(adapter: &str) -> (PathBuf, AppState, GroupInfo, ResearchNode) {
+        let root = temp_dir();
+        let binary = root.join("local-provider");
+        fs::write(&binary, "#!/bin/sh\nif [ \"$1\" = -v ]; then echo '2.1.239 (Claude Code)'; exit; fi\nexec /bin/sleep 30\n").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let state = AppState::new(test_config_with_binaries(
+            root.clone(),
+            &binary,
+            &binary,
+            &binary,
+        ));
+        let group = test_group(&root, &workspace);
+        state.insert_group_after(group.clone(), None).unwrap();
+        let detail = state
+            .create_research_tree(CreateResearchTreeRequest {
+                prompt: "hello".into(),
+                title: None,
+                adapter: adapter.into(),
+                model: None,
+                effort: None,
+                group_id: group.id.clone(),
+            })
+            .unwrap();
+        (root, state, group, detail.nodes[0].clone())
+    }
+
+    fn bind_owned_agent(state: &AppState, group: &GroupInfo, node: &ResearchNode) -> String {
+        let agent = prepare_agent_workspace(
+            state,
+            PrepareAgentWorkspaceRequest {
+                group_id: Some(group.id.clone()),
+                base_repo: Some(group.dir.clone()),
+                base_ref: Some("HEAD".into()),
+                adapter: node.adapter.clone(),
+                model: None,
+                effort: None,
+                use_worktree: false,
+            },
+        )
+        .unwrap();
+        state.bind_research_node_harness(&node.id, &agent).unwrap();
+        agent.id
+    }
+
+    fn assert_process_gone(pid: u32) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while unsafe { libc::kill(pid as i32, 0) } == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            unsafe { libc::kill(pid as i32, 0) },
+            -1,
+            "child {pid} survived"
+        );
+    }
+
+    #[test]
+    fn ownership_worker_panic_reaps_child_settles_and_allows_retry() {
+        let _serial = RUNTIME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        for adapter in ["codex", "claude"] {
+            let (root, state, group, node) = ownership_fixture(adapter);
+            let (sent, received) = std::sync::mpsc::channel();
+            hook(
+                &node.id,
+                Box::new(move |pid| {
+                    sent.send(pid).unwrap();
+                    panic!("injected constructor-completion panic");
+                }),
+            );
+            launch(&state, &node, &group, "hello".into(), None, false).unwrap();
+            let pid = received.recv_timeout(Duration::from_secs(5)).unwrap();
+            let stopped = wait_for_session_stop(&node.id, Duration::from_secs(5));
+            assert_process_gone(pid);
+            assert!(stopped, "panicking worker leaked its registration");
+            assert_eq!(
+                state.research_node(&node.id).unwrap().status,
+                ResearchNodeStatus::Failed
+            );
+            assert!(state.reset_research_node_for_retry(&node.id).is_ok());
+            assert!(!sessions().is_poisoned());
+            fs::remove_dir_all(root).ok();
+        }
+    }
+
+    #[test]
+    fn ownership_shutdown_waits_for_spawn_publication_without_blocking_registry_or_model() {
+        let _serial = RUNTIME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let (root, state, group, node) = ownership_fixture("codex");
+        let (arrived, at_spawn) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        hook(
+            &node.id,
+            Box::new(move |pid| {
+                arrived.send(pid).unwrap();
+                released.recv_timeout(Duration::from_secs(5)).unwrap();
+            }),
+        );
+        launch(&state, &node, &group, "hello".into(), None, false).unwrap();
+        let pid = at_spawn.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let shutdown = thread::spawn(move || {
+            kill_all_sessions();
+            done_tx.send(()).unwrap();
+        });
+        // A drained registry would let shutdown finish while the child is
+        // untracked. It must instead wait for this spawn reservation.
+        let premature = done_rx.recv_timeout(Duration::from_millis(200)).is_ok();
+        let (responsive_tx, responsive_rx) = std::sync::mpsc::channel();
+        let responsive_state = state.clone();
+        let responsive_node = node.id.clone();
+        let probe = thread::spawn(move || {
+            assert!(session_registered(&responsive_node));
+            responsive_state
+                .cancel_research_node(&responsive_node)
+                .unwrap();
+            responsive_tx.send(()).unwrap();
+        });
+        let responsive = responsive_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        release.send(()).unwrap();
+        shutdown.join().unwrap();
+        probe.join().unwrap();
+        assert!(wait_for_session_stop(&node.id, Duration::from_secs(5)));
+        assert_process_gone(pid);
+        let rejected = SessionRegistration::register("after-shutdown").is_err();
+        // Shutdown is terminal in production; reset only for this serial test.
+        sessions().lock().unwrap().shutting_down = false;
+        assert!(
+            !premature,
+            "shutdown missed a child between spawn and publication"
+        );
+        assert!(responsive, "a blocked spawn held the registry/model lock");
+        assert!(rejected, "a fresh process could start after shutdown");
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn ownership_failed_worker_creation_keeps_retry_blocked_until_finalization() {
+        let _serial = RUNTIME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let (root, state, group, node) = ownership_fixture("codex");
+        let agent = bind_owned_agent(&state, &group, &node);
+        let (registration, _receiver) = SessionRegistration::register(&node.id).unwrap();
+        let result = start_worker_with(
+            &state,
+            &node.id,
+            &agent,
+            registration,
+            |_| panic!("failed spawn must never execute its worker"),
+            |worker| {
+                drop(worker); // Model Builder::spawn's failed-creation drop.
+                state.cancel_research_node(&node.id).unwrap();
+                assert!(session_registered(&node.id));
+                let error = state.reset_research_node_for_retry(&node.id).unwrap_err();
+                assert!(error.contains("still stopping"), "{error}");
+                Err(std::io::Error::other("injected thread creation failure"))
+            },
+        );
+        assert!(result.is_err());
+        assert!(!session_registered(&node.id));
+        assert_eq!(
+            state.research_node(&node.id).unwrap().status,
+            ResearchNodeStatus::Cancelled
+        );
+        assert!(state.agent(&agent).unwrap().is_none());
+        assert!(state.reset_research_node_for_retry(&node.id).is_ok());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn ownership_snapshot_finalization_blocks_retry_and_deletion_until_disk_commit() {
+        let _serial = RUNTIME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let (root, state, group, node) = ownership_fixture("codex");
+        let fake = write_fake_codex(&root);
+        fs::copy(fake, root.join("local-provider")).unwrap();
+        let (arrived, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        SNAPSHOT_HOOKS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .insert(
+                node.id.clone(),
+                Box::new(move || {
+                    arrived.send(()).unwrap();
+                    released.recv_timeout(Duration::from_secs(8)).unwrap();
+                }),
+            );
+        let bound = launch(&state, &node, &group, "hello".into(), None, false).unwrap();
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        let slot = sessions()
+            .lock()
+            .unwrap()
+            .slots
+            .get(&node.id)
+            .unwrap()
+            .clone();
+        assert!(
+            slot.process.lock().unwrap().pid.is_none(),
+            "reaped PID remained eligible for shutdown signalling"
+        );
+        state.cancel_research_node(&node.id).unwrap();
+        assert!(
+            state
+                .archive_research_tree(&node.tree_id)
+                .unwrap_err()
+                .contains("active runs")
+        );
+        assert!(
+            state
+                .remove_research_tree(&node.tree_id)
+                .unwrap_err()
+                .contains("active runs")
+        );
+        assert!(
+            state
+                .reset_research_node_for_retry(&node.id)
+                .unwrap_err()
+                .contains("still stopping")
+        );
+        release.send(()).unwrap();
+        assert!(wait_for_session_stop(&node.id, Duration::from_secs(5)));
+        assert!(
+            crate::research::read_response_snapshot(&root, &node.id)
+                .unwrap()
+                .is_some()
+        );
+        state.reset_research_node_for_retry(&node.id).unwrap();
+        assert!(
+            crate::research::read_response_snapshot(&root, &node.id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .finish_research_sdk_run(
+                    &node.id,
+                    bound.agent_id.as_deref().unwrap(),
+                    false,
+                    Some("late".into())
+                )
+                .is_err()
+        );
+        assert!(
+            crate::research::read_response_snapshot(&root, &node.id)
+                .unwrap()
+                .is_none()
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn ownership_preflight_registration_prevents_cancel_delete_and_duplicate_launch() {
+        let _serial = RUNTIME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let (root, state, _group, node) = ownership_fixture("codex");
+        let (owner, _receiver) = SessionRegistration::register(&node.id).unwrap();
+        state.cancel_research_node(&node.id).unwrap();
+        assert!(SessionRegistration::register(&node.id).is_err());
+        assert!(
+            state
+                .remove_research_tree(&node.tree_id)
+                .unwrap_err()
+                .contains("active runs")
+        );
+        assert!(
+            state
+                .reset_research_node_for_retry(&node.id)
+                .unwrap_err()
+                .contains("still stopping")
+        );
+        drop(owner);
+        state.remove_research_tree(&node.tree_id).unwrap();
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn ownership_worker_unwind_with_failed_snapshot_releases_owner_and_preserves_retry_data() {
+        let _serial = RUNTIME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let (root, state, group, node) = ownership_fixture("codex");
+        let agent = bind_owned_agent(&state, &group, &node);
+        let (registration, _receiver) = SessionRegistration::register(&node.id).unwrap();
+        fs::create_dir_all(root.join(".qmux")).unwrap();
+        let blocker = root.join(".qmux/research-responses");
+        fs::write(&blocker, "not a directory").unwrap();
+        start_worker(&state, &node.id, &agent, registration, |_| {
+            panic!("injected worker body panic");
+        })
+        .unwrap();
+        assert!(wait_for_session_stop(&node.id, Duration::from_secs(5)));
+        assert_eq!(
+            state.research_node(&node.id).unwrap().status,
+            ResearchNodeStatus::Failed
+        );
+        assert!(
+            state.agent(&agent).unwrap().is_some(),
+            "failed snapshot discarded live response data"
+        );
+        fs::remove_file(blocker).unwrap();
+        state.reset_research_node_for_retry(&node.id).unwrap();
+        assert!(state.agent(&agent).unwrap().is_none());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn ownership_late_worker_cannot_write_new_attempt_metadata_or_snapshot() {
+        let _serial = RUNTIME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let (root, state, group, node) = ownership_fixture("codex");
+        let old_agent = bind_owned_agent(&state, &group, &node);
+        state.cancel_research_node(&node.id).unwrap();
+        let reset = state.reset_research_node_for_retry(&node.id).unwrap();
+        let new_agent = bind_owned_agent(&state, &group, &reset);
+        let metadata = state.record_research_sdk_session(
+            &node.id,
+            &old_agent,
+            Some("old-session".into()),
+            None,
+        );
+        let finish =
+            state.finish_research_sdk_run(&node.id, &old_agent, false, Some("old failure".into()));
+        let current = state.research_node(&node.id).unwrap();
+        assert!(
+            metadata.is_err(),
+            "old worker changed new native-session metadata"
+        );
+        assert!(finish.is_err(), "old worker finalized a new attempt");
+        assert_eq!(current.agent_id, Some(new_agent));
+        assert_eq!(current.status, ResearchNodeStatus::Starting);
+        assert!(current.native_session_id.is_none());
+        assert!(current.response_snapshot_at.is_none());
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]

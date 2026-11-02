@@ -97,8 +97,8 @@ use turn_queue::{
     ReorderQueuedAgentTurnRequest, ReorderQueuedAgentTurnResult, SendNextQueuedAgentTurnResult,
     SubmitAgentTurnRequest, SubmitAgentTurnResult, debug_agent_input, move_queued_agent_turn,
     queue_delivery_agent_turn, queue_wait_agent_turn, remove_queued_agent_turn,
-    reorder_queued_agent_turn, send_next_queued_agent_turn, set_agent_typing, submit_agent_turn,
-    unpause_agent,
+    reorder_queued_agent_turn, send_next_queued_agent_turn, set_agent_typing_for_document,
+    submit_agent_turn, unpause_agent,
 };
 use workspace::{
     AgentInfo, AgentStatus, CreateGroupRequest, GroupInfo, LaunchOrigin, RepositoryInventory,
@@ -3426,8 +3426,15 @@ fn agent_set_typing(
     state: tauri::State<'_, AppState>,
     agent_id: String,
     typing: bool,
+    document: String,
+    sequence: u64,
 ) -> Result<SendNextQueuedAgentTurnResult, String> {
-    set_agent_typing(&state, &agent_id, typing)
+    set_agent_typing_for_document(&state, &agent_id, &document, sequence, typing)
+}
+
+#[tauri::command]
+fn agent_typing_document(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    state.agent_typing_document()
 }
 
 #[tauri::command]
@@ -3767,6 +3774,20 @@ fn prepare_main_webview_reload(app: Option<&tauri::AppHandle>) {
             startup.interface_loading();
         }
         human_browser::reset_all(app);
+        if let Some(state) = app.try_state::<AppState>() {
+            match state.invalidate_agent_typing_document() {
+                Ok(held) if !held.is_empty() => {
+                    // Native delivery can wait on the main thread. Invalidate on
+                    // this thread, but wake off-thread, without clearing again.
+                    let state = state.inner().clone();
+                    std::thread::spawn(move || {
+                        turn_queue::resume_after_typing_holds(&state, held);
+                    });
+                }
+                Ok(_) => {}
+                Err(err) => eprintln!("qmux: failed to invalidate typing document: {err}"),
+            }
+        }
     }
     let _ = native_terminal::prepare_for_webview_reload();
 }
@@ -3895,19 +3916,12 @@ fn restore_startup_session(app: &tauri::AppHandle, state: &AppState) -> Result<(
     // Re-level persisted nesting now that we know which panes actually
     // came back (exited panes are not respawned).
     state.normalize_pane_layout();
-    // Now that the surviving panes are known, sweep scrollback logs
-    // and trim scratch files no live pane owns — orphans a kill or an
-    // unrecovered pane left on disk holding raw terminal output.
-    // Backgrounded like the state-dir scratch sweep; the live pane-id
-    // set is captured up front and new panes self-heal a racing delete.
-    {
+    // Keep failed recovery descriptors too: losing a local runtime does not
+    // discard its history or a remote session that may still be running.
+    if let Ok(keep_pane_ids) = state.pane_scrollback_keep_ids() {
         let workspace_root = state.config().workspace_root.clone();
-        let live_pane_ids: std::collections::HashSet<String> = state
-            .list_panes()
-            .map(|panes| panes.into_iter().map(|pane| pane.id).collect())
-            .unwrap_or_default();
         std::thread::spawn(move || {
-            scrollback::remove_orphaned_scrollback(&workspace_root, &live_pane_ids);
+            scrollback::remove_orphaned_scrollback(&workspace_root, &keep_pane_ids);
         });
     }
     state.finish_startup_restore();
@@ -4302,6 +4316,7 @@ fn main() {
             agent_set_queued_turn_pause,
             agent_unpause,
             agent_set_typing,
+            agent_typing_document,
             agent_set_draft,
             agent_get_draft,
             interface_draft_get,

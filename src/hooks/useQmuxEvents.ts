@@ -657,31 +657,52 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
       }
     };
 
-    void listenToEvents((event) => {
-      if (disposed) {
-        return;
-      }
-      pendingEvents.push(event);
-      if (coalesceTimer === null) {
-        coalesceTimer = window.setTimeout(flushPendingEvents, EVENT_COALESCE_MS);
-      }
-    }).then((cleanup) => {
-      if (disposed) {
-        cleanup();
-      } else {
+    let retryTimer: number | null = null;
+    const retry = (operation: (delay: number) => void, delay: number) => {
+      if (disposed) return;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        operation(Math.min(delay * 2, 2_000));
+      }, delay);
+    };
+    const markReady = (delay: number) => {
+      void markEventsListenerReady().catch((error) => {
+        console.error("qmux: failed to mark backend events ready:", error);
+        retry(markReady, delay);
+      });
+    };
+    const subscribe = (delay: number) => {
+      void listenToEvents((event) => {
+        if (disposed) return;
+        pendingEvents.push(event);
+        if (coalesceTimer === null) {
+          coalesceTimer = window.setTimeout(flushPendingEvents, EVENT_COALESCE_MS);
+        }
+      }).then((cleanup) => {
+        if (disposed) {
+          cleanup();
+          return;
+        }
         unlisten = cleanup;
-        // Unblock the native shortcut classifiers: from here on an emitted
-        // terminal.shortcut / app.shortcut event actually reaches this hook.
-        void markEventsListenerReady().catch(() => undefined);
+        // Snapshot reads/attaches can proceed as soon as the listener exists.
+        // Retry the idempotent native shortcut handshake independently, without
+        // registering again or repeating App's ready/attachment effects.
+        markReady(100);
         onEventsReady();
-      }
-    });
+      }, (error) => {
+        console.error("qmux: failed to subscribe to backend events:", error);
+        retry(subscribe, delay);
+      });
+    };
+    subscribe(100);
 
     return () => {
       disposed = true;
       if (coalesceTimer !== null) {
         clearTimeout(coalesceTimer);
       }
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      pendingEvents.length = 0;
       unlisten?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

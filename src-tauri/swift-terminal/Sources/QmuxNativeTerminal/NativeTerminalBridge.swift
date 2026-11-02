@@ -271,9 +271,10 @@ public func qmuxNativeTerminalSetKeyboardOwner(
 }
 
 @_cdecl("qmux_native_terminal_set_web_pointer_claimed")
-public func qmuxNativeTerminalSetWebPointerClaimed(_ claimed: Int32) -> Int32 {
-    onTerminalMain {
-        NativeTerminalHost.shared.setWebPointerRoutingClaimed(claimed == 1) ? 1 : 0
+public func qmuxNativeTerminalSetWebPointerClaimed(_ mode: Int32) -> Int32 {
+    guard let claim = TerminalWebPointerClaim(rawValue: mode) else { return 0 }
+    return onTerminalMain {
+        NativeTerminalHost.shared.setWebPointerRoutingClaim(claim) ? 1 : 0
     }
 }
 

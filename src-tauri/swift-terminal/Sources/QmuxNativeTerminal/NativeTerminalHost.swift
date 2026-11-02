@@ -77,11 +77,7 @@ final class NativeTerminalHost {
     /// move whose claim lands one bridge call after the release.
     private var webViewHandoffGeneration: UInt64 = 0
     private var consumedAppShortcutKeyCodes: Set<UInt16> = []
-    private var webPointerRoutingClaimed = false
-    /// When true, the next pointer-up clears `webPointerRoutingClaimed`. Used for
-    /// mid-gesture drag claims (button already down when claimed). Sticky claims
-    /// such as open sidebar menus start with buttons up and stay until explicit release.
-    private var webPointerClaimClearsOnPointerUp = false
+    private var webPointerClaim = TerminalWebPointerClaim.released
     /// True while a pointer gesture that began over web content — an overlay
     /// region, chrome outside any pane rect, or a pane with pointer input
     /// disabled — is still in progress. Its drags and final release must keep
@@ -466,6 +462,18 @@ final class NativeTerminalHost {
         }
     }
 
+    func surfaceDidAttach(_ pane: NativeTerminalPane) {
+        // A queued callback must not commit a removed/replaced pane or fit the
+        // old frame while a newer layout is intentionally deferred.
+        guard panes[pane.paneID] === pane,
+              !clientDeferredGeometryPaneIDs.contains(pane.paneID),
+              !windowLiveResizeActive,
+              container?.inLiveResize != true,
+              pendingPaneFrames[pane.paneID] == nil
+        else { return }
+        applyGeometry(pane.view.frame, to: pane, forceFit: false)
+    }
+
     /// Assigning a TerminalView frame and fitting it recomputes Ghostty's grid,
     /// which resizes the PTY. Keep that work out of live resize loops.
     private func applyGeometry(
@@ -477,7 +485,12 @@ final class NativeTerminalHost {
         if frameChanged {
             pane.view.frame = frame
         }
-        if !pane.view.isHidden, frameChanged || forceFit {
+        // Vendor frame assignment already fits hidden views. The missing step
+        // was qmux's readiness commitment, also needed when the surface first
+        // becomes live after the frame was assigned.
+        let needsInitialFit = !pane.hasCommittedGeometry && pane.view.isSurfaceLive
+            && frame.width > 0 && frame.height > 0
+        if (!pane.view.isHidden && (frameChanged || forceFit)) || needsInitialFit {
             // fitToSize requests Ghostty's grid resize. Its IO thread coalesces
             // that work before reporting the backend size. The ioctl is not issued
             // here: NativeTerminalPane coalesces grid reports and flushes
@@ -488,7 +501,7 @@ final class NativeTerminalHost {
             // pane's actual size, so restored scrollback can replay without
             // being scrambled by a later reflow. Tell Rust, which parks
             // replay (pane_attach) until this moment.
-            if !pane.hasCommittedGeometry, frame.width > 0, frame.height > 0 {
+            if needsInitialFit {
                 pane.hasCommittedGeometry = true
                 pane.paneID.withCString { nativeTerminalDidCommitGeometry($0) }
             }
@@ -502,20 +515,13 @@ final class NativeTerminalHost {
         return reconcileDesiredKeyboardOwner()
     }
 
-    func setWebPointerRoutingClaimed(_ claimed: Bool) -> Bool {
+    func setWebPointerRoutingClaim(_ claim: TerminalWebPointerClaim) -> Bool {
         guard container != nil else { return false }
-        webPointerRoutingClaimed = claimed
-        if claimed {
-            // A left-down over a web overlay is initially visible to both the
-            // native monitor and WKWebView. Relinquish any optimistic Ghostty
-            // capture once React identifies that gesture as a web drag.
+        webPointerClaim = claim
+        if claim != .released {
+            // React can identify a web-owned gesture after the native monitor
+            // optimistically captured its initial press for Ghostty.
             pointerCapturePane = nil
-            // Drag claims arrive while a button is still down and should end with
-            // that gesture. Menu/overlay claims arrive between gestures and must
-            // survive subsequent clicks until the frontend releases them.
-            webPointerClaimClearsOnPointerUp = NSEvent.pressedMouseButtons != 0
-        } else {
-            webPointerClaimClearsOnPointerUp = false
         }
         return true
     }
@@ -617,8 +623,7 @@ final class NativeTerminalHost {
             pane.consumedShortcutKeyCodes.removeAll()
         }
         pointerCapturePane = nil
-        webPointerRoutingClaimed = false
-        webPointerClaimClearsOnPointerUp = false
+        webPointerClaim = .released
         webGesturePointerActive = false
         webOverlayRegions.removeAll()
         iframeShortcutFallbackActive = false
@@ -761,8 +766,7 @@ final class NativeTerminalHost {
         desiredKeyboardOwnerPaneID = nil
         consumedAppShortcutKeyCodes.removeAll()
         pointerCapturePane = nil
-        webPointerRoutingClaimed = false
-        webPointerClaimClearsOnPointerUp = false
+        webPointerClaim = .released
         webGesturePointerActive = false
         webOverlayRegions.removeAll()
         iframeShortcutFallbackActive = false
@@ -980,10 +984,7 @@ final class NativeTerminalHost {
         }
         pointerCapturePane = nil
         webGesturePointerActive = false
-        if webPointerClaimClearsOnPointerUp {
-            webPointerRoutingClaimed = false
-            webPointerClaimClearsOnPointerUp = false
-        }
+        webPointerClaim.retireGesture()
     }
 
     private func deferInterfaceHealthCheckIfNeeded(_ changedWindow: NSWindow? = nil) {
@@ -1642,14 +1643,7 @@ final class NativeTerminalHost {
         // routing (resize drags, open menus over the terminal, etc.). Returning
         // the event is essential: consuming it here would bypass DOM hit-testing
         // as soon as the cursor crossed a terminal surface.
-        if webPointerRoutingClaimed {
-            if isPointerUp(event), webPointerClaimClearsOnPointerUp {
-                // Safety net for a drag control unmounting before its cleanup
-                // invoke: a mouse gesture cannot remain active after button-up.
-                // Sticky claims (menus) intentionally survive until released.
-                webPointerRoutingClaimed = false
-                webPointerClaimClearsOnPointerUp = false
-            }
+        if webPointerClaim.routeToWeb(isPointerUp: isPointerUp(event)) {
             return event
         }
         if webGesturePointerActive {

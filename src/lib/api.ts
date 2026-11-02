@@ -1,6 +1,7 @@
+import { createAgentTypingReporter } from "./agentTyping";
 import { trackRemoteStartup, recordRemoteStartup, reconcileRemoteReservation, forgetRemoteStartup } from "./remoteStartup";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke, transformCallback } from "@tauri-apps/api/core";
+import { listen, type Event, type UnlistenFn } from "@tauri-apps/api/event";
 import type { JournalEntry, RecentActivityPage } from "./journal";
 import type { PaneLayoutItem } from "./paneTree";
 import type { ResearchFolderState } from "./researchFolders";
@@ -1016,8 +1017,17 @@ export function getAgentDeliveryDebug(agentId: string) {
 
 /** Marks/clears that the user is actively typing for an agent, so the backend holds
  *  off auto-draining its queue. Clearing drains a held turn if the agent is idle. */
+// Keep ownership/sequence across React remounts and Vite module replacement. A
+// full document navigation gets a fresh global and a fresh backend generation.
+const typingGlobal = globalThis as typeof globalThis & {
+  __qmuxTypingReporter?: ReturnType<typeof createAgentTypingReporter<SendNextQueuedAgentTurnResult>>;
+};
 export function setAgentTyping(agentId: string, typing: boolean) {
-  return invoke<SendNextQueuedAgentTurnResult>("agent_set_typing", { agentId, typing });
+  typingGlobal.__qmuxTypingReporter ??= createAgentTypingReporter(
+    () => invoke<string>("agent_typing_document"),
+    (update) => invoke<SendNextQueuedAgentTurnResult>("agent_set_typing", { ...update }),
+  );
+  return typingGlobal.__qmuxTypingReporter(agentId, typing);
 }
 
 /** Opens an http(s)/mailto URL in the user's default external browser/mail client. */
@@ -1373,10 +1383,22 @@ export function setNativeTerminalIframeShortcutFallback(active: boolean) {
   return invoke<void>("native_terminal_set_iframe_shortcut_fallback", { active });
 }
 
-let nativeTerminalWebPointerClaims = 0;
+/** Live claimants by kind. A gesture claim belongs to one pointer gesture and
+ * native retires it on pointer-up as a safety net; an overlay claim (menu,
+ * dialog, reader) is sticky until released. */
+const nativeTerminalWebPointerClaims = { gesture: 0, overlay: 0 };
 let nativeTerminalWebPointerUpdate: Promise<void> = Promise.resolve();
 
-function queueNativeTerminalWebPointerClaim(claimed: boolean) {
+function publishNativeTerminalWebPointerClaims() {
+  const claimed =
+    nativeTerminalWebPointerClaims.gesture + nativeTerminalWebPointerClaims.overlay > 0;
+  // The kind is explicit rather than inferred natively from whether a button
+  // is down when the call lands: a menu opened by `contextmenu` (fired on
+  // right mouse-down) is an overlay, not a gesture.
+  queueNativeTerminalWebPointerClaim(claimed, nativeTerminalWebPointerClaims.overlay > 0);
+}
+
+function queueNativeTerminalWebPointerClaim(claimed: boolean, sticky: boolean) {
   // Preserve start/end order even when a very short drag releases before the
   // first invoke has completed. The claim is global native state — a dropped
   // update (a release especially) leaves every terminal mouse-dead until some
@@ -1389,7 +1411,7 @@ function queueNativeTerminalWebPointerClaim(claimed: boolean) {
     .then(async () => {
       for (let attempt = 0; ; attempt += 1) {
         try {
-          await invoke<void>("native_terminal_set_web_pointer_claimed", { claimed });
+          await invoke<void>("native_terminal_set_web_pointer_claimed", { claimed, sticky });
           return;
         } catch (err) {
           if (attempt >= 2) {
@@ -1402,18 +1424,12 @@ function queueNativeTerminalWebPointerClaim(claimed: boolean) {
     .catch(() => undefined);
 }
 
-/**
- * Temporarily gives WKWebView every pointer event, including events whose
- * coordinates overlap a native terminal surface. Used for mid-gesture drag
- * controls and for sticky overlays (sidebar menus) that open over the terminal.
- * Claims are reference-counted so independently mounted claimants cannot
- * release each other's capture. Call the returned function to release.
- */
-export function claimNativeTerminalPointerForWebDrag(): () => void {
-  nativeTerminalWebPointerClaims += 1;
-  if (nativeTerminalWebPointerClaims === 1) {
-    queueNativeTerminalWebPointerClaim(true);
-  }
+function claimNativeTerminalPointer(kind: "gesture" | "overlay"): () => void {
+  nativeTerminalWebPointerClaims[kind] += 1;
+  // Publish on every acquisition, not just 0 -> 1: native may have retired an
+  // earlier gesture claim on its pointer-up while that claimant is still
+  // counted here, and a new claimant must re-assert the claim.
+  publishNativeTerminalWebPointerClaims();
 
   let released = false;
   return () => {
@@ -1421,11 +1437,36 @@ export function claimNativeTerminalPointerForWebDrag(): () => void {
       return;
     }
     released = true;
-    nativeTerminalWebPointerClaims = Math.max(0, nativeTerminalWebPointerClaims - 1);
-    if (nativeTerminalWebPointerClaims === 0) {
-      queueNativeTerminalWebPointerClaim(false);
+    nativeTerminalWebPointerClaims[kind] = Math.max(0, nativeTerminalWebPointerClaims[kind] - 1);
+    const remaining =
+      nativeTerminalWebPointerClaims.gesture + nativeTerminalWebPointerClaims.overlay;
+    // Republish when the last claim goes, or when the last overlay goes and
+    // gestures remain (the claim becomes retire-on-pointer-up again).
+    if (remaining === 0 || (kind === "overlay" && nativeTerminalWebPointerClaims.overlay === 0)) {
+      publishNativeTerminalWebPointerClaims();
     }
   };
+}
+
+/**
+ * Temporarily gives WKWebView every pointer event of the current pointer
+ * gesture, including events whose coordinates overlap a native terminal
+ * surface. For drag controls claimed on pointerdown; native retires the
+ * claim on pointer-up if the release never arrives. Claims are
+ * reference-counted so independently mounted claimants cannot release each
+ * other's capture. Call the returned function to release.
+ */
+export function claimNativeTerminalPointerForWebDrag(): () => void {
+  return claimNativeTerminalPointer("gesture");
+}
+
+/**
+ * Like claimNativeTerminalPointerForWebDrag, for web UI that covers the
+ * terminal across many gestures (menus, dialogs, reader mode). The claim is
+ * sticky natively and survives pointer-up until released.
+ */
+export function claimNativeTerminalPointerForWebOverlay(): () => void {
+  return claimNativeTerminalPointer("overlay");
 }
 
 /** Positions the opaque native backstop under the terminal stage, so transient
@@ -1607,8 +1648,37 @@ export function setPreventSleep(active: boolean) {
   return invoke<void>("app_set_prevent_sleep", { active });
 }
 
-export function listenToEvents(onEvent: (event: QmuxEvent) => void): Promise<UnlistenFn> {
-  return listen<QmuxEvent>("qmux-event", (event) => onEvent(event.payload));
+export async function listenToEvents(onEvent: (event: QmuxEvent) => void): Promise<UnlistenFn> {
+  // Tauri's listen() registers a transformCallback before IPC, but does not
+  // release it when registration rejects. Own that boundary so retries cannot
+  // retain an orphan callback (and its entire App closure) on every failure.
+  const event = "qmux-event";
+  // unregisterCallback is the SDK's runtime API (also used by Channel), but
+  // is not exported in its TypeScript surface. Keep that dependency local.
+  const callbacks = (window as unknown as {
+    __TAURI_INTERNALS__: { unregisterCallback(id: number): void };
+  }).__TAURI_INTERNALS__;
+  const handler = transformCallback<Event<QmuxEvent>>((event) => onEvent(event.payload));
+  let eventId: number;
+  try {
+    eventId = await invoke<number>("plugin:event|listen", {
+      event, target: { kind: "Any" }, handler,
+    });
+  } catch (error) {
+    callbacks.unregisterCallback(handler);
+    throw error;
+  }
+  let closed = false;
+  return () => {
+    if (closed) return;
+    closed = true;
+    // Drop the JS callback even if backend unlisten rejects during navigation.
+    callbacks.unregisterCallback(handler);
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(event, eventId);
+    void invoke("plugin:event|unlisten", { event, eventId }).catch((error) => {
+      console.error("qmux: failed to remove backend event listener:", error);
+    });
+  };
 }
 
 /**

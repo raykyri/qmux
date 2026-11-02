@@ -4,12 +4,13 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { createPortal } from "react-dom";
 import {
-  claimNativeTerminalPointerForWebDrag,
+  claimNativeTerminalPointerForWebOverlay,
   deleteSavedPrompt,
   listSavedPrompts,
   saveSavedPrompt,
@@ -114,6 +115,44 @@ export default function PromptLibraryMenu({
   const [editContent, setEditContent] = useState("");
   const [editScope, setEditScope] = useState<PromptScope>("global");
   const [busy, setBusy] = useState(false);
+  // Each committed project/composer lifetime owns its reads and mutation UI.
+  // A → B → A gets a new owner even though the directory is equal again.
+  const owner = useMemo(
+    () => ({ active: false, generation: 0, load: 0, mutation: null as object | null }),
+    [projectDir, agentId],
+  );
+  const dialogRef = useRef<Dialog | null>(null);
+  useLayoutEffect(() => {
+    owner.active = true;
+    owner.generation += 1;
+    setPrompts(null);
+    setHasProjectScope(Boolean(projectDir));
+    setError(null);
+    setDialogError(null);
+    setBusy(false);
+    setOpen(false);
+    setDialog(null);
+    dialogRef.current = null;
+    return () => {
+      owner.active = false;
+      owner.load += 1;
+      owner.mutation = null;
+    };
+  }, [owner, projectDir]);
+
+  // External prompt actions can replace a dialog while its IPC is pending.
+  // The backend operation still completes, but no longer owns this dialog.
+  const replaceDialog = useCallback(
+    (next: Dialog | null) => {
+      if (!owner.active) return;
+      owner.mutation = null;
+      setBusy(false);
+      setDialogError(null);
+      dialogRef.current = next;
+      setDialog(next);
+    },
+    [owner],
+  );
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -136,19 +175,24 @@ export default function PromptLibraryMenu({
     // body and covers the terminal stage. App cannot see this component-local
     // dialog in nativeTerminalInputBlocked, so keep its pointer gesture in the
     // webview instead of letting Ghostty consume the button release.
-    return claimNativeTerminalPointerForWebDrag();
+    return claimNativeTerminalPointerForWebOverlay();
   }, [deleteDialogOpen]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (generation = owner.generation) => {
+    // Reject obsolete callers before issuing a read, not just its response.
+    if (!owner.active || owner.generation !== generation) return;
+    const request = ++owner.load;
     try {
       const library = await listSavedPrompts(projectDir);
+      if (!owner.active || owner.load !== request) return;
       setPrompts(library.prompts);
       setHasProjectScope(library.hasProjectScope);
       setError(null);
     } catch (err) {
+      if (!owner.active || owner.load !== request) return;
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [projectDir]);
+  }, [owner, projectDir]);
 
   const openMenu = () => {
     setView({ kind: "list" });
@@ -160,27 +204,29 @@ export default function PromptLibraryMenu({
   };
 
   const openEditor = (original: SavedPrompt | null, scope?: PromptScope) => {
+    if (!owner.active) return;
     setEditName(original?.name ?? "");
     setEditContent(original?.content ?? "");
     setEditScope(original?.scope ?? scope ?? "global");
     setDialogError(null);
-    setDialog({ kind: "editor", original });
+    replaceDialog({ kind: "editor", original });
   };
 
   useEffect(() => {
     if (!agentId) return;
     return listenToPromptAction(agentId, ({ action, prompt, returnFocusTo }) => {
+      if (!owner.active) return;
       dialogReturnFocusRef.current = returnFocusTo;
       dialogFallbackFocusRef.current = returnFocusTo.closest(".turn-timeline");
       setDialogError(null);
       if (action === "edit") {
         openEditor(prompt);
       } else {
-        setDialog({ kind: "delete", prompt });
+        replaceDialog({ kind: "delete", prompt });
       }
       void refresh();
     });
-  }, [agentId, refresh]);
+  }, [agentId, owner, refresh, replaceDialog]);
 
   // Composer and sent-message menus can open the editor dialog with reusable
   // text. Composer drafts lock to Global; sent messages merely default there.
@@ -189,6 +235,7 @@ export default function PromptLibraryMenu({
       return;
     }
     return listenToSaveDraftAsPrompt(agentId, (text, lockToGlobal) => {
+      if (!owner.active) return;
       setOpen(true);
       setView({ kind: "list" });
       setSearch("");
@@ -198,28 +245,14 @@ export default function PromptLibraryMenu({
       setEditContent(text.trim());
       setEditScope("global");
       setDialogError(null);
-      setDialog({
+      replaceDialog({
         kind: "editor",
         original: null,
         ...(lockToGlobal ? { lockedScope: "global" as const } : {}),
       });
       void refresh();
     });
-  }, [agentId, refresh]);
-
-  // A pane switch (e.g. ⌘1–9) can land on a different project while the popover
-  // is open. The listed prompts would then belong to the old project while
-  // save/delete target the new one — close instead, so the next open loads the
-  // right store. Ref-compared so the effect only fires on a real project
-  // change, not on open/close or unrelated re-renders.
-  const openProjectDirRef = useRef(projectDir);
-  useEffect(() => {
-    if (openProjectDirRef.current !== projectDir) {
-      openProjectDirRef.current = projectDir;
-      setOpen(false);
-      setDialog(null);
-    }
-  }, [projectDir]);
+  }, [agentId, owner, refresh, replaceDialog]);
 
   // Close on an outside click. Escape steps back to the list from the fill view
   // (so half-typed values aren't lost to a reflexive Escape) and closes from the
@@ -267,7 +300,7 @@ export default function PromptLibraryMenu({
   // backstop cannot see this component-local dialog. Hand focus somewhere
   // real so a focusin re-samples: the popover's search field when it is
   // still up, else the trigger that owns the whole flow. A project change is
-  // different: the effect above closes stale UI while a pane switch is moving
+  // different: the ownership reset closes stale UI while a pane switch is moving
   // focus to the new terminal, so never steal focus back in that case.
   const dialogWasOpenRef = useRef(false);
   const dialogProjectDirRef = useRef(projectDir);
@@ -362,8 +395,10 @@ export default function PromptLibraryMenu({
 
   const saveEditor = async () => {
     if (
+      !owner.active ||
+      owner.mutation ||
       dialog?.kind !== "editor" ||
-      busy ||
+      dialogRef.current !== dialog ||
       prompts === null ||
       editContent.trim().length === 0 ||
       promptNameError(editName, prompts, dialog.original)
@@ -372,6 +407,10 @@ export default function PromptLibraryMenu({
     }
     const content = editContent.trim();
     const name = slugifyPromptName(editName);
+    const operation = { generation: owner.generation };
+    owner.mutation = operation;
+    const ownsOperation = () => owner.active && owner.mutation === operation;
+    setDialogError(null);
     setBusy(true);
     try {
       const original = dialog.original;
@@ -386,19 +425,31 @@ export default function PromptLibraryMenu({
         original ? original.modifiedMs : null,
       );
       notifyPromptLibraryChanged();
-      await refresh();
-      setDialog(null);
+      await refresh(operation.generation);
+      if (ownsOperation()) replaceDialog(null);
     } catch (err) {
-      setDialogError(err instanceof Error ? err.message : String(err));
+      if (ownsOperation()) setDialogError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (ownsOperation()) {
+        owner.mutation = null;
+        setBusy(false);
+      }
     }
   };
 
   const confirmDelete = async () => {
-    if (dialog?.kind !== "delete" || busy) {
+    if (
+      !owner.active ||
+      owner.mutation ||
+      dialog?.kind !== "delete" ||
+      dialogRef.current !== dialog
+    ) {
       return;
     }
+    const operation = { generation: owner.generation };
+    owner.mutation = operation;
+    const ownsOperation = () => owner.active && owner.mutation === operation;
+    setDialogError(null);
     setBusy(true);
     try {
       await deleteSavedPrompt(
@@ -409,17 +460,20 @@ export default function PromptLibraryMenu({
         dialog.prompt.modifiedMs,
       );
       notifyPromptLibraryChanged();
-      await refresh();
-      setDialog(null);
+      await refresh(operation.generation);
+      if (ownsOperation()) replaceDialog(null);
     } catch (err) {
-      setDialogError(err instanceof Error ? err.message : String(err));
+      if (ownsOperation()) setDialogError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (ownsOperation()) {
+        owner.mutation = null;
+        setBusy(false);
+      }
     }
   };
 
   const movePrompt = async (source: { scope: PromptScope; name: string }, target: PromptScope) => {
-    if (busy || source.scope === target) {
+    if (!owner.active || owner.mutation || source.scope === target) {
       return;
     }
     const prompt = (prompts ?? []).find(
@@ -428,6 +482,9 @@ export default function PromptLibraryMenu({
     if (!prompt) {
       return;
     }
+    const operation = { generation: owner.generation };
+    owner.mutation = operation;
+    const ownsOperation = () => owner.active && owner.mutation === operation;
     setBusy(true);
     try {
       const collision = (prompts ?? []).some(
@@ -446,12 +503,14 @@ export default function PromptLibraryMenu({
         prompt.modifiedMs,
       );
       notifyPromptLibraryChanged();
-      setError(null);
-      await refresh();
+      await refresh(operation.generation);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (ownsOperation()) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (ownsOperation()) {
+        owner.mutation = null;
+        setBusy(false);
+      }
     }
   };
 
@@ -521,7 +580,7 @@ export default function PromptLibraryMenu({
         onEdit={() => openEditor(prompt)}
         onDelete={() => {
           setDialogError(null);
-          setDialog({ kind: "delete", prompt });
+          replaceDialog({ kind: "delete", prompt });
         }}
       />
     </div>
@@ -652,8 +711,8 @@ export default function PromptLibraryMenu({
     ) : null;
 
   const closeDialog = () => {
-    if (!busy) {
-      setDialog(null);
+    if (!owner.mutation) {
+      replaceDialog(null);
     }
   };
 
@@ -690,6 +749,7 @@ export default function PromptLibraryMenu({
             type="text"
             className="prompt-library-search prompt-library-name-input"
             value={editName}
+            disabled={busy}
             autoFocus
             autoComplete="off"
             spellCheck={false}
@@ -714,6 +774,7 @@ export default function PromptLibraryMenu({
                 key={scope}
                 type="button"
                 role="radio"
+                disabled={busy}
                 aria-checked={editScope === scope}
                 className={`control-button prompt-library-scope-option${
                   editScope === scope ? " is-active" : ""
@@ -732,13 +793,18 @@ export default function PromptLibraryMenu({
             className="prompt-library-editor prompt-editor-dialog-textarea"
             aria-label="Prompt"
             value={editContent}
+            disabled={busy}
             rows={3}
             placeholder={"Review {target} for correctness bugs…"}
             onChange={(event) => setEditContent(event.target.value)}
           />
         </div>
-        {dialogError || (prompts === null && error) ? (
-          <div className="prompt-library-error">{dialogError ?? error}</div>
+        {dialogError ? <div className="prompt-library-error">{dialogError}</div> : null}
+        {prompts === null && error ? (
+          <div className="prompt-library-error">
+            {error}
+            <Button onClick={() => void refresh()}>Retry</Button>
+          </div>
         ) : null}
         <DialogActions>
           <Button onClick={closeDialog}>Cancel</Button>
@@ -822,7 +888,12 @@ export default function PromptLibraryMenu({
                   : { left: -9999, top: -9999 }
               }
             >
-              {error ? <div className="prompt-library-error">{error}</div> : null}
+              {error ? (
+                <div className="prompt-library-error">
+                  {error}
+                  <Button onClick={() => void refresh()}>Retry</Button>
+                </div>
+              ) : null}
               {view.kind === "list" ? listView : fillView}
             </div>,
             document.body,

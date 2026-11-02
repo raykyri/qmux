@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ComposerDrafts, remainingComposerDraft } from "../../lib/composerDrafts";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, Check, ChevronDown, Copy, ExternalLink, Highlighter, LoaderCircle, MoreHorizontal, Pencil, RefreshCw, ScrollText, Share2, Terminal, Trash2, Wrench, X } from "lucide-react";
 import {
@@ -61,6 +62,8 @@ import {
   isResearchNodeSelectionChange,
   pruneResearchNavigationNodes,
   recordResearchFollowupDraft,
+  subscribeResearchDraftCompletion,
+  publishResearchDraftCompletion,
   recordResearchScrollPosition,
   researchNavigationStore,
   restoreResearchScrollPosition,
@@ -1645,6 +1648,8 @@ const ThreadSegment = memo(function ThreadSegment({
   );
 }, threadSegmentPropsEqual);
 
+const researchSubmissions = new ComposerDrafts();
+
 function ResearchDocument({
   detail,
   treeTitle,
@@ -1692,7 +1697,8 @@ function ResearchDocument({
   // rather than as a tab strip above the field.
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [modeMenuPos, setModeMenuPos] = useState<PanePopoverPlacement | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const submitting = useSyncExternalStore(researchSubmissions.subscribe,
+    () => researchSubmissions.read(detail?.tree.id ?? "").busy);
   // The node whose in-place retry request is in flight (id-stable relaunch of
   // a failed/cancelled run), or null. One at a time is plenty: the control
   // that started it shows the busy state, every other retry control disables.
@@ -1794,6 +1800,21 @@ function ResearchDocument({
     clientY: number;
   } | null>(null);
   const navigationRef = useRef(researchNavigationStore());
+  const mountedTreeRef = useRef<string | null>(treeId);
+  useLayoutEffect(() => {
+    mountedTreeRef.current = treeId;
+    return () => { mountedTreeRef.current = null; };
+  }, [treeId]);
+  useEffect(() => subscribeResearchDraftCompletion((event) => {
+    if (event.treeId !== treeIdRef.current) return;
+    const currentAsk = askRef.current;
+    if (event.nodeId === null) {
+      if (!currentAsk) setFollowup(event.text);
+    } else if (currentAsk?.nodeId === event.nodeId && currentAsk.anchor === event.anchor) {
+      setFollowup(event.text);
+      if (!event.text) setAsk(null);
+    }
+  }), []);
   const navigationPersistTimerRef = useRef<number | null>(null);
   const selectedNodeIdRef = useRef(selectedNodeId);
   const treeIdRef = useRef(treeId);
@@ -4306,6 +4327,8 @@ function ResearchDocument({
       return;
     }
     const navigation = (navigationRef.current[treeId] ??= { scrollByNode: {} });
+    const existing = navigation.askByNode?.[ask.nodeId];
+    if (existing?.anchor === ask.anchor && existing.text === followup) return;
     (navigation.askByNode ??= {})[ask.nodeId] = {
       anchor: ask.anchor,
       text: followup,
@@ -4474,28 +4497,53 @@ function ResearchDocument({
     if (inline && !canContinueThread(detail.nodes, target)) {
       return;
     }
-    setSubmitting(true);
+    const submissionTreeId = detail.tree.id;
+    const navigation = navigationRef.current[submissionTreeId];
+    const submitted = askState
+      ? navigation?.askByNode?.[askState.nodeId]
+      : navigation?.followupDraft;
+    const originNodeId = selectedNodeId;
+    if (!researchSubmissions.begin(submissionTreeId)) return;
     try {
       const child = await onFork(target.id, prompt, null, askState?.anchor ?? null, inline);
-      const navigation = navigationRef.current[detail.tree.id];
-      if (navigation) {
-        recordResearchFollowupDraft(navigation, "", followupMode);
+      // Read the shared latest revision, including edits in a remounted document.
+      // Never re-create a pruned/replaced navigation entry or delete a new ask.
+      if (navigation && navigationRef.current[submissionTreeId] === navigation && submitted) {
+        const current = askState
+          ? navigation.askByNode?.[askState.nodeId]
+          : navigation.followupDraft;
+        const sameComposer = !askState ||
+          (current && "anchor" in current && current.anchor === askState.anchor);
+        if (current && sameComposer) {
+          const remaining = remainingComposerDraft(current, submitted);
+          if (askState) {
+            if (remaining) {
+              navigation.askByNode![askState.nodeId] = {
+                ...navigation.askByNode![askState.nodeId],
+                text: remaining,
+              };
+            } else {
+              delete navigation.askByNode![askState.nodeId];
+            }
+          } else {
+            recordResearchFollowupDraft(navigation, remaining, navigation.followupDraft!.mode);
+          }
+          publishResearchDraftCompletion({
+            treeId: submissionTreeId,
+            nodeId: askState?.nodeId ?? null,
+            anchor: askState?.anchor ?? null,
+            text: remaining,
+          });
+        }
       }
-      setFollowup("");
-      if (askState) {
-        clearSavedAsk(askState.nodeId);
-        setAsk(null);
-      }
-      if (inline) {
-        // The reader stays put — the thread is one page. The new segment
-        // appears at the tail when the refreshed detail lands; bring it into
-        // view then.
+      if (inline && mountedTreeRef.current === submissionTreeId &&
+          selectedNodeIdRef.current === originNodeId && !askRef.current) {
         pendingScrollNodeIdRef.current = child.id;
       }
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
+      researchSubmissions.end(submissionTreeId);
     }
   }
 

@@ -722,6 +722,16 @@ fn transcript_lifecycle_agent_event(
     ) {
         return Ok(None);
     }
+    // Parent completion must honor the same live-child guard as adapter Stop
+    // hooks. Do this before touching send tracking or advancing queues/waiters.
+    // A child stop alone is not a parent completion: adapters may still need a
+    // synthesis turn. Do not recover this marker by scanning historical records;
+    // safe deferral needs current-turn identity shared by the hook and tail paths.
+    if lifecycle_event == TranscriptLifecycleEvent::TurnCompleted
+        && state.agent_has_active_subagents(agent_id)?
+    {
+        return Ok(None);
+    }
     // If a normal Stop/idle hook already drained a queued turn, a late transcript
     // abort or completion marker belongs to the previous turn. Do not drain again
     // while that queued send is still waiting for its prompt-submit echo.
@@ -3497,6 +3507,86 @@ mod tests {
         assert!(state.transcript_tail_is_current("agent-1", "/tmp/rotated.jsonl", third));
         state.clear_transcript_tail("agent-1", "/tmp/rotated.jsonl", third);
         assert!(!state.transcript_tail_is_current("agent-1", "/tmp/rotated.jsonl", third));
+    }
+
+    #[test]
+    fn issue10_completion_preserves_working_status_while_children_live() {
+        for status in [
+            AgentStatus::Starting,
+            AgentStatus::Running,
+            AgentStatus::AwaitingPermission,
+        ] {
+            let state = test_state();
+            state.insert_agent(sample_agent(status)).unwrap();
+            state
+                .agent_subagent_started("agent-1", Some("child"))
+                .unwrap();
+            let event = transcript_lifecycle_agent_event(
+                &state,
+                "agent-1",
+                "/tmp/session.jsonl",
+                TranscriptLifecycleEvent::TurnCompleted,
+            )
+            .unwrap();
+            assert!(
+                event.is_none(),
+                "completion with a live child must not settle {status:?}"
+            );
+            assert_eq!(state.agent("agent-1").unwrap().unwrap().status, status);
+        }
+    }
+
+    #[test]
+    fn issue10_interruption_still_holds_queue_with_live_children() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::AwaitingPermission))
+            .unwrap();
+        state
+            .agent_subagent_started("agent-1", Some("child"))
+            .unwrap();
+        state
+            .enqueue_agent_turn("agent-1", "follow-up".into())
+            .unwrap();
+        let event = transcript_lifecycle_agent_event(
+            &state,
+            "agent-1",
+            "/tmp/session.jsonl",
+            TranscriptLifecycleEvent::Interrupted,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(event.event_type, "agent.interrupted");
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(agent.status, AgentStatus::AwaitingInput);
+        assert!(agent.paused);
+        assert_eq!(
+            state.list_agent_turn_queue("agent-1").unwrap(),
+            vec!["follow-up"]
+        );
+    }
+
+    #[test]
+    fn issue10_child_guard_does_not_discard_hookless_send_tracking() {
+        let state = test_state();
+        state
+            .insert_agent(sample_agent(AgentStatus::Running))
+            .unwrap();
+        state.agent_subagent_started("agent-1", None).unwrap();
+        state
+            .record_agent_send("agent-1", "/compact".into(), AgentSendSource::QueuedTurn)
+            .unwrap();
+        assert!(
+            transcript_lifecycle_agent_event(
+                &state,
+                "agent-1",
+                "/tmp/session.jsonl",
+                TranscriptLifecycleEvent::TurnCompleted
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(state.outstanding_agent_sends("agent-1").unwrap().len(), 1);
     }
 
     fn test_state() -> AppState {

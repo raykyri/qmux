@@ -31,6 +31,7 @@ const props = {
   paneId: "pane-a",
   url: "https://example.com/",
   reloadNonce: 0,
+  navigationState: { settledRevision: null as number | null, acknowledgedRevision: 0 },
   sandbox: false,
   bodyFontId: "system",
   initialPreviewScroll: null,
@@ -59,6 +60,8 @@ afterEach(async () => {
   await act(() => root.unmount());
   await hideAllHumanBrowsers();
   clearMocks();
+  props.navigationState.settledRevision = null;
+  props.navigationState.acknowledgedRevision = 0;
   root = createRoot(container);
 });
 after(async () => {

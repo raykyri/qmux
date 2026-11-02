@@ -26,6 +26,59 @@ struct Event {
     notification: Value,
 }
 
+// The cutoff is an enqueue filename, never a wall clock. While disconnected
+// it can grow; the first acknowledged recovery delivery freezes it. New hooks
+// after that cutoff can regain live delivery even under sustained traffic.
+#[derive(Serialize, Deserialize)]
+struct Recovery {
+    through: String,
+    confirmed: bool,
+}
+
+fn save_recovery(queue: &Path, recovery: &Recovery) -> Result<(), String> {
+    atomic_write(
+        queue,
+        "recovering",
+        &serde_json::to_vec(recovery).map_err(|e| e.to_string())?,
+    )
+}
+fn recovery_tail(paths: &[PathBuf], confirmed: bool) -> Recovery {
+    Recovery {
+        through: paths
+            .last()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string(),
+        confirmed,
+    }
+}
+fn remove_saved(queue: &Path, name: &str) -> Result<(), String> {
+    match fs::remove_file(queue.join(name)) {
+        Ok(()) => sync_dir(queue),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+fn load_recovery(queue: &Path, paths: &[PathBuf]) -> Result<Option<Recovery>, String> {
+    let recovery = match fs::read(queue.join("recovering")) {
+        // The old worker wrote "1". Freeze its finite backlog on the first
+        // successful ack, just as for a newly interrupted delivery.
+        Ok(bytes) => serde_json::from_slice::<Recovery>(&bytes)
+            .unwrap_or_else(|_| recovery_tail(paths, false)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    if paths[0].file_name().unwrap().to_str().unwrap() > recovery.through.as_str() {
+        remove_saved(queue, "reconciliation.json")?;
+        remove_saved(queue, "recovering")?;
+        return Ok(None);
+    }
+    Ok(Some(recovery))
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -218,7 +271,7 @@ pub(super) fn resume_or_health(health: bool, probe: bool) -> Result<(), String> 
         let saved = fs::read(queue.join("health.json"))
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-        let delivery = json!({"pending":pending,"status":saved.as_ref().and_then(|s|s.get("status")).unwrap_or(&json!("unknown")),"lastSuccess":saved.as_ref().and_then(|s|s.get("lastSuccess"))});
+        let delivery = json!({"pending":pending,"status":saved.as_ref().and_then(|s|s.get("status")).unwrap_or(&json!("unknown")),"lastSuccess":saved.as_ref().and_then(|s|s.get("lastSuccess")),"lastRejected":saved.as_ref().and_then(|s|s["lastRejected"].as_u64()).filter(|time| now().saturating_sub(*time) < TTL)});
         drop(_lock);
         if probe {
             let raw = super::send_request(&socket, &token, "ping", json!({}))?;
@@ -359,24 +412,27 @@ pub(super) fn run(queue: PathBuf) -> Result<(), String> {
             record_health(&queue, "expired", None)?;
             continue;
         }
+        let mut recovery = load_recovery(&queue, &paths)?;
         let replay = event.replay
             || event.attempted
-            || queue.join("recovering").exists()
+            || recovery.is_some()
             || now().saturating_sub(event.created) > 5;
-        if replay {
-            atomic_write(&queue, "recovering", b"1")?;
+        if replay && recovery.is_none() {
+            recovery = Some(recovery_tail(&paths, false));
         }
-        // Persist the snapshot even for a live attempt: the desktop can
-        // downgrade it to replay if its short-lived delivery lease expires.
+        if let Some(recovery) = &recovery {
+            save_recovery(&queue, recovery)?;
+        }
+        let latest = recovery.as_ref().map_or(paths.len() == 1, |recovery| {
+            path.file_name().unwrap().to_str().unwrap() == recovery.through
+        });
+        // Form a snapshot even for a live attempt: the desktop can downgrade
+        // it to replay if the lease expires. Persist only acknowledged material;
+        // the durable event reconstructs the same candidate after a crash.
         let previous = fs::read(queue.join("reconciliation.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
         let snapshot = reconcile_snapshot(previous.as_ref(), &event.notification);
-        atomic_write(
-            &queue,
-            "reconciliation.json",
-            &serde_json::to_vec(&snapshot).map_err(|e| e.to_string())?,
-        )?;
         event.attempted = true;
         atomic_write(
             &queue,
@@ -389,14 +445,37 @@ pub(super) fn run(queue: PathBuf) -> Result<(), String> {
             &token,
             &event,
             replay,
-            paths.len() == 1,
+            latest,
             Some(&snapshot),
             Duration::from_secs(2),
         );
         let guard = lock(&queue)?;
-        if let Ok(replayed) = result {
-            if replayed {
-                atomic_write(&queue, "recovering", b"1")?;
+        if let Ok(ref acknowledgment) = result {
+            // A fresh attempt may be downgraded by the desktop. Include all
+            // events already queued at the successful ack, then stop extending
+            // the recovery window while this connection remains healthy.
+            if acknowledgment.replayed
+                && recovery.as_ref().is_none_or(|recovery| !recovery.confirmed)
+            {
+                let pending = events(&queue)?;
+                recovery = Some(recovery_tail(
+                    if pending.is_empty() { &paths } else { &pending },
+                    true,
+                ));
+                save_recovery(&queue, recovery.as_ref().unwrap())?;
+            }
+            if acknowledgment.rejected {
+                // Clear any legacy tentative snapshot too. Write the loss
+                // evidence before unlinking: a crash cannot hide a lost event.
+                remove_saved(&queue, "reconciliation.json")?;
+                record_health(&queue, "rejected", None)?;
+            } else {
+                atomic_write(
+                    &queue,
+                    "reconciliation.json",
+                    &serde_json::to_vec(&snapshot).map_err(|e| e.to_string())?,
+                )?;
+                record_health(&queue, "healthy", Some(now()))?;
             }
             match fs::remove_file(path) {
                 Ok(()) => (),
@@ -404,10 +483,15 @@ pub(super) fn run(queue: PathBuf) -> Result<(), String> {
                 Err(e) => return Err(e.to_string()),
             }
             sync_dir(&queue)?;
-            record_health(&queue, "healthy", Some(now()))?;
             delay = 1;
         } else {
-            atomic_write(&queue, "recovering", b"1")?;
+            // A new interruption invalidates the old cutoff. Hooks produced
+            // before connectivity is proven again must remain observational.
+            let pending = events(&queue)?;
+            save_recovery(
+                &queue,
+                &recovery_tail(if pending.is_empty() { &paths } else { &pending }, false),
+            )?;
             // Never persist arbitrary server error strings (or the token).
             let category = if is_authentication_error(result.as_ref().unwrap_err()) {
                 "authentication failed"
@@ -507,13 +591,29 @@ fn record_health(queue: &Path, status: &str, success: Option<u64>) -> Result<(),
         .ok()
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
     let success = success.or_else(|| previous.as_ref()?.get("lastSuccess")?.as_u64());
+    // Keep the loss visible across later successes for the outbox retention
+    // interval; a healthy ping must not immediately erase a rejected hook.
+    let last_rejected = if status == "rejected" {
+        Some(now())
+    } else {
+        previous
+            .as_ref()
+            .and_then(|value| value["lastRejected"].as_u64())
+            .filter(|time| now().saturating_sub(*time) < TTL)
+    };
     atomic_write(
         queue,
         "health.json",
-        &serde_json::to_vec(&json!({"status": status, "updated":now(), "lastSuccess":success}))
+        &serde_json::to_vec(&json!({"status": status, "updated":now(), "lastSuccess":success, "lastRejected":last_rejected}))
             .unwrap(),
     )
 }
+#[derive(Debug)]
+struct Acknowledgment {
+    replayed: bool,
+    rejected: bool,
+}
+
 fn deliver(
     socket: &str,
     token: &str,
@@ -522,7 +622,7 @@ fn deliver(
     latest: bool,
     snapshot: Option<&Value>,
     timeout: Duration,
-) -> Result<bool, String> {
+) -> Result<Acknowledgment, String> {
     let lease = if replay {
         None
     } else {
@@ -555,17 +655,38 @@ fn deliver(
         }),
         timeout,
     )?;
-    super::validate_ack(&response)?;
-    let response: qmux_proto::ControlResponse =
+    let parsed: qmux_proto::ControlResponse =
         serde_json::from_str(&response).map_err(|e| e.to_string())?;
-    if response.data.get("id").and_then(Value::as_str) != Some(event.id.as_str()) {
+    let correlated = parsed.data.get("id").and_then(Value::as_str) == Some(event.id.as_str());
+    // The explicit negative acknowledgment is emitted only after desktop
+    // authentication and schema validation, before any lifecycle handler.
+    // Old workers still see ok:false and safely retry during a rolling upgrade.
+    if !parsed.ok
+        && correlated
+        && parsed.error.as_deref() == Some("hook.invalid_notification")
+        && parsed.data["rejected"] == "invalid_notification"
+        && parsed.data["discarded"] == true
+    {
+        return Ok(Acknowledgment {
+            replayed: true,
+            rejected: true,
+        });
+    }
+    super::validate_ack(&response)?;
+    if !correlated {
         return Err("hook acknowledgment does not match the queued event".into());
     }
-    Ok(response
-        .data
-        .get("replay")
-        .and_then(Value::as_bool)
-        .unwrap_or(replay))
+    if parsed.data.get("rejected").is_some() {
+        return Err("unrecognized hook rejection acknowledgment".into());
+    }
+    Ok(Acknowledgment {
+        replayed: parsed
+            .data
+            .get("replay")
+            .and_then(Value::as_bool)
+            .unwrap_or(replay),
+        rejected: false,
+    })
 }
 
 #[cfg(test)]
@@ -687,6 +808,106 @@ mod tests {
         server.join().unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn only_correlated_known_terminal_rejection_can_remove_a_notification() {
+        let dir = temp();
+        let socket = dir.join("socket");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let responses = vec![
+            json!({"ok":false,"error":"invalid QMUX_TOKEN","data":{"id":"same-id","discarded":true,"rejected":"invalid_notification"}}),
+            json!({"ok":false,"error":"invalid hook notification"}),
+            json!({"ok":true,"data":{"id":"other-id","discarded":true,"rejected":"invalid_notification"}}),
+            json!({"ok":true,"data":{"id":"same-id","discarded":true,"rejected":"unknown"}}),
+            json!({"ok":true,"data":{"id":"same-id","rejected":"invalid_notification"}}),
+            json!({"ok":false,"error":"hook.invalid_notification","data":{"id":"same-id","discarded":true,"rejected":"invalid_notification"}}),
+        ];
+        let server = std::thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                writeln!(stream, "{response}").unwrap();
+            }
+        });
+        let event = Event {
+            id: "same-id".into(),
+            created: now(),
+            attempted: true,
+            replay: true,
+            notification: json!({}),
+        };
+        for _ in 0..5 {
+            assert!(
+                deliver(
+                    socket.to_str().unwrap(),
+                    "secret",
+                    &event,
+                    true,
+                    true,
+                    None,
+                    Duration::from_secs(1)
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            deliver(
+                socket.to_str().unwrap(),
+                "secret",
+                &event,
+                true,
+                true,
+                None,
+                Duration::from_secs(1)
+            )
+            .unwrap()
+            .rejected
+        );
+        server.join().unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_recovery_marker_migrates_and_cutoff_is_sequence_based() {
+        let dir = temp();
+        for _ in 0..3 {
+            enqueue_locked(&dir, json!({"event":"Stop"})).unwrap();
+        }
+        let paths = events(&dir).unwrap();
+        fs::write(dir.join("recovering"), b"1").unwrap();
+        let mut recovery = load_recovery(&dir, &paths).unwrap().unwrap();
+        assert_eq!(recovery.through, "00000000000000000003.event");
+        assert!(!recovery.confirmed);
+        recovery.confirmed = true;
+        save_recovery(&dir, &recovery).unwrap();
+        enqueue_locked(&dir, json!({"event":"Stop"})).unwrap();
+        // Equal wall-clock timestamps cannot move a frozen sequence cutoff.
+        let paths = events(&dir).unwrap();
+        let created = read_event(&paths[0]).unwrap().created;
+        for path in &paths {
+            let mut event = read_event(path).unwrap();
+            event.created = created;
+            fs::write(path, serde_json::to_vec(&event).unwrap()).unwrap();
+        }
+        assert_eq!(
+            load_recovery(&dir, &paths).unwrap().unwrap().through,
+            recovery.through
+        );
+        for path in &paths[..3] {
+            fs::remove_file(path).unwrap();
+        }
+        fs::write(dir.join("reconciliation.json"), b"old accepted snapshot").unwrap();
+        assert!(
+            load_recovery(&dir, &events(&dir).unwrap())
+                .unwrap()
+                .is_none()
+        );
+        assert!(!dir.join("reconciliation.json").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn snapshot_keeps_lifecycle_and_hints_but_resets_for_new_sessions() {
         let start = json!({"agentId":"a","adapterId":"claude","event":"SessionStart","payload":{"session_id":"one","transcript_path":"/one"}});
@@ -837,4 +1058,19 @@ mod tests {
         assert!(events(&dir).unwrap().is_empty());
         fs::remove_dir_all(dir).unwrap();
     }
+
+    #[test]
+    fn replay08_snapshot_replaces_old_stop_with_adapter_running_hooks() {
+        for (adapter, event) in [("antigravity", "PreInvocation"), ("devin", "PostCompaction")] {
+            let stopped = json!({"agentId":"a","adapterId":adapter,"event":"Stop","payload":{"session_id":"one"}});
+            let running = json!({"agentId":"a","adapterId":adapter,"event":event,"payload":{"prompt":"work"}});
+            let snapshot = reconcile_snapshot(Some(&stopped), &running);
+            assert_eq!(snapshot["event"], event);
+            assert_eq!(snapshot["payload"]["session_id"], "one");
+            let note = json!({"agentId":"a","adapterId":adapter,"event":"UnknownHook","payload":{}});
+            assert_eq!(reconcile_snapshot(Some(&snapshot), &note), snapshot);
+        }
+    }
+
+
 }

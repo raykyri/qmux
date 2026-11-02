@@ -1,3 +1,4 @@
+import { ComposerDrafts, remainingComposerDraft, type ComposerDraftRevision } from "../lib/composerDrafts";
 import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -8,6 +9,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -128,10 +130,9 @@ interface NativeInputProps {
   projectDir?: string | null;
   agentMayBeBackgrounded: boolean;
   // The app's copy of the composer text, keyed by agent so it survives tab
-  // switches. The live value while typing is component-local (a keystroke must
-  // not re-render the whole app); onDraftChange pushes local edits back to the
-  // app store on a short debounce, and an external change to this prop (agent
-  // switch, queued-turn edit, restore) is adopted into the local value.
+  // switches. This seeds the shared revision store on first use. App writes
+  // external restores into composerDrafts; onDraftChange pushes live revisions
+  // to App persistence on a short debounce without an App render per keystroke.
   draft: string;
   queuedTurns: QueuedTurn[];
   waitTargets: WaitTarget[];
@@ -160,6 +161,7 @@ interface NativeInputProps {
     turn: string,
     expectedId?: string,
   ) => void;
+  composerDrafts: ComposerDrafts;
   onDraftChange: (agentId: string, draft: string) => void;
   // Registers a callback the app invokes on quit/close flushes so the composer's
   // debounced local edits reach the draft store before it writes to disk.
@@ -221,6 +223,7 @@ export default function NativeInput({
   onQueueDropTargetChange,
   onMoveQueuedTurn,
   onDraftChange,
+  composerDrafts,
   registerDraftFlusher,
   onWaitTargetHover,
   onForkWithPrompt,
@@ -230,100 +233,62 @@ export default function NativeInput({
   saveQueueScroll,
   onError,
 }: NativeInputProps) {
-  // The composer text is component-local while typing: a controlled value from
-  // App-root state made every keystroke a full-app render, which queued the
-  // typed character's DOM commit behind whatever a busy agent's event stream was
-  // rendering. Local edits are pushed to the app store on a trailing debounce
-  // (immediately when cleared, so a sent draft never lingers), and any change to
-  // the `draft` prop this component didn't push itself — switching agents,
-  // restart recovery — is adopted into the local value.
-  const [localDraft, setLocalDraft] = useState(draft);
-  const lastPushedDraftRef = useRef(draft);
-  const draftPushTimerRef = useRef<number | null>(null);
-  const pendingDraftPushRef = useRef<{ agentId: string; text: string } | null>(null);
+  // Shared revisions survive switches and remounts. Only this small subscriber
+  // renders on keystrokes; the App/persistence callback remains debounced.
+  const current = useSyncExternalStore(
+    composerDrafts.subscribe,
+    () => composerDrafts.read(agent.id, draft),
+  );
+  const value = current.draft.text;
+  const submitting = current.busy;
+  const activeAgentRef = useRef<string | null>(agent.id);
+  useLayoutEffect(() => {
+    activeAgentRef.current = agent.id;
+    return () => { activeAgentRef.current = null; };
+  }, [agent.id]);
   const onDraftChangeRef = useRef(onDraftChange);
   onDraftChangeRef.current = onDraftChange;
-  // Commits a still-debounced local edit to the app store right now. The pending
-  // record carries the agent id captured when the edit was made, so a flush that
-  // runs as part of switching to another agent still credits the right draft.
+  const draftPushTimerRef = useRef<number | null>(null);
+  const pendingDraftPushRef = useRef<string | null>(null);
   const flushDraftPush = useCallback(() => {
     if (draftPushTimerRef.current !== null) {
       clearTimeout(draftPushTimerRef.current);
       draftPushTimerRef.current = null;
     }
-    const pending = pendingDraftPushRef.current;
-    if (pending) {
-      pendingDraftPushRef.current = null;
-      lastPushedDraftRef.current = pending.text;
-      onDraftChangeRef.current(pending.agentId, pending.text);
-    }
-  }, []);
-  // Adopt external draft changes. Runs before paint so an agent switch never
-  // flashes the previous agent's text. The instance is reused across agents in
-  // the global sidebar, so an agent switch always flushes the pending edit (the
-  // pending record carries the agent it was typed for) and re-adopts — even
-  // when both agents' stored drafts are content-equal (both empty, typically),
-  // where the prop comparison alone would keep the previous agent's un-pushed
-  // text on screen under the new agent.
-  //
-  // For the same agent, a prop change while a local edit is mid-debounce is
-  // ignored outright: the prop can only be an echo of an older push (or a
-  // stale external write), both by definition older than what the user just
-  // typed — flushing-then-comparing here would misread that echo as external
-  // and revert freshly typed characters. Only a prop that differs from our
-  // newest push, arriving with no edit pending, is a genuine external write
-  // (queued-turn edit, restore) and gets adopted.
-  const adoptedAgentIdRef = useRef(agent.id);
-  useLayoutEffect(() => {
-    const agentChanged = adoptedAgentIdRef.current !== agent.id;
-    adoptedAgentIdRef.current = agent.id;
-    if (agentChanged) {
-      flushDraftPush();
-      lastPushedDraftRef.current = draft;
-      setLocalDraft(draft);
-      return;
-    }
-    if (pendingDraftPushRef.current !== null) {
-      return;
-    }
-    if (draft !== lastPushedDraftRef.current) {
-      lastPushedDraftRef.current = draft;
-      setLocalDraft(draft);
-    }
-  }, [agent.id, draft, flushDraftPush]);
-  // A draft still sitting in the debounce window when the composer unmounts
-  // (pane closed, right bar collapsed) is committed rather than dropped.
-  useEffect(() => flushDraftPush, [flushDraftPush]);
-  // And the app's quit/close flush can pull it out before writing to disk —
-  // pagehide and Cmd-Q run App-level flushes that would otherwise miss the
-  // debounce window's worth of typing.
-  useEffect(
-    () => registerDraftFlusher(flushDraftPush),
-    [flushDraftPush, registerDraftFlusher],
-  );
-  const value = localDraft;
+    const id = pendingDraftPushRef.current;
+    pendingDraftPushRef.current = null;
+    if (id !== null) onDraftChangeRef.current(id, composerDrafts.read(id).draft.text);
+  }, [composerDrafts]);
+  useLayoutEffect(() => flushDraftPush, [agent.id, flushDraftPush]);
+  useEffect(() => registerDraftFlusher(flushDraftPush), [flushDraftPush, registerDraftFlusher]);
   const setValue = (next: string) => {
-    setLocalDraft(next);
-    if (draftPushTimerRef.current !== null) {
-      clearTimeout(draftPushTimerRef.current);
-      draftPushTimerRef.current = null;
-    }
-    if (!next) {
-      // Clears push through immediately: App flushes empty drafts to disk at
-      // once so a sent/emptied draft never lingers in state.json.
-      pendingDraftPushRef.current = null;
-      lastPushedDraftRef.current = next;
-      onDraftChangeRef.current(agent.id, next);
-      return;
-    }
-    pendingDraftPushRef.current = { agentId: agent.id, text: next };
-    draftPushTimerRef.current = window.setTimeout(() => {
-      draftPushTimerRef.current = null;
-      flushDraftPush();
-    }, DRAFT_PUSH_DEBOUNCE_MS);
+    composerDrafts.set(agent.id, next, true);
+    pendingDraftPushRef.current = agent.id;
+    if (draftPushTimerRef.current !== null) clearTimeout(draftPushTimerRef.current);
+    if (!next) flushDraftPush();
+    else draftPushTimerRef.current = window.setTimeout(flushDraftPush, DRAFT_PUSH_DEBOUNCE_MS);
   };
+  function setDraftForAgent(id: string, next: string) {
+    composerDrafts.set(id, next);
+    onDraftChangeRef.current(id, next);
+  }
+  function clearSubmittedDraft(id: string, submitted: ComposerDraftRevision) {
+    setDraftForAgent(id, remainingComposerDraft(composerDrafts.read(id).draft, submitted));
+  }
+  function focusComposer(id: string, caret?: number) {
+    requestAnimationFrame(() => {
+      if (activeAgentRef.current !== id) return;
+      const el = textareaRef.current;
+      // A completion must not steal focus after the user deliberately leaves.
+      if (!el || (document.activeElement !== document.body &&
+          document.activeElement !== el && !el.closest(".native-input")?.contains(document.activeElement))) return;
+      el.focus();
+      if (caret !== undefined) el.setSelectionRange(caret, caret);
+    });
+  }
+  function beginSubmission() { return composerDrafts.begin(agent.id); }
+  function endSubmission() { composerDrafts.end(agent.id); }
   const { confirm, dialog: confirmDialog } = useConfirm();
-  const [submitting, setSubmitting] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [waitOpen, setWaitOpen] = useState(false);
   // Drag-to-reorder of the queued turns. draggingIndex is the row being dragged;
@@ -407,6 +372,7 @@ export default function NativeInput({
       }
       const caret = alreadyInserted ? current.length : start + text.length;
       requestAnimationFrame(() => {
+        if (activeAgentRef.current !== agent.id) return;
         const el = textareaRef.current;
         if (!el) {
           return;
@@ -418,32 +384,28 @@ export default function NativeInput({
     });
   }, [agent.id]);
 
-  // Splice text at the caret (or append when the textarea isn't focused) and
-  // restore focus after it. Reads/writes through the latest-refs above so a
-  // pending async insert (a pasted image saving to disk) still lands at the
-  // current caret against the current text.
-  const insertAtCaret = (text: string) => {
-    const textarea = textareaRef.current;
-    const current = valueForInsertRef.current;
-    const start = textarea?.selectionStart ?? current.length;
-    const end = textarea?.selectionEnd ?? current.length;
-    setValueForInsertRef.current(current.slice(0, start) + text + current.slice(end));
-    const caret = start + text.length;
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (!el) {
-        return;
-      }
-      el.focus();
-      el.setSelectionRange(caret, caret);
-    });
-  };
+  function captureInsertion() {
+    return {
+      id: agent.id,
+      draft: composerDrafts.read(agent.id).draft,
+      start: textareaRef.current?.selectionStart ?? value.length,
+      end: textareaRef.current?.selectionEnd ?? value.length,
+    };
+  }
+  function finishInsertion(origin: ReturnType<typeof captureInsertion>, text: string) {
+    const latest = composerDrafts.read(origin.id).draft;
+    const start = latest === origin.draft ? origin.start : latest.text.length;
+    const end = latest === origin.draft ? origin.end : latest.text.length;
+    setDraftForAgent(origin.id, latest.text.slice(0, start) + text + latest.text.slice(end));
+    focusComposer(origin.id, start + text.length);
+  }
 
   // Persist an image pasted into the composer and splice a "[Image: <path>]"
   // marker at the caret. The queue renders that marker as a thumbnail, and it is
   // delivered to the agent verbatim as text (the agent loads the file from the
   // path), so no separate image channel to the terminal is needed.
   const ingestPastedImage = async (file: File) => {
+    const origin = captureInsertion();
     const extension = PASTED_IMAGE_EXTENSION_BY_MIME[file.type];
     if (!extension) {
       showToast("That image format can't be pasted");
@@ -453,7 +415,7 @@ export default function NativeInput({
       const dataUrl = await readFileAsDataUrl(file);
       const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
       const path = await savePastedImage(base64, extension);
-      insertAtCaret(`[Image: ${path}]`);
+      finishInsertion(origin, `[Image: ${path}]`);
       onUserInput(agent.id);
     } catch (error) {
       showToast(typeof error === "string" ? error : "Couldn't paste the image");
@@ -785,6 +747,7 @@ export default function NativeInput({
     setValue(next);
     onUserInput(agent.id);
     requestAnimationFrame(() => {
+      if (activeAgentRef.current !== agent.id) return;
       const textarea = textareaRef.current;
       if (!textarea) {
         return;
@@ -816,6 +779,7 @@ export default function NativeInput({
       return;
     }
 
+    const submittedDraft = composerDrafts.read(agent.id).draft;
     const trimmed = text.trim();
     if (!trimmed) {
       return;
@@ -829,7 +793,7 @@ export default function NativeInput({
     if (plan.kind === "fork" && mode !== "queue") {
       setMenuOpen(false);
       setWaitOpen(false);
-      setSubmitting(true);
+      if (!beginSubmission()) return;
       try {
         const forked = await onForkWithPrompt({
           useWorktree: plan.useWorktree,
@@ -837,32 +801,32 @@ export default function NativeInput({
         });
         if (forked) {
           recordRecentMessage(trimmed);
-          setValue("");
-          requestAnimationFrame(() => textareaRef.current?.focus());
+          clearSubmittedDraft(agent.id, submittedDraft);
+          focusComposer(agent.id);
         }
       } catch (err) {
         onError(err instanceof Error ? err.message : String(err));
       } finally {
-        setSubmitting(false);
+        endSubmission();
       }
       return;
     }
 
-    setSubmitting(true);
+    if (!beginSubmission()) return;
     try {
       const result = await submitAgentTurn(agent.id, trimmed, mode);
       onQueueChange(agent.id, result.queuedTurns);
       onTurnSubmitted(agent.id, trimmed, mode);
       recordRecentMessage(trimmed);
-      setValue("");
+      clearSubmittedDraft(agent.id, submittedDraft);
       // Return focus to the composer once it clears. Deferred to the next frame
       // so it lands after the submit buttons re-render — clicking one disables or
       // unmounts it, which briefly bounces focus to <body>.
-      requestAnimationFrame(() => textareaRef.current?.focus());
+      focusComposer(agent.id);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
+      endSubmission();
     }
   }
 
@@ -876,6 +840,7 @@ export default function NativeInput({
       return;
     }
 
+    const submittedDraft = composerDrafts.read(agent.id).draft;
     const trimmed = value.trim();
     if (!trimmed) {
       return;
@@ -883,18 +848,18 @@ export default function NativeInput({
 
     setWaitOpen(false);
     onWaitTargetHover(null);
-    setSubmitting(true);
+    if (!beginSubmission()) return;
     try {
       const result = await queue(trimmed);
       onQueueChange(agent.id, result.queuedTurns);
       onTurnSubmitted(agent.id, trimmed, "queue");
       recordRecentMessage(trimmed);
-      setValue("");
-      requestAnimationFrame(() => textareaRef.current?.focus());
+      clearSubmittedDraft(agent.id, submittedDraft);
+      focusComposer(agent.id);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
+      endSubmission();
     }
   }
 
@@ -909,13 +874,13 @@ export default function NativeInput({
   }
 
   async function submitPermissionResponse(response: string) {
-    setSubmitting(true);
+    if (!beginSubmission()) return;
     try {
       await submitPaneInput(pane.id, response);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
+      endSubmission();
     }
   }
 
@@ -924,7 +889,7 @@ export default function NativeInput({
       return;
     }
 
-    setSubmitting(true);
+    if (!beginSubmission()) return;
     try {
       const result = await removeQueuedAgentTurn(agent.id, index, turn, expectedId);
       onQueueChange(agent.id, result.queuedTurns);
@@ -932,11 +897,12 @@ export default function NativeInput({
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
+      endSubmission();
     }
   }
 
   async function editQueuedTurn(index: number, turn: string, expectedId?: string) {
+    const before = composerDrafts.read(agent.id).draft;
     if (submitting) {
       return;
     }
@@ -951,24 +917,20 @@ export default function NativeInput({
       return;
     }
 
-    setSubmitting(true);
+    if (!beginSubmission()) return;
     try {
       const result = await removeQueuedAgentTurn(agent.id, index, turn, expectedId);
       onQueueChange(agent.id, result.queuedTurns);
-      setValue(result.removedTurn);
-      requestAnimationFrame(() => {
-        const textarea = textareaRef.current;
-        if (!textarea) {
-          return;
-        }
-        const end = result.removedTurn.length;
-        textarea.focus();
-        textarea.setSelectionRange(end, end);
-      });
+      const latest = composerDrafts.read(agent.id).draft;
+      const next = latest === before || !latest.text
+        ? result.removedTurn
+        : `${latest.text}\n\n${result.removedTurn}`;
+      setDraftForAgent(agent.id, next);
+      focusComposer(agent.id, next.length);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
+      endSubmission();
     }
   }
 
@@ -1035,7 +997,7 @@ export default function NativeInput({
     }
 
     const nextTurn = queuedTurns[0];
-    setSubmitting(true);
+    if (!beginSubmission()) return;
     try {
       const result = await sendNextQueuedAgentTurn(agent.id);
       onQueueChange(agent.id, result.queuedTurns);
@@ -1045,7 +1007,7 @@ export default function NativeInput({
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
+      endSubmission();
     }
   }
 
@@ -1292,14 +1254,14 @@ export default function NativeInput({
     if (submitting) {
       return;
     }
-    setSubmitting(true);
+    if (!beginSubmission()) return;
     try {
       const queued = await setQueuedTurnPause(agent.id, index, pauseAfter, turn.text, turn.id);
       onQueueChange(agent.id, queued);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
+      endSubmission();
     }
   }
 
@@ -1307,14 +1269,14 @@ export default function NativeInput({
     if (submitting) {
       return;
     }
-    setSubmitting(true);
+    if (!beginSubmission()) return;
     try {
       const result = await unpauseAgent(agent.id);
       onQueueChange(agent.id, result.queuedTurns);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
+      endSubmission();
     }
   }
 
@@ -1455,22 +1417,12 @@ export default function NativeInput({
               return;
             }
             // Confirmed-large: re-insert at the caret only if the user accepts.
-            const start = event.currentTarget.selectionStart ?? value.length;
-            const end = event.currentTarget.selectionEnd ?? value.length;
+            const origin = captureInsertion();
             void confirm({ message: verdict.message, confirmLabel: "Paste" }).then((ok) => {
               if (!ok) {
                 return;
               }
-              setValue(value.slice(0, start) + text + value.slice(end));
-              requestAnimationFrame(() => {
-                const textarea = textareaRef.current;
-                if (!textarea) {
-                  return;
-                }
-                const caret = start + text.length;
-                textarea.focus();
-                textarea.setSelectionRange(caret, caret);
-              });
+              finishInsertion(origin, text);
             });
           }}
           onKeyDown={(event) => {

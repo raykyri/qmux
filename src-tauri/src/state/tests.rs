@@ -4960,6 +4960,7 @@ fn research_sessions_are_not_exposed_as_terminal_recents() {
 fn queued_turn_pause_flag_and_pending_pause() {
     let workspace = temp_workspace();
     let state = AppState::new(test_config(workspace));
+    state.insert_agent(sample_agent("agent-1")).unwrap();
     state
         .enqueue_agent_turn("agent-1", "a".to_string())
         .unwrap();
@@ -4986,10 +4987,22 @@ fn queued_turn_pause_flag_and_pending_pause() {
     );
 
     // Pending-pause is a one-shot marker.
-    assert!(!state.take_agent_pending_pause("agent-1").unwrap());
+    assert!(
+        !state
+            .pause_agent_if_pending("agent-1", AgentStatus::Done)
+            .unwrap()
+    );
     state.mark_agent_pending_pause("agent-1").unwrap();
-    assert!(state.take_agent_pending_pause("agent-1").unwrap());
-    assert!(!state.take_agent_pending_pause("agent-1").unwrap());
+    assert!(
+        state
+            .pause_agent_if_pending("agent-1", AgentStatus::Done)
+            .unwrap()
+    );
+    assert!(
+        !state
+            .pause_agent_if_pending("agent-1", AgentStatus::Done)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -5001,6 +5014,7 @@ fn queue_mutations_round_trip_through_persistence() {
     {
         let state = AppState::new(config.clone());
         assert!(state.restore_session().is_empty());
+        state.insert_agent(sample_agent("agent-1")).unwrap();
         state
             .enqueue_agent_turn("agent-1", "first".to_string())
             .unwrap();
@@ -5046,6 +5060,7 @@ fn queued_turn_id_guards_the_right_duplicate() {
     let state = AppState::new(test_config(workspace));
     assert!(state.restore_session().is_empty());
     // Two queued turns with identical text but distinct identities.
+    state.insert_agent(sample_agent("agent-1")).unwrap();
     state
         .enqueue_agent_turn("agent-1", "same".to_string())
         .unwrap();
@@ -5346,10 +5361,13 @@ fn claim_ready_agent_turn_serializes_concurrent_drains() {
         .unwrap();
 
     // First claim pops the front turn and marks the agent draining.
-    match state.claim_ready_agent_turn("agent-1").unwrap() {
-        AgentTurnClaim::Ready { turn, .. } => assert_eq!(turn.text, "first"),
+    let claim_id = match state.claim_ready_agent_turn("agent-1").unwrap() {
+        AgentTurnClaim::Ready { turn, claim_id, .. } => {
+            assert_eq!(turn.text, "first");
+            claim_id
+        }
         _ => panic!("expected the first turn to be claimed"),
-    }
+    };
     // A concurrent claim is refused while the first drain is in flight, even though
     // "second" is itself ready — this is what prevents the double-send.
     assert!(matches!(
@@ -5357,7 +5375,7 @@ fn claim_ready_agent_turn_serializes_concurrent_drains() {
         AgentTurnClaim::Draining
     ));
     // Finishing the first drain lets the next one proceed.
-    state.finish_agent_drain("agent-1");
+    state.complete_claimed_agent_turn("agent-1", claim_id, false, false, false);
     match state.claim_ready_agent_turn("agent-1").unwrap() {
         AgentTurnClaim::Ready { turn, .. } => assert_eq!(turn.text, "second"),
         _ => panic!("expected the second turn to be claimed"),
@@ -8094,6 +8112,7 @@ fn persistence_stays_off_until_restore() {
     // Without restore_session(), mutations must not touch disk (keeps tests and
     // ad-hoc AppState construction hermetic).
     let state = AppState::new(config);
+    state.insert_agent(sample_agent("agent-1")).unwrap();
     state
         .enqueue_agent_turn("agent-1", "ghost".to_string())
         .unwrap();
@@ -8486,9 +8505,11 @@ fn startup_composer_snapshot_batches_only_existing_agents_and_preserves_queue_or
     state
         .enqueue_agent_turn("agent-1", "second".into())
         .unwrap();
-    state
-        .enqueue_agent_turn("missing-agent", "orphan".into())
-        .unwrap();
+    // Simulate legacy polluted state: admission now rejects missing owners.
+    state.inner.model.lock().unwrap().agent_turn_queues.insert(
+        "missing-agent".into(),
+        VecDeque::from([QueuedTurn::new("orphan".into())]),
+    );
     state.create_global_draft("global".into()).unwrap();
     let snapshot = state.composer_snapshot().unwrap();
     assert_eq!(snapshot.drafts.len(), 1);
@@ -8577,7 +8598,12 @@ fn aborted_startup_spawn_preserves_splits_for_panes_not_yet_recovered() {
     state.normalize_pane_layout();
     state.finish_startup_restore();
     let saved = persistence::load_with_diagnostics(&root).state;
-    assert_eq!(saved.panes.len(), 2);
+    assert_eq!(state.list_panes().unwrap().len(), 2);
+    assert_eq!(
+        saved.panes.len(),
+        3,
+        "the failed descriptor remains retryable"
+    );
     assert_eq!(saved.pane_splits.len(), 1);
     assert_eq!(saved.pane_splits[0].id, "split-b-c");
     assert_eq!(saved.pane_splits[0].pane_ids, vec!["pane-b", "pane-c"]);
@@ -8604,4 +8630,1034 @@ fn aborted_spawn_prunes_invalid_splits_outside_startup() {
     state.abort_pane_spawn("pane-a").unwrap();
     assert!(state.inner.model.lock().unwrap().pane_splits.is_empty());
     assert_eq!(state.list_panes().unwrap().len(), 1);
+}
+
+fn ownership_state() -> AppState {
+    let state = AppState::new(test_config(temp_workspace()));
+    state.restore_session();
+    state
+        .insert_group_after(sample_group_with_id("group-1"), None)
+        .unwrap();
+    let mut agent = sample_agent("agent-1");
+    agent.pane_id = Some("pane-1".into());
+    state.insert_agent(agent).unwrap();
+    state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+    state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+    state
+}
+
+fn ownership_claim(state: &AppState) -> (QueuedTurn, u64) {
+    match state.claim_ready_agent_turn("agent-1").unwrap() {
+        AgentTurnClaim::Ready { turn, claim_id, .. } => (turn, claim_id),
+        _ => panic!("expected claimed turn"),
+    }
+}
+
+#[test]
+fn ownership_enqueue_after_prune_rejects_ghost_queue() {
+    let state = ownership_state();
+    state.remove_pane("pane-2").unwrap();
+    state.remove_pane("pane-1").unwrap();
+    assert!(state.enqueue_agent_turn("agent-1", "late".into()).is_err());
+    assert!(state.agent_queued_turns("agent-1").unwrap().is_empty());
+}
+
+#[test]
+fn ownership_move_rollback_after_prune_rejects_ghost_queue() {
+    let state = ownership_state();
+    state.remove_pane("pane-2").unwrap();
+    state.remove_pane("pane-1").unwrap();
+    assert!(
+        state
+            .insert_agent_turn_at("agent-1", 0, QueuedTurn::new("late".into()), Some("pane-1"))
+            .is_err()
+    );
+    assert!(state.agent_queued_turns("agent-1").unwrap().is_empty());
+}
+
+#[test]
+fn ownership_detach_counts_claimed_work() {
+    let state = ownership_state();
+    state
+        .enqueue_agent_turn("agent-1", "claimed".into())
+        .unwrap();
+    let _turn = ownership_claim(&state);
+    let parked = crate::workspace::detach_pane_agent(&state, "pane-1")
+        .unwrap()
+        .unwrap();
+    assert!(parked.paused);
+    assert_eq!(parked.orphaned_queue_pane_id.as_deref(), Some("pane-1"));
+}
+
+#[test]
+fn ownership_close_then_failed_sender_recovers_once() {
+    let state = ownership_state();
+    state
+        .enqueue_agent_turn("agent-1", "claimed".into())
+        .unwrap();
+    let (turn, claim_id) = ownership_claim(&state);
+    state.remove_pane("pane-1").unwrap();
+    state.requeue_inflight_after_failed_drain("agent-1", claim_id, turn);
+    assert_eq!(state.list_agent_turn_queue("agent-1").unwrap(), ["claimed"]);
+    let parked = state.agent("agent-1").unwrap().unwrap();
+    assert_eq!(parked.orphaned_queue_pane_id.as_deref(), Some("pane-2"));
+}
+
+#[test]
+fn ownership_delivery_clear_detach_failed_sender_stays_visible() {
+    let state = ownership_state();
+    state
+        .enqueue_agent_queued_turn(
+            "agent-1",
+            QueuedTurn::delivering("child".into(), QueuedTurnDelivery::NewSession),
+        )
+        .unwrap();
+    let (turn, claim_id) = ownership_claim(&state);
+    assert!(state.clear_agent_inflight("agent-1", claim_id));
+    let saved = crate::persistence::load_with_diagnostics(&state.inner.config.workspace_root).state;
+    assert!(
+        saved.inflight.is_empty(),
+        "new pane dispatch must not replay on restart"
+    );
+    crate::workspace::detach_pane_agent(&state, "pane-1").unwrap();
+    state.requeue_inflight_after_failed_drain("agent-1", claim_id, turn);
+    let parked = state.agent("agent-1").unwrap().unwrap();
+    assert!(parked.paused);
+    assert_eq!(parked.orphaned_queue_pane_id.as_deref(), Some("pane-1"));
+    assert_eq!(state.list_agent_turn_queue("agent-1").unwrap(), ["child"]);
+}
+
+#[test]
+fn ownership_empty_detach_rejects_stale_enqueue() {
+    let state = ownership_state();
+    crate::workspace::detach_pane_agent(&state, "pane-1").unwrap();
+    assert!(state.enqueue_agent_turn("agent-1", "late".into()).is_err());
+    assert!(state.agent_queued_turns("agent-1").unwrap().is_empty());
+}
+
+#[test]
+fn ownership_prune_clears_durable_inflight_and_drops_late_rollback() {
+    let state = ownership_state();
+    state
+        .enqueue_agent_turn("agent-1", "claimed".into())
+        .unwrap();
+    let (turn, claim_id) = ownership_claim(&state);
+    state.remove_pane("pane-2").unwrap();
+    state.remove_pane("pane-1").unwrap();
+    state.requeue_inflight_after_failed_drain("agent-1", claim_id, turn);
+    let saved = crate::persistence::load_with_diagnostics(&state.inner.config.workspace_root).state;
+    assert!(saved.inflight.is_empty());
+    assert!(saved.queues.is_empty());
+}
+
+#[test]
+fn ownership_stale_retry_cannot_settle_the_next_claim_of_the_same_turn() {
+    let state = ownership_state();
+    state.enqueue_agent_turn("agent-1", "retry".into()).unwrap();
+    let (first, old_claim) = ownership_claim(&state);
+    assert!(state.requeue_inflight_after_failed_drain("agent-1", old_claim, first.clone()));
+    let (retry, new_claim) = ownership_claim(&state);
+    assert_eq!(first.id, retry.id);
+    assert_ne!(old_claim, new_claim);
+    assert!(!state.clear_agent_inflight("agent-1", old_claim));
+    assert!(!state.requeue_inflight_after_failed_drain("agent-1", old_claim, first));
+    assert!(
+        state
+            .complete_claimed_agent_turn("agent-1", old_claim, true, true, false)
+            .is_none()
+    );
+    assert!(
+        state
+            .finish_claimed_agent_fork_dispatch("agent-1", old_claim, Some(AgentStatus::Done))
+            .unwrap()
+            .is_none()
+    );
+    assert!(!state.finish_agent_drain("agent-1"));
+    let model = state.inner.model.lock().unwrap();
+    assert_eq!(model.agent_queue_claims["agent-1"].id, new_claim);
+    assert_eq!(model.agent_inflight["agent-1"].id, retry.id);
+    assert!(model.agent_draining.contains("agent-1"));
+    assert!(!model.agents["agent-1"].paused);
+}
+
+#[test]
+fn ownership_undo_same_agent_id_revokes_old_sender() {
+    let state = ownership_state();
+    {
+        let mut model = state.inner.model.lock().unwrap();
+        let pane = model.panes.get_mut("pane-1").unwrap();
+        pane.info.kind = PaneKind::Agent;
+        pane.info.agent_id = Some("agent-1".into());
+    }
+    state.enqueue_agent_turn("agent-1", "undo".into()).unwrap();
+    let (old_turn, old_claim) = ownership_claim(&state);
+    state.capture_last_closed_pane("pane-1").unwrap();
+    let snapshot = state.take_last_closed_pane().unwrap().unwrap();
+    assert!(snapshot.agent.as_ref().unwrap().queued_turns.is_empty());
+    state.remove_pane("pane-1").unwrap();
+    state.restore_closed_pane_metadata(&snapshot).unwrap();
+    state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+    let (new_turn, new_claim) = ownership_claim(&state);
+    assert_eq!(old_turn.id, new_turn.id);
+    assert_ne!(old_claim, new_claim);
+    assert!(!state.requeue_inflight_after_failed_drain("agent-1", old_claim, old_turn));
+    assert!(!state.clear_agent_inflight("agent-1", old_claim));
+    assert!(
+        state
+            .complete_claimed_agent_turn("agent-1", old_claim, true, true, false)
+            .is_none()
+    );
+    assert!(state.agent_queued_turns("agent-1").unwrap().is_empty());
+    assert_eq!(
+        state.inner.model.lock().unwrap().agent_inflight["agent-1"].id,
+        new_turn.id
+    );
+}
+
+#[test]
+fn ownership_close_preserves_plain_durability_without_an_editable_duplicate() {
+    let state = ownership_state();
+    state
+        .enqueue_agent_turn("agent-1", "pending".into())
+        .unwrap();
+    let (turn, claim) = ownership_claim(&state);
+    state.remove_pane("pane-1").unwrap();
+    assert!(state.agent_queued_turns("agent-1").unwrap().is_empty());
+    let saved = persistence::load_with_diagnostics(&state.inner.config.workspace_root).state;
+    assert_eq!(saved.inflight["agent-1"].id, turn.id);
+    assert!(saved.queues.get("agent-1").is_none_or(Vec::is_empty));
+    let restored = AppState::new(test_config(state.inner.config.workspace_root.clone()));
+    restored.restore_session();
+    assert_eq!(
+        restored.list_agent_turn_queue("agent-1").unwrap(),
+        ["pending"]
+    );
+    assert_eq!(
+        restored
+            .agent("agent-1")
+            .unwrap()
+            .unwrap()
+            .orphaned_queue_pane_id
+            .as_deref(),
+        Some("pane-2")
+    );
+    assert!(state.requeue_inflight_after_failed_drain("agent-1", claim, turn));
+    assert_eq!(state.list_agent_turn_queue("agent-1").unwrap(), ["pending"]);
+}
+
+#[test]
+fn ownership_close_before_delivery_clear_keeps_at_most_once_restart_contract() {
+    let state = ownership_state();
+    state
+        .enqueue_agent_queued_turn(
+            "agent-1",
+            QueuedTurn::delivering("new pane".into(), QueuedTurnDelivery::NewSession),
+        )
+        .unwrap();
+    let (_, claim) = ownership_claim(&state);
+    state.remove_pane("pane-1").unwrap();
+    assert!(state.clear_agent_inflight("agent-1", claim));
+    let saved = persistence::load_with_diagnostics(&state.inner.config.workspace_root).state;
+    assert!(saved.inflight.is_empty());
+    assert!(saved.queues.get("agent-1").is_none_or(Vec::is_empty));
+    let restored = AppState::new(test_config(state.inner.config.workspace_root.clone()));
+    restored.restore_session();
+    assert!(
+        restored
+            .list_agent_turn_queue("agent-1")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        restored
+            .inner
+            .model
+            .lock()
+            .unwrap()
+            .agent_queue_claims
+            .is_empty()
+    );
+    assert!(
+        state
+            .complete_claimed_agent_turn("agent-1", claim, false, true, false)
+            .is_some()
+    );
+    assert!(
+        state
+            .agent("agent-1")
+            .unwrap()
+            .unwrap()
+            .orphaned_queue_pane_id
+            .is_none()
+    );
+}
+
+#[test]
+fn ownership_recovery_deduplicates_ids_without_collapsing_equal_text() {
+    let state = ownership_state();
+    state.enqueue_agent_turn("agent-1", "same".into()).unwrap();
+    state.enqueue_agent_turn("agent-1", "same".into()).unwrap();
+    let (first, claim) = ownership_claim(&state);
+    // An existing snapshot/older close implementation may already hold this id.
+    state
+        .insert_agent_turn_at("agent-1", 0, first.clone(), Some("pane-1"))
+        .unwrap();
+    assert!(state.requeue_inflight_after_failed_drain("agent-1", claim, first.clone()));
+    let turns = state.agent_queued_turns("agent-1").unwrap();
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[0].id, first.id);
+    assert_ne!(turns[0].id, turns[1].id);
+}
+
+#[test]
+fn ownership_move_rollback_after_empty_detach_restores_home_and_pause() {
+    let state = ownership_state();
+    let mut turn = QueuedTurn::new("move failed".into());
+    turn.possibly_pasted = true;
+    state
+        .enqueue_agent_queued_turn("agent-1", turn.clone())
+        .unwrap();
+    let (removed, _) = state
+        .remove_agent_turn_queue_item("agent-1", 0, None, Some(&turn.id))
+        .unwrap();
+    crate::workspace::detach_pane_agent(&state, "pane-1").unwrap();
+    state.remove_pane("pane-1").unwrap();
+    state
+        .insert_agent_turn_at("agent-1", 0, removed, Some("pane-1"))
+        .unwrap();
+    let parked = state.agent("agent-1").unwrap().unwrap();
+    assert!(parked.paused);
+    assert_eq!(parked.orphaned_queue_pane_id.as_deref(), Some("pane-2"));
+    assert!(!state.agent_queued_turns("agent-1").unwrap()[0].possibly_pasted);
+}
+
+#[test]
+fn ownership_restore_filters_ghosts_and_deduplicates_inflight_identity() {
+    let state = ownership_state();
+    let turn = QueuedTurn::new("survivor".into());
+    let distinct = QueuedTurn::new("survivor".into());
+    let mut saved = persistence::load_with_diagnostics(&state.inner.config.workspace_root).state;
+    saved.queues.insert(
+        "agent-1".into(),
+        vec![turn.clone(), turn.clone(), distinct.clone()],
+    );
+    saved.inflight.insert("agent-1".into(), turn.clone());
+    saved
+        .queues
+        .insert("ghost".into(), vec![QueuedTurn::new("lost".into())]);
+    saved
+        .inflight
+        .insert("ghost".into(), QueuedTurn::new("lost inflight".into()));
+    persistence::save(&state.inner.config.workspace_root, &saved).unwrap();
+    let restored = AppState::new(test_config(state.inner.config.workspace_root.clone()));
+    restored.restore_session();
+    assert!(restored.agent_queued_turns("ghost").unwrap().is_empty());
+    let turns = restored.agent_queued_turns("agent-1").unwrap();
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[0].id, turn.id);
+    assert_eq!(turns[1].id, distinct.id);
+}
+
+struct OwnershipCloseThenFailWriter {
+    state: AppState,
+}
+
+impl io::Write for OwnershipCloseThenFailWriter {
+    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        self.state.remove_pane("pane-1").unwrap();
+        Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "test pane closed during write",
+        ))
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn ownership_real_send_failure_after_close_recovers_exactly_once() {
+    let state = ownership_state();
+    {
+        let mut model = state.inner.model.lock().unwrap();
+        let PaneBackend::HostPty(backend) = &mut model.panes.get_mut("pane-1").unwrap().backend
+        else {
+            panic!("host pty");
+        };
+        backend.writer = Arc::new(Mutex::new(Box::new(OwnershipCloseThenFailWriter {
+            state: state.clone(),
+        })));
+    }
+    state
+        .enqueue_agent_turn("agent-1", "real dispatch".into())
+        .unwrap();
+    assert!(crate::turn_queue::send_next_queued_agent_turn(&state, "agent-1").is_err());
+    assert_eq!(
+        state.list_agent_turn_queue("agent-1").unwrap(),
+        ["real dispatch"]
+    );
+    let agent = state.agent("agent-1").unwrap().unwrap();
+    assert!(agent.paused);
+    assert_eq!(agent.orphaned_queue_pane_id.as_deref(), Some("pane-2"));
+    let model = state.inner.model.lock().unwrap();
+    assert!(!model.agent_draining.contains("agent-1"));
+    assert!(!model.agent_queue_claims.contains_key("agent-1"));
+    assert!(!model.agent_inflight.contains_key("agent-1"));
+}
+
+#[test]
+fn ownership_recovered_delivery_can_be_explicitly_claimed_without_a_source_pane() {
+    let state = ownership_state();
+    state
+        .enqueue_agent_queued_turn(
+            "agent-1",
+            QueuedTurn::delivering(
+                "recovered fork".into(),
+                QueuedTurnDelivery::Fork {
+                    use_worktree: false,
+                },
+            ),
+        )
+        .unwrap();
+    crate::workspace::detach_pane_agent(&state, "pane-1").unwrap();
+    let document = state.agent_typing_document().unwrap();
+    state
+        .update_agent_typing("agent-1", &document, 1, true)
+        .unwrap();
+    assert!(matches!(
+        state
+            .claim_ready_agent_turn_gated("agent-1", Some(&[AgentStatus::Idle]))
+            .unwrap(),
+        AgentTurnClaim::Idle
+    ));
+    // A recovered source remains eligible for an explicit fork even while the
+    // automatic path is held by its parked pause and the current typing lease.
+    let (turn, claim_id) = ownership_claim(&state);
+    assert!(state.clear_agent_inflight("agent-1", claim_id));
+    let saved = persistence::load_with_diagnostics(&state.inner.config.workspace_root).state;
+    assert!(saved.inflight.is_empty());
+    assert!(state.requeue_inflight_after_failed_drain("agent-1", claim_id, turn));
+    let parked = state.agent("agent-1").unwrap().unwrap();
+    assert_eq!(parked.orphaned_queue_pane_id.as_deref(), Some("pane-1"));
+    assert!(parked.paused);
+}
+
+#[test]
+fn typing_document_orders_releases_renewals_and_duplicate_commands() {
+    let state = AppState::new(test_config(temp_workspace()));
+    state.insert_agent(sample_agent("a")).unwrap();
+    state.insert_agent(sample_agent("b")).unwrap();
+    let document = state.agent_typing_document().unwrap();
+    assert_eq!(
+        state.update_agent_typing("a", &document, 2, false).unwrap(),
+        (true, false)
+    );
+    assert_eq!(
+        state.update_agent_typing("a", &document, 1, true).unwrap(),
+        (false, false)
+    );
+    assert!(!state.agent_is_typing("a").unwrap());
+    assert_eq!(
+        state.update_agent_typing("a", &document, 3, true).unwrap(),
+        (true, true)
+    );
+    assert_eq!(
+        state.update_agent_typing("b", &document, 1, true).unwrap(),
+        (true, false)
+    );
+    assert_eq!(
+        state.update_agent_typing("a", &document, 2, false).unwrap(),
+        (false, false)
+    );
+    assert_eq!(
+        state.update_agent_typing("a", &document, 3, false).unwrap(),
+        (false, false)
+    );
+    assert!(state.agent_is_typing("a").unwrap());
+    state.update_agent_typing("a", &document, 4, false).unwrap();
+    assert!(state.agent_is_typing("b").unwrap());
+    assert!(!state.agent_is_typing("a").unwrap());
+    assert_eq!(
+        state
+            .update_agent_typing("missing", &document, 1, true)
+            .unwrap(),
+        (false, false)
+    );
+    let (expired, running) = state
+        .expire_agent_typing(std::time::Instant::now() + std::time::Duration::from_secs(6))
+        .unwrap();
+    assert_eq!(expired, vec!["b"]);
+    assert!(!running);
+    assert_eq!(
+        state.update_agent_typing("b", &document, 1, true).unwrap(),
+        (false, false)
+    );
+    assert!(!state.agent_is_typing("b").unwrap());
+    assert_eq!(
+        state.update_agent_typing("b", &document, 2, true).unwrap(),
+        (true, true)
+    );
+}
+
+#[test]
+fn typing_document_empty_and_repeated_reload_invalidates_late_commands() {
+    let state = AppState::new(test_config(temp_workspace()));
+    state.insert_agent(sample_agent("a")).unwrap();
+    let old = state.agent_typing_document().unwrap();
+    assert!(state.invalidate_agent_typing_document().unwrap().is_empty());
+    let intermediate = state.agent_typing_document().unwrap();
+    assert!(state.invalidate_agent_typing_document().unwrap().is_empty());
+    for document in [&old, &intermediate] {
+        assert!(state.update_agent_typing("a", document, 10, true).is_err());
+        assert!(state.update_agent_typing("a", document, 11, false).is_err());
+    }
+    assert!(!state.agent_is_typing("a").unwrap());
+    let new = state.agent_typing_document().unwrap();
+    assert_eq!(
+        state.update_agent_typing("a", &new, 1, true).unwrap(),
+        (true, true)
+    );
+}
+
+#[test]
+fn typing_document_renewal_and_restart_keep_leases_transient() {
+    let root = temp_workspace();
+    let state = AppState::new(test_config(root.clone()));
+    state.restore_session();
+    state.update_group(sample_terminal_group()).unwrap();
+    let mut pane = sample_pane_runtime("pane-7");
+    pane.info.agent_id = Some("a".to_string());
+    pane.info.kind = PaneKind::Agent;
+    state.insert_pane(pane).unwrap();
+    state.insert_agent(sample_agent("a")).unwrap();
+    let document = state.agent_typing_document().unwrap();
+    state.update_agent_typing("a", &document, 1, true).unwrap();
+    let prior_deadline = state.inner.model.lock().unwrap().agent_typing_updates["a"]
+        .deadline
+        .unwrap();
+    state.update_agent_typing("a", &document, 2, true).unwrap();
+    let (expired, running) = state.expire_agent_typing(prior_deadline).unwrap();
+    assert!(expired.is_empty());
+    assert!(running);
+    assert!(state.agent_is_typing("a").unwrap());
+    state.persist();
+    let restored = AppState::new(test_config(root));
+    restored.restore_session();
+    assert!(restored.agent("a").unwrap().is_some());
+    assert!(!restored.agent_is_typing("a").unwrap());
+    assert!(
+        restored
+            .inner
+            .model
+            .lock()
+            .unwrap()
+            .agent_typing_updates
+            .is_empty()
+    );
+}
+
+#[test]
+fn pending_pause_production_loader_is_additive_and_filters_unknown_agents() {
+    let workspace = temp_workspace();
+    let load = |value| {
+        persistence::load_with_diagnostics_from(
+            &workspace,
+            Some(serde_json::to_vec(&value).unwrap()),
+        )
+        .state
+    };
+    assert!(
+        load(serde_json::json!({ "version": 4 }))
+            .pending_pause
+            .is_empty()
+    );
+    assert!(
+        serde_json::to_value(PersistedState::default())
+            .unwrap()
+            .get("pendingPause")
+            .is_none()
+    );
+    let mut json = serde_json::json!({
+        "version": 4,
+        "agents": [sample_agent("agent-1")],
+        "pendingPause": ["agent-1", null, 17, "ghost", "agent-1"]
+    });
+    let loaded = load(json.clone());
+    assert_eq!(loaded.pending_pause, ["agent-1", "ghost", "agent-1"]);
+    persistence::save(&workspace, &loaded).unwrap();
+    let restored = AppState::new(test_config(workspace.clone()));
+    restored.restore_session();
+    assert!(
+        restored
+            .agent_delivery_debug("agent-1")
+            .unwrap()
+            .pending_pause
+    );
+    restored.finalize_persistence_for_exit();
+    let loaded = persistence::load_with_diagnostics(&workspace).state;
+    assert_eq!(loaded.pending_pause, ["agent-1"]);
+    json["pendingPause"] = serde_json::json!(false);
+    assert!(load(json).pending_pause.is_empty());
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn pending_pause_transitions_never_save_an_unfenced_turn() {
+    let workspace = temp_workspace();
+    let state = AppState::new(test_config(workspace.clone()));
+    state.restore_session();
+    state.insert_agent(sample_agent("agent-1")).unwrap();
+    state.enqueue_agent_turn("agent-1", "first".into()).unwrap();
+    state
+        .enqueue_agent_turn("agent-1", "second".into())
+        .unwrap();
+    state
+        .set_queued_turn_pause("agent-1", 0, true, None, None)
+        .unwrap();
+    let AgentTurnClaim::Ready { claim_id, .. } = state.claim_ready_agent_turn("agent-1").unwrap()
+    else {
+        panic!("expected a claimed pause-after turn");
+    };
+    let claimed = persistence::load_with_diagnostics(&workspace).state;
+    assert!(claimed.inflight["agent-1"].pause_after);
+    assert!(claimed.pending_pause.is_empty());
+
+    assert_eq!(
+        state.complete_claimed_agent_turn("agent-1", claim_id, true, false, false),
+        Some(false)
+    );
+    let delivered = persistence::load_with_diagnostics(&workspace).state;
+    assert!(delivered.inflight.is_empty());
+    assert_eq!(delivered.pending_pause, ["agent-1"]);
+    assert!(!delivered.agents[0].paused);
+
+    assert!(
+        state
+            .pause_agent_if_pending("agent-1", AgentStatus::Done)
+            .unwrap()
+    );
+    // persist() is synchronous in tests. Inspect immediately at the consumption
+    // boundary, before any caller can perform a second mutation or save.
+    let paused = persistence::load_with_diagnostics(&workspace).state;
+    assert!(paused.pending_pause.is_empty());
+    assert!(paused.agents[0].paused);
+    assert_eq!(paused.queues["agent-1"][0].text, "second");
+    assert!(
+        !state
+            .pause_agent_if_pending("agent-1", AgentStatus::Done)
+            .unwrap()
+    );
+    state.finalize_persistence_for_exit();
+    let restored = AppState::new(test_config(workspace.clone()));
+    restored.restore_session();
+    assert!(restored.agent_is_paused("agent-1").unwrap());
+    assert!(
+        !restored
+            .agent_delivery_debug("agent-1")
+            .unwrap()
+            .pending_pause
+    );
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn pending_pause_restored_failure_and_interruption_consume_once_without_a_queue() {
+    for interrupted in [false, true] {
+        let workspace = temp_workspace();
+        let persisted = PersistedState {
+            agents: vec![sample_agent("agent-1")],
+            pending_pause: vec!["agent-1".into()],
+            ..PersistedState::default()
+        };
+        persistence::save(&workspace, &persisted).unwrap();
+        let state = AppState::new(test_config(workspace.clone()));
+        state.restore_session();
+        let resolution = if interrupted {
+            crate::turn_queue::advance_after_interruption(&state, "agent-1")
+        } else {
+            crate::turn_queue::advance_after_failure(&state, "agent-1")
+        }
+        .unwrap();
+        assert!(matches!(
+            resolution,
+            crate::turn_queue::IdleResolution::Paused
+        ));
+        let loaded = persistence::load_with_diagnostics(&workspace).state;
+        assert!(loaded.pending_pause.is_empty());
+        assert!(loaded.agents[0].paused);
+        assert_eq!(
+            loaded.agents[0].status,
+            if interrupted {
+                AgentStatus::AwaitingInput
+            } else {
+                AgentStatus::Done
+            }
+        );
+        state.set_agent_paused("agent-1", false).unwrap();
+        state.finalize_persistence_for_exit();
+        let restored = AppState::new(test_config(workspace.clone()));
+        restored.restore_session();
+        assert!(matches!(
+            crate::turn_queue::advance_after_idle(&restored, "agent-1").unwrap(),
+            crate::turn_queue::IdleResolution::Idle
+        ));
+        assert!(!restored.agent_is_paused("agent-1").unwrap());
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+}
+
+#[test]
+fn pending_pause_shell_restore_does_not_rearm_an_already_parked_queue() {
+    let workspace = temp_workspace();
+    let persisted = PersistedState {
+        panes: vec![sample_pane("pane-7", Some("agent-1"))],
+        agents: vec![sample_agent("agent-1")],
+        queues: HashMap::from([("agent-1".into(), vec![QueuedTurn::new("second".into())])]),
+        pending_pause: vec!["agent-1".into()],
+        ..PersistedState::default()
+    };
+    persistence::save(&workspace, &persisted).unwrap();
+    let state = AppState::new(test_config(workspace.clone()));
+    state.restore_session();
+    let agent = state.agent("agent-1").unwrap().unwrap();
+    assert!(agent.paused);
+    assert!(agent.pane_id.is_none());
+    assert!(!state.agent_delivery_debug("agent-1").unwrap().pending_pause);
+    state.set_agent_paused("agent-1", false).unwrap();
+    assert!(
+        !state
+            .pause_agent_if_pending("agent-1", AgentStatus::Done)
+            .unwrap()
+    );
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn pending_pause_settles_status_before_unpause_can_observe_it() {
+    let workspace = temp_workspace();
+    let state = AppState::new(test_config(workspace.clone()));
+    state.restore_session();
+    state.insert_agent(sample_agent("agent-1")).unwrap();
+    state.insert_pane(sample_pane_runtime("pane-7")).unwrap();
+    state
+        .enqueue_agent_turn("agent-1", "second".into())
+        .unwrap();
+    state.mark_agent_pending_pause("agent-1").unwrap();
+    // Freeze persistence after the first mutation. A split consume/pause/status
+    // implementation exposes paused=true + Running here, allowing Unpause to
+    // clear the pause but skip draining before the idle handler writes Done.
+    let persist_guard = state.inner.persist_lock.lock().unwrap();
+    let worker_state = state.clone();
+    let worker = std::thread::spawn(move || {
+        crate::turn_queue::advance_after_idle(&worker_state, "agent-1").unwrap()
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let observed_status = loop {
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        if agent.paused {
+            break Some(agent.status);
+        }
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::yield_now();
+    };
+    // Release and join before asserting, including on failure, so the worker
+    // cannot be stranded behind the test's persist lock.
+    drop(persist_guard);
+    assert!(matches!(
+        worker.join().unwrap(),
+        crate::turn_queue::IdleResolution::Paused
+    ));
+    assert_eq!(observed_status, Some(AgentStatus::Done));
+    assert!(
+        crate::turn_queue::unpause_agent(&state, "agent-1")
+            .unwrap()
+            .sent
+    );
+    assert_eq!(
+        state.agent("agent-1").unwrap().unwrap().status,
+        AgentStatus::Running
+    );
+    assert!(state.agent_queued_turns("agent-1").unwrap().is_empty());
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn ownership_pending_pause_is_armed_only_by_the_current_durable_claim() {
+    let state = ownership_state();
+    state
+        .enqueue_agent_turn("agent-1", "pause on completion".into())
+        .unwrap();
+    state
+        .set_queued_turn_pause("agent-1", 0, true, None, None)
+        .unwrap();
+    let (first, old_claim) = ownership_claim(&state);
+    assert!(state.requeue_inflight_after_failed_drain("agent-1", old_claim, first));
+    let (retry, current_claim) = ownership_claim(&state);
+    assert_eq!(
+        state.complete_claimed_agent_turn("agent-1", old_claim, true, false, false),
+        None
+    );
+    let before = persistence::load_with_diagnostics(&state.inner.config.workspace_root).state;
+    assert_eq!(before.inflight["agent-1"].id, retry.id);
+    assert!(before.pending_pause.is_empty());
+    assert_eq!(
+        state.complete_claimed_agent_turn("agent-1", current_claim, true, false, false),
+        Some(false)
+    );
+    let delivered = persistence::load_with_diagnostics(&state.inner.config.workspace_root).state;
+    assert!(delivered.inflight.is_empty());
+    assert_eq!(delivered.pending_pause, ["agent-1"]);
+    assert!(!state.requeue_inflight_after_failed_drain("agent-1", old_claim, retry));
+    assert!(
+        state
+            .pause_agent_if_pending("agent-1", AgentStatus::Done)
+            .unwrap()
+    );
+    let settled = persistence::load_with_diagnostics(&state.inner.config.workspace_root).state;
+    assert!(settled.pending_pause.is_empty());
+    let agent = settled
+        .agents
+        .iter()
+        .find(|agent| agent.id == "agent-1")
+        .unwrap();
+    assert!(agent.paused);
+    assert_eq!(agent.status, AgentStatus::Done);
+}
+
+// The state tests use real persistence and real recovery dispatch. PTY runtimes
+// below use this module's FakeChild and sink writer; no agent or SSH is launched.
+fn durable_recovery_fixture(workspace: &PathBuf) -> PersistedState {
+    let mut local = sample_pane("failed-local", Some("agent-1"));
+    local.kind = PaneKind::Agent;
+    let mut agent = sample_agent("agent-1");
+    agent.pane_id = Some(local.id.clone());
+    agent.adapter = "unavailable-test-adapter".into();
+    let mut remote = sample_pane("failed-remote", None);
+    remote.remote_session = Some(RemoteSessionIdentity::new("missing-remote", &remote.id).unwrap());
+    remote.remote_session.as_mut().unwrap().support_dir = Some("/remote/support/keep".into());
+    let persisted = PersistedState {
+        panes: vec![local, remote],
+        groups: vec![sample_terminal_group()],
+        agents: vec![agent],
+        ..Default::default()
+    };
+    persistence::save(workspace, &persisted).unwrap();
+    let terminal_dir = workspace.join(".qmux/terminal");
+    std::fs::create_dir_all(&terminal_dir).unwrap();
+    for pane in &persisted.panes {
+        // Previous-process files have no live append handle in this process.
+        std::fs::write(
+            terminal_dir.join(format!("{}.pty", pane.id)),
+            b"durable history",
+        )
+        .unwrap();
+    }
+    persisted
+}
+
+fn run_failed_recovery(state: &AppState) {
+    state.begin_startup_restore();
+    let panes = state.restore_session();
+    crate::recovery::respawn_session(state, panes, &crate::startup::StartupState::default());
+    state.normalize_pane_layout();
+    state.finish_startup_restore();
+}
+
+#[test]
+fn durable_recovery_failed_panes_survive_completed_startup_and_second_restart() {
+    let workspace = temp_workspace();
+    let original = durable_recovery_fixture(&workspace);
+    for _ in 0..2 {
+        let state = AppState::new(test_config(workspace.clone()));
+        run_failed_recovery(&state);
+        assert!(state.list_panes().unwrap().is_empty());
+        let saved = persistence::load_with_diagnostics(&workspace).state;
+        assert_eq!(
+            saved.panes.len(),
+            2,
+            "failed descriptors must survive final startup persist"
+        );
+        for expected in &original.panes {
+            let actual = saved
+                .panes
+                .iter()
+                .find(|pane| pane.id == expected.id)
+                .unwrap();
+            assert_eq!(actual.remote_session, expected.remote_session);
+            assert_eq!((actual.cols, actual.rows), (expected.cols, expected.rows));
+            assert_eq!(actual.cwd, expected.cwd);
+            assert!(
+                matches!(actual.status, PaneStatus::Running),
+                "failure to recover is not an intentional close"
+            );
+        }
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Failed
+        );
+    }
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn durable_recovery_failed_scrollback_survives_startup_sweep() {
+    let workspace = temp_workspace();
+    durable_recovery_fixture(&workspace);
+    let state = AppState::new(test_config(workspace.clone()));
+    run_failed_recovery(&state);
+    std::fs::write(
+        workspace.join(".qmux/terminal/unreferenced.pty"),
+        b"reclaim",
+    )
+    .unwrap();
+    // The same keep-set used by main's startup sweep.
+    let kept = state.pane_scrollback_keep_ids().unwrap();
+    crate::scrollback::remove_orphaned_scrollback(&workspace, &kept);
+    assert_eq!(
+        read_pane_scrollback(&workspace, "failed-remote").unwrap(),
+        b"durable history"
+    );
+    assert_eq!(
+        read_pane_scrollback(&workspace, "failed-local").unwrap(),
+        b"durable history"
+    );
+    assert!(
+        read_pane_scrollback(&workspace, "unreferenced")
+            .unwrap()
+            .is_empty()
+    );
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn durable_recovery_aborted_spawn_survives_final_persist() {
+    let workspace = temp_workspace();
+    let original = durable_recovery_fixture(&workspace);
+    let state = AppState::new(test_config(workspace.clone()));
+    state.begin_startup_restore();
+    state.restore_session();
+    let mut runtime = sample_pane_runtime("failed-remote");
+    runtime.info = original.panes[1].clone();
+    state.insert_pane(runtime).unwrap();
+    state.abort_pane_spawn("failed-remote").unwrap();
+    state.normalize_pane_layout();
+    state.finish_startup_restore();
+    let saved = persistence::load_with_diagnostics(&workspace).state;
+    assert!(saved.panes.iter().any(|pane| pane.id == "failed-remote"));
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn durable_recovery_early_permanent_close_keeps_later_workspace_and_descriptor() {
+    let workspace = temp_workspace();
+    let original = durable_recovery_fixture(&workspace);
+    let state = AppState::new(test_config(workspace.clone()));
+    state.begin_startup_restore();
+    state.restore_session();
+    let mut runtime = sample_pane_runtime("failed-local");
+    runtime.info = original.panes[0].clone();
+    state.insert_pane(runtime).unwrap();
+    // A recovered child may exit before the later saved pane is attempted.
+    state.remove_pane("failed-local").unwrap();
+    assert!(state.group("group-1").unwrap().is_some());
+    state.finish_startup_restore();
+    let saved = persistence::load_with_diagnostics(&workspace).state;
+    assert_eq!(
+        saved
+            .panes
+            .iter()
+            .map(|pane| pane.id.as_str())
+            .collect::<Vec<_>>(),
+        ["failed-remote"]
+    );
+    assert!(
+        state
+            .remove_group("group-1")
+            .unwrap_err()
+            .contains("awaiting recovery")
+    );
+    // The backend permanent-removal transition is also the future discard API.
+    state.remove_pane("failed-remote").unwrap();
+    assert!(state.pane_scrollback_keep_ids().unwrap().is_empty());
+    state.finalize_persistence_for_exit();
+    let restored = AppState::new(test_config(workspace.clone()));
+    assert!(restored.restore_session().is_empty());
+    assert!(restored.list_groups().unwrap().is_empty());
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn durable_recovery_saved_finished_panes_stay_closed_and_are_swept() {
+    let workspace = temp_workspace();
+    let mut persisted = durable_recovery_fixture(&workspace);
+    persisted.panes[0].status = PaneStatus::Exited;
+    persisted.panes[1].status = PaneStatus::Killed;
+    let mut failed = sample_pane("already-failed", None);
+    failed.status = PaneStatus::Failed;
+    persisted.panes.push(failed);
+    persistence::save(&workspace, &persisted).unwrap();
+    let state = AppState::new(test_config(workspace.clone()));
+    run_failed_recovery(&state);
+    assert!(
+        persistence::load_with_diagnostics(&workspace)
+            .state
+            .panes
+            .is_empty()
+    );
+    assert!(state.pane_scrollback_keep_ids().unwrap().is_empty());
+    crate::scrollback::remove_orphaned_scrollback(
+        &workspace,
+        &state.pane_scrollback_keep_ids().unwrap(),
+    );
+    assert!(
+        read_pane_scrollback(&workspace, "failed-remote")
+            .unwrap()
+            .is_empty()
+    );
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn durable_recovery_promotes_success_without_duplicates_and_preserves_order() {
+    let workspace = temp_workspace();
+    let original = durable_recovery_fixture(&workspace);
+    let state = AppState::new(test_config(workspace.clone()));
+    state.begin_startup_restore();
+    state.restore_session();
+    // Simulate a successful runtime insertion; new metadata must supersede the
+    // original descriptor, including geometry and remote support identity.
+    let mut runtime = sample_pane_runtime("failed-remote");
+    runtime.info = original.panes[1].clone();
+    runtime.info.cols = 177;
+    state.insert_pane(runtime).unwrap();
+    state.restore_startup_pane_order(
+        &original
+            .panes
+            .iter()
+            .map(|pane| pane.id.clone())
+            .collect::<Vec<_>>(),
+    );
+    state.finish_startup_restore();
+    let saved = persistence::load_with_diagnostics(&workspace).state;
+    assert_eq!(
+        saved
+            .panes
+            .iter()
+            .map(|pane| pane.id.as_str())
+            .collect::<Vec<_>>(),
+        ["failed-local", "failed-remote"]
+    );
+    assert_eq!(saved.panes[1].cols, 177);
+    assert_eq!(
+        saved.panes[1].remote_session,
+        original.panes[1].remote_session
+    );
+    assert_eq!(state.inner.model.lock().unwrap().recovery_panes.len(), 1);
+    state.remove_pane("failed-remote").unwrap();
+    let saved = persistence::load_with_diagnostics(&workspace).state;
+    assert_eq!(saved.panes.len(), 1);
+    assert_eq!(saved.panes[0].id, "failed-local");
+    std::fs::remove_dir_all(workspace).unwrap();
 }

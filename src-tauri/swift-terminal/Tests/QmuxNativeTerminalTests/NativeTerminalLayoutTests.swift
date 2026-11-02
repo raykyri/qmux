@@ -660,6 +660,156 @@ final class NativeTerminalLayoutTests: XCTestCase {
         return nil
     }
 
+    // Production host + delegate + Ghostty surfaces, with only Rust callbacks recorded.
+    func testHiddenPaneCommitsForEitherSettingsOrder() async throws {
+        for settingsFirst in [true, false] {
+            try await Self.withHiddenPane { paneID, root, _, settings in
+                let frame = CGRect(x: 24, y: 18, width: 720, height: 360)
+                if settingsFirst {
+                    XCTAssertTrue(NativeTerminalHost.shared.updateSettings(id: paneID, settings: settings))
+                }
+                XCTAssertTrue(Self.setLayout(paneID: paneID, frame: frame, visible: false))
+                if !settingsFirst {
+                    XCTAssertFalse(NativeTerminalHost.shared.paneIsReadyForReplay(id: paneID))
+                    // Startup seed caches settings; it does not initialize an existing pane.
+                    NativeTerminalHost.shared.seedSettings(settings)
+                    XCTAssertFalse(NativeTerminalHost.shared.paneIsReadyForReplay(id: paneID))
+                    XCTAssertTrue(NativeTerminalHost.shared.updateSettings(id: paneID, settings: settings))
+                }
+                await Self.waitForPtyResizeFlush()
+                let view = try XCTUnwrap(Self.terminalView(in: root))
+                XCTAssertTrue(view.isHidden)
+                XCTAssertTrue(view.isSurfaceLive)
+                XCTAssertTrue(NativeTerminalHost.shared.paneIsReadyForReplay(id: paneID))
+                XCTAssertEqual(NativeTerminalCallbackRecorder.shared.geometryCommits, [paneID])
+                // Initial hidden commitment must not refit/reset scrollback on reveal.
+                let session = try XCTUnwrap(TerminalSessionRegistry.shared.session(for: paneID))
+                session.receive((0..<120).map { "hidden-row-\($0)" }.joined(separator: "\r\n"))
+                let drained = await Task.detached { session.waitForPendingOutput() }.value
+                XCTAssertTrue(drained)
+                XCTAssertTrue(NativeTerminalHost.shared.performAction(id: paneID, action: "scroll_to_top"))
+                await Self.waitForPtyResizeFlush()
+                let before = try XCTUnwrap(session.readViewportText())
+                XCTAssertTrue(before.contains("hidden-row-0"))
+                NativeTerminalCallbackRecorder.shared.reset()
+                XCTAssertTrue(Self.setLayout(paneID: paneID, frame: frame, visible: true))
+                await Self.waitForPtyResizeFlush()
+                XCTAssertTrue(NativeTerminalCallbackRecorder.shared.geometryCommits.isEmpty)
+                XCTAssertTrue(NativeTerminalCallbackRecorder.shared.resizes.isEmpty)
+                XCTAssertEqual(session.readViewportText(), before)
+            }
+        }
+    }
+
+    func testHiddenPaneLateSurfaceHonorsDeferredLatestLayout() async throws {
+        try await Self.withHiddenPane { paneID, root, _, settings in
+            let first = CGRect(x: 0, y: 0, width: 400, height: 200)
+            let latest = CGRect(x: 0, y: 0, width: 800, height: 400)
+            XCTAssertTrue(Self.setLayout(paneID: paneID, frame: first, visible: false))
+            let revision = Self.nextLayoutRevision()
+            XCTAssertTrue(NativeTerminalHost.shared.setLayout(
+                id: paneID, frame: latest, visible: false, acceptsPointerInput: false,
+                acceptsKeyboardClaim: false, deferGeometry: true, revision: revision
+            ))
+            XCTAssertTrue(NativeTerminalHost.shared.updateSettings(id: paneID, settings: settings))
+            await Self.waitForPtyResizeFlush()
+            let view = try XCTUnwrap(Self.terminalView(in: root))
+            XCTAssertTrue(view.isSurfaceLive)
+            XCTAssertEqual(view.frame, first)
+            XCTAssertFalse(NativeTerminalHost.shared.paneIsReadyForReplay(id: paneID))
+            XCTAssertTrue(NativeTerminalCallbackRecorder.shared.geometryCommits.isEmpty)
+            // A stale non-deferred invoke must not release the deferred latest frame.
+            XCTAssertTrue(NativeTerminalHost.shared.setLayout(
+                id: paneID, frame: first, visible: false, acceptsPointerInput: false,
+                acceptsKeyboardClaim: false, deferGeometry: false, revision: revision - 1
+            ))
+            XCTAssertFalse(NativeTerminalHost.shared.paneIsReadyForReplay(id: paneID))
+            XCTAssertTrue(Self.setLayout(paneID: paneID, frame: latest, visible: false))
+            await Self.waitForPtyResizeFlush()
+            XCTAssertEqual(view.frame, latest)
+            XCTAssertTrue(NativeTerminalHost.shared.paneIsReadyForReplay(id: paneID))
+            XCTAssertEqual(NativeTerminalCallbackRecorder.shared.geometryCommits, [paneID])
+        }
+    }
+
+    func testHiddenPaneLateSurfaceWaitsForWindowResizeFlush() async throws {
+        try await Self.withHiddenPane { paneID, root, _, settings in
+            let first = CGRect(x: 0, y: 0, width: 400, height: 200)
+            let latest = CGRect(x: 0, y: 0, width: 800, height: 400)
+            XCTAssertTrue(Self.setLayout(paneID: paneID, frame: first, visible: false))
+            let container = try XCTUnwrap(NativeTerminalHost.shared.container)
+            container.onLiveResizeChange?(true)
+            XCTAssertTrue(Self.setLayout(paneID: paneID, frame: latest, visible: false))
+            XCTAssertTrue(NativeTerminalHost.shared.updateSettings(id: paneID, settings: settings))
+            await Self.waitForPtyResizeFlush()
+            XCTAssertFalse(NativeTerminalHost.shared.paneIsReadyForReplay(id: paneID))
+            XCTAssertTrue(NativeTerminalCallbackRecorder.shared.geometryCommits.isEmpty)
+            container.onLiveResizeChange?(false)
+            await Self.waitForPtyResizeFlush()
+            XCTAssertEqual(try XCTUnwrap(Self.terminalView(in: root)).frame, latest)
+            XCTAssertTrue(NativeTerminalHost.shared.paneIsReadyForReplay(id: paneID))
+            XCTAssertEqual(NativeTerminalCallbackRecorder.shared.geometryCommits, [paneID])
+        }
+    }
+
+    func testHiddenPaneCommitsAfterLateWindowAttachment() async throws {
+        await Self.withHiddenPane(windowed: false) { paneID, root, window, settings in
+            XCTAssertTrue(Self.setLayout(paneID: paneID, frame: CGRect(x: 0, y: 0, width: 720, height: 360), visible: false))
+            XCTAssertTrue(NativeTerminalHost.shared.updateSettings(id: paneID, settings: settings))
+            XCTAssertFalse(NativeTerminalHost.shared.paneIsReadyForReplay(id: paneID))
+            window.contentView = root
+            await Self.waitForPtyResizeFlush()
+            XCTAssertTrue(NativeTerminalHost.shared.paneIsReadyForReplay(id: paneID))
+            XCTAssertEqual(NativeTerminalCallbackRecorder.shared.geometryCommits, [paneID])
+        }
+    }
+
+    func testHiddenPaneRemovedBeforeSurfaceReconciliationCannotCommitReplacement() async throws {
+        await Self.withHiddenPane { paneID, _, _, settings in
+            XCTAssertTrue(Self.setLayout(paneID: paneID, frame: CGRect(x: 0, y: 0, width: 720, height: 360), visible: false))
+            XCTAssertTrue(NativeTerminalHost.shared.updateSettings(id: paneID, settings: settings))
+            NativeTerminalHost.shared.removePane(id: paneID)
+            NativeTerminalCallbackRecorder.shared.reset()
+            XCTAssertTrue(NativeTerminalHost.shared.createPane(id: paneID, workingDirectory: nil))
+            await Self.waitForPtyResizeFlush()
+            XCTAssertFalse(NativeTerminalHost.shared.paneIsReadyForReplay(id: paneID))
+            XCTAssertTrue(NativeTerminalCallbackRecorder.shared.geometryCommits.isEmpty)
+        }
+    }
+
+    private static var hiddenSettingsRevision: UInt64 = 1_000_000
+
+    private static func withHiddenPane(
+        windowed: Bool = true,
+        _ body: (String, NSView, NSWindow, TerminalPaneSettings) async throws -> Void
+    ) async rethrows {
+        NativeTerminalHost.shared.shutdown()
+        NativeTerminalCallbackRecorder.shared.reset()
+        layoutRevisionCounter = 0
+        let root = NSView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800))
+        let window = NSWindow(contentRect: root.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        if windowed { window.contentView = root }
+        XCTAssertTrue(NativeTerminalHost.shared.attach(to: root))
+        let paneID = "hidden-geometry-test"
+        XCTAssertTrue(NativeTerminalHost.shared.createPane(id: paneID, workingDirectory: nil))
+        // shutdown preserves the process-wide settings cache. Withhold the real
+        // controller so every case starts at the late-surface boundary even
+        // after other tests warmed that cache. Use a newer settings snapshot to
+        // reassign it through production updateSettings, not a fake lifecycle.
+        terminalView(in: root)?.controller = nil
+        hiddenSettingsRevision += 1
+        var delayedSettings = Self.settings
+        delayedSettings.revision = hiddenSettingsRevision
+        defer {
+            NativeTerminalHost.shared.shutdown()
+            NativeTerminalCallbackRecorder.shared.reset()
+            window.close()
+            withExtendedLifetime((root, window)) {}
+        }
+        try await body(paneID, root, window, delayedSettings)
+    }
+
     private static let settings = TerminalPaneSettings(
         revision: 1,
         fontSize: 13,
