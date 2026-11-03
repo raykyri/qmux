@@ -608,7 +608,7 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
     let is_head = head.method == "HEAD";
 
     // Split the query string off the target (dropping any fragment) before routing.
-    // `?raw=1` opts Markdown and JSON files out of the HTML rendering below.
+    // `?raw=1` opts Markdown, JSON, and plain-text files out of HTML rendering.
     let without_fragment = head.target.split('#').next().unwrap_or("");
     let (path, query) = match without_fragment.split_once('?') {
         Some((path, query)) => (path, Some(query)),
@@ -751,14 +751,19 @@ fn build_response(state: &AppState, head: &RequestHead) -> Response {
         return response;
     }
 
-    // WebKit's native JSON document does not provide a themed preview. Serve an
-    // escaped source page, preserving numbers, key order, and even malformed JSON.
+    // WebKit's native plain-text renderer can paint light text on the iframe's
+    // white canvas, and its JSON document does not provide a themed preview.
+    // Serve escaped source with explicit foreground/background colors, preserving
+    // whitespace and JSON numbers, key order, and even malformed input.
     // As with Markdown, transformed responses ignore source byte ranges.
-    if !raw_requested && content_type.starts_with("application/json") && total <= MAX_INLINE_BYTES {
+    if !raw_requested
+        && (content_type.starts_with("application/json") || content_type.starts_with("text/plain"))
+        && total <= MAX_INLINE_BYTES
+    {
         let Ok(source) = read_slice(file, 0, total) else {
             return Response::error(500, "Internal Server Error");
         };
-        let page = render_json_page(&canonical, &String::from_utf8_lossy(&source));
+        let page = render_source_page(&canonical, &String::from_utf8_lossy(&source));
         let mut response = Response::new(200, "OK");
         response.header("Content-Type", "text/html; charset=utf-8");
         response.header("Content-Length", &page.len().to_string());
@@ -1244,11 +1249,11 @@ fn render_markdown_page(
     )
 }
 
-fn render_json_page(path: &Path, source: &str) -> String {
+fn render_source_page(path: &Path, source: &str) -> String {
     let title = escape_html(
         path.file_name()
             .and_then(|name| name.to_str())
-            .unwrap_or("JSON"),
+            .unwrap_or("Text"),
     );
     let body = escape_html(source);
     let scroll_bridge = html_preview_scroll_bridge();
@@ -1257,8 +1262,9 @@ fn render_json_page(path: &Path, source: &str) -> String {
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <title>{title}</title><style>\
          :root {{ color-scheme: light dark; }}\
-         body {{ margin: 0; background: #ffffff; color: #1f2328; }}\
-         @media (prefers-color-scheme: dark) {{ body {{ background: #1e2227; color: #e2e6ea; }} }}\
+         html, body {{ background: #ffffff; color: #1f2328; }}\
+         body {{ margin: 0; }}\
+         @media (prefers-color-scheme: dark) {{ html, body {{ background: #1e2227; color: #e2e6ea; }} }}\
          pre {{ margin: 0; padding: 1.5rem; white-space: pre-wrap; overflow-wrap: anywhere; \
          font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }}\
          </style></head><body><main><pre><code>{body}</code></pre></main>\
@@ -1858,17 +1864,14 @@ mod tests {
 
         let hello = std::fs::canonicalize(root.join("hello.txt")).unwrap();
 
-        // Full GET returns the file.
-        let (status, body) = http_get(info.port, &url_path(info.port, &token, &hello), None);
+        // Raw GET returns the file, with byte ranges into the original source.
+        let raw_path = format!("{}?raw=1", url_path(info.port, &token, &hello));
+        let (status, body) = http_get(info.port, &raw_path, None);
         assert!(status.contains("200"), "status: {status}");
         assert_eq!(body, b"hello world");
 
         // Range GET returns the requested slice with 206.
-        let (status, body) = http_get(
-            info.port,
-            &url_path(info.port, &token, &hello),
-            Some("bytes=0-4"),
-        );
+        let (status, body) = http_get(info.port, &raw_path, Some("bytes=0-4"));
         assert!(status.contains("206"), "status: {status}");
         assert_eq!(body, b"hello");
 
@@ -1914,17 +1917,20 @@ mod tests {
     }
 
     #[test]
-    fn json_preview_escapes_source_without_reparsing() {
+    fn source_preview_escapes_source_without_reparsing() {
         for source in [
             "\n{\"z\":9007199254740993,\"z\":1e999,\"html\":\"</code></pre><script>alert(1)</script>&\"}",
             "{ incomplete JSON",
+            "Plain text\n  indented\t<&>\n</code></pre><script>alert(1)</script>",
             "",
         ] {
-            let page = render_json_page(Path::new("<data>.JSON"), source);
+            let page = render_source_page(Path::new("<data>.JSON"), source);
             assert!(page.contains("<title>&lt;data&gt;.JSON</title>"));
             assert!(page.contains(&format!("<code>{}</code>", escape_html(source))));
             assert!(!page.contains("<script>alert(1)</script>"));
             assert!(page.contains("prefers-color-scheme: dark"));
+            assert!(page.contains("html, body { background: #ffffff; color: #1f2328; }"));
+            assert!(page.contains("html, body { background: #1e2227; color: #e2e6ea; }"));
             assert!(page.contains("qmux-preview-scroll"));
         }
     }
@@ -1972,6 +1978,72 @@ mod tests {
             "application/json; charset=utf-8".into()
         )));
         assert_eq!(raw.body, source);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn plain_text_previews_are_themed_and_support_raw_ranges_and_head() {
+        let base = non_temp_test_dir("text-preview");
+        let root = base.join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        let source = "HANDOFF — notes\n  keep\twhitespace\n<script>alert(1)</script>&\n";
+        let state = test_state(&root, &base, "pane-text");
+        state.set_file_server(45678);
+        let token = state.pane_file_token("pane-text").unwrap();
+
+        for extension in ["txt", "TXT", "log", "csv", "xml", "yaml", "yml", "toml"] {
+            let file = root.join(format!("notes.{extension}"));
+            std::fs::write(&file, source).unwrap();
+            let path = url_path(45678, &token, &file.canonicalize().unwrap());
+            let mut request = RequestHead {
+                method: "GET".into(),
+                target: path.clone(),
+                range: Some("bytes=0-4".into()),
+                host: None,
+                fetch_dest: Some("iframe".into()),
+            };
+            let preview = build_response(&state, &request);
+            assert_eq!(preview.status, 200);
+            assert!(
+                preview
+                    .headers
+                    .contains(&("Content-Type".into(), "text/html; charset=utf-8".into()))
+            );
+            assert!(
+                preview
+                    .headers
+                    .contains(&("Content-Length".into(), preview.body.len().to_string()))
+            );
+            assert!(
+                preview
+                    .headers
+                    .contains(&("Content-Security-Policy".into(), markdown_page_csp(45678)))
+            );
+            let page = String::from_utf8(preview.body).unwrap();
+            assert!(page.contains(&format!("<code>{}</code>", escape_html(source))));
+            assert!(!page.contains("<script>alert(1)</script>"));
+            assert!(page.contains("background: #ffffff; color: #1f2328"));
+            assert!(page.contains("background: #1e2227; color: #e2e6ea"));
+
+            request.method = "HEAD".into();
+            let head = build_response(&state, &request);
+            assert_eq!(head.headers, preview.headers);
+            assert!(head.body.is_empty());
+
+            request.method = "GET".into();
+            request.target = format!("{path}?raw=1");
+            let range = build_response(&state, &request);
+            assert_eq!(range.status, 206);
+            assert_eq!(range.body, &source.as_bytes()[..5]);
+            request.range = None;
+            let raw = build_response(&state, &request);
+            assert_eq!(raw.status, 200);
+            assert!(
+                raw.headers
+                    .contains(&("Content-Type".into(), "text/plain; charset=utf-8".into()))
+            );
+            assert_eq!(raw.body, source.as_bytes());
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 
