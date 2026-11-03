@@ -124,6 +124,7 @@ export function remoteConnectionPresentation(
   const retrySeconds = connection.nextRetryAt == null ? null : Math.max(0, Math.ceil((connection.nextRetryAt - now) / 1000));
   if (waiting) {
     if (!recoveryTitle) view.title = "Connection lost";
+    view.outageDuration = null;
     view.lines.push(retrySeconds != null && retrySeconds > 0 ? `Retrying in ${retrySeconds}s` : "Waiting to retry...");
     view.refreshEveryMs = 1000;
   } else if (showStep) {

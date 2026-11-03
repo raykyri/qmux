@@ -109,9 +109,9 @@ test("retry copy prioritizes errors and counts down without stale timing on fail
     message: "check remote session timed out" };
   assert.equal(remoteConnectionLabel(connection), "Restoring session");
   assert.equal(remoteConnectionDetails(connection, now),
-    "Retrying in 5s\nConnection timed out\nDisconnected for 32s");
+    "Retrying in 5s\nConnection timed out");
   assert.match(remoteConnectionDetails(connection, now + 2000), /Retrying in 3s/);
-  assert.match(remoteConnectionDetails(connection, now + 6000), /Waiting to retry/);
+  assert.equal(remoteConnectionDetails(connection, now + 6000), "Waiting to retry...\nConnection timed out");
   const failed = { ...connection, state: "failed" as const, stage: "needsAttention", message: "Permission denied (publickey)." };
   assert.equal(remoteConnectionDetails(failed, now), "SSH authentication failed\nDisconnected for 32s");
   assert.equal(remoteConnectionDetails({ ...failed, stage: "sessionEnded", sessionExists: false }, now), "Disconnected for 32s");
@@ -157,7 +157,7 @@ test("recovery reasons share steps and return timestamp metadata separately", ()
   }
 });
 
-test("credential titles, combined retry countdowns, and final states have explicit precedence", () => {
+test("credential titles, retry countdowns, and final states have explicit precedence", () => {
   const now = 1_000_000;
   const retry = { state: "reconnecting" as const, stage: "waitingToRetry", reason: "appRestart",
     message: "could not recover remote hook credential", nextRetryAt: now + 5000 };
@@ -195,13 +195,14 @@ test("outage age uses loss time, never attachment time, and clamps clock skew", 
   const connection = { state: "reconnecting" as const, reason: "connectionLost", stage: "waitingToRetry",
     nextRetryAt: now + 9000, lastConnectedAt: now - 24 * 60_000, disconnectedAt: now - 32000 };
   assert.deepEqual(remoteConnectionPresentation(connection, now), {
-    title: "Connection lost", lines: ["Retrying in 9s"], outageDuration: "Disconnected for 32s", refreshEveryMs: 1000,
+    title: "Connection lost", lines: ["Retrying in 9s"], outageDuration: null, refreshEveryMs: 1000,
   });
-  assert.equal(remoteConnectionPresentation({ ...connection, disconnectedAt: now + 500 }, now).outageDuration, "Disconnected for 0s");
-  assert.equal(remoteConnectionPresentation({ ...connection, disconnectedAt: now - 65000 }, now).outageDuration, "Disconnected for 1m 5s");
-  assert.equal(remoteConnectionPresentation({ ...connection, disconnectedAt: undefined }, now).outageDuration, null);
   const active = { ...connection, stage: "checking", state: "checking" as const };
   assert.deepEqual(remoteConnectionPresentation(active, now).lines, ["Checking connection..."]);
+  assert.equal(remoteConnectionPresentation(active, now).outageDuration, "Disconnected for 32s");
+  assert.equal(remoteConnectionPresentation({ ...active, disconnectedAt: now + 500 }, now).outageDuration, "Disconnected for 0s");
+  assert.equal(remoteConnectionPresentation({ ...active, disconnectedAt: now - 65000 }, now).outageDuration, "Disconnected for 1m 5s");
+  assert.equal(remoteConnectionPresentation({ ...active, disconnectedAt: undefined }, now).outageDuration, null);
   assert.equal(remoteConnectionPresentation({ ...connection, state: "connected" }, now).outageDuration, null);
 });
 
