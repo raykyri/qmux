@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import test from "node:test";
+import { JSDOM } from "jsdom";
 import {
   createResearchPublicationDraft,
   createTranscriptPublicationDraft,
@@ -16,6 +17,81 @@ import type {
 } from "../src/types";
 import { createQmuxWebServer } from "./server";
 import { getAgentUiAdapter } from "../src/adapters";
+import { renderLandingPage } from "./landing/LandingPage";
+
+function landingDemo() {
+  const html = renderLandingPage("https://qmux.app")
+    .replace(/<style>[\s\S]*?<\/style>/g, "")
+    .replace(/data-mock-features="[^"]*"/g, 'data-mock-features="sessions panels disclosures"');
+  const dom = new JSDOM(html, { runScripts: "outside-only", pretendToBeVisual: true });
+  Object.defineProperty(dom.window, "matchMedia", { value: () => ({ matches: true }) });
+  dom.window.eval(readFileSync(new URL("../site/mockup.js", import.meta.url), "utf8"));
+  const mockup = dom.window.document.querySelector<HTMLElement>(".app-mockup")!;
+  return { dom, mockup };
+}
+
+test("landing demo preserves browsers per tab and gives Restored badge precedence", (t) => {
+  const { dom, mockup } = landingDemo();
+  t.after(() => dom.window.close());
+  const rows = mockup.querySelectorAll<HTMLElement>("[data-mock-session-tab]");
+  const first = rows[0];
+  const second = rows[1];
+  const overlay = mockup.querySelector<HTMLElement>('[data-mock-panel="browser"]')!;
+  const toggle = mockup.querySelector<HTMLButtonElement>('.turn-pane-header [data-mock-action="browser"]')!;
+  const firstBadge = first.querySelector<HTMLElement>("[data-mock-browser-badge]")!;
+  const secondBadge = second.querySelector<HTMLElement>("[data-mock-browser-badge]")!;
+  const restored = dom.window.document.createElement("small");
+  restored.dataset.mockRestoredBadge = "";
+  restored.textContent = "Restored";
+  first.querySelector(".pane-tab-meta")!.append(restored);
+
+  toggle.click();
+  assert.equal(overlay.hidden, false);
+  assert.equal(firstBadge.hidden, true, "Restored wins while it is visible");
+  mockup.querySelector<HTMLButtonElement>("[data-mock-visualization]")!.click();
+  const address = mockup.querySelector<HTMLInputElement>("[data-mock-browser-url]")!;
+  const firstAddress = address.value;
+  second.querySelector<HTMLButtonElement>(".pane-tab")!.click();
+  assert.equal(overlay.hidden, true, "a different tab has no open browser");
+  toggle.click();
+  assert.equal(secondBadge.hidden, false);
+  assert.notEqual(address.value, firstAddress, "a new browser starts with its own page");
+  first.querySelector<HTMLButtonElement>(".pane-tab")!.click();
+  assert.equal(overlay.hidden, false, "returning to a tab restores its open browser");
+  assert.equal(address.value, firstAddress);
+  assert.equal(mockup.querySelector<HTMLElement>(".browser-overlay-page")!.dataset.mockBrowserKind, "visualization");
+  assert.equal(restored.hidden, true, "visiting clears the one-time Restored hint");
+  assert.equal(firstBadge.hidden, false);
+  assert.equal(secondBadge.hidden, false, "inactive tab retains its browser badge");
+  assert.equal(firstBadge.querySelector("svg")?.getAttribute("width"), "14");
+  toggle.click();
+  assert.equal(firstBadge.hidden, true, "closing clears only this tab's badge");
+  assert.equal(secondBadge.hidden, false);
+});
+
+test("landing demo collapses task, environment, and skill messages independently", (t) => {
+  const { dom, mockup } = landingDemo();
+  t.after(() => dom.window.close());
+  const timeline = mockup.querySelector('.turn-timeline[data-mock-session-view="qmux-landing-transcript"]')!;
+  const buttons = [...timeline.querySelectorAll<HTMLButtonElement>("[data-mock-disclosure]")];
+  for (const label of ["Background task completed", "Environment update", "Skill: docs"]) {
+    const button = buttons.find((button) => button.textContent === label)!;
+    assert.ok(button, label);
+    const body = dom.window.document.getElementById(button.getAttribute("aria-controls")!)!;
+    assert.equal(body.hidden, true);
+    assert.equal(button.getAttribute("aria-expanded"), "false");
+    button.focus();
+    button.click();
+    assert.equal(body.hidden, false);
+    assert.equal(button.getAttribute("aria-expanded"), "true");
+    button.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    assert.equal(body.hidden, true);
+    assert.equal(dom.window.document.activeElement, button);
+  }
+  assert.match(timeline.querySelector(".turn-card.role-user:not(.is-tagged-instruction-message)")!.textContent!, /add a qmux group/);
+  const ids = [...dom.window.document.querySelectorAll<HTMLElement>("[data-mock-disclosure-body]")].map((body) => body.id);
+  assert.equal(new Set(ids).size, ids.length, "disclosure controls have distinct targets across replicas");
+});
 
 const pane: PaneInfo = {
   id: "pane-1",
@@ -1033,11 +1109,11 @@ test("the landing page renders the app replica and its own image policy", async 
   // step timeline the enhancement replays from.
   assert.match(
     body,
-    /data-mock-features="replay queue groups sessions panes terminal-map panels menus sidebar-menus images"/,
+    /data-mock-features="replay queue groups sessions panes terminal-map panels menus sidebar-menus images disclosures"/,
   );
   assert.match(
     body,
-    /data-mock-features="queue groups sessions panes terminal-map panels menus sidebar-menus images"/,
+    /data-mock-features="queue groups sessions panes terminal-map panels menus sidebar-menus images disclosures"/,
   );
   // Every visible sidebar tab ships a complete terminal/transcript pair in
   // each replica. The defaults are visible without JavaScript and the
@@ -1153,7 +1229,7 @@ test("the landing page renders the app replica and its own image policy", async 
   // The third replica opens in research mode: the sidebar's second list, the
   // Recent Activity row above it, and the stage behind them all ship
   // server-rendered, so the mode is complete before any script runs.
-  assert.match(body, /data-mock-features="research journal research-menus"/);
+  assert.match(body, /data-mock-features="research journal research-menus disclosures"/);
   assert.match(body, /class="app-shell has-turn-sidebar is-research-mode"/);
   assert.match(body, /class="sidebar is-code-mode is-research-mode"/);
   assert.match(body, /data-mock-sidebar-list="terminal" hidden/);

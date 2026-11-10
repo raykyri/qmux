@@ -107,6 +107,7 @@ import {
   type MockTweetRun,
   type TerminalLine,
 } from "./mockupData";
+import { transcriptDisclosureLabel } from "../../src/lib/transcriptDisclosures";
 
 const MOCKUP_LABEL =
   "The qmux desktop window: a sidebar of open-source projects and their agents on the left, " +
@@ -163,11 +164,14 @@ function PaneTab({ pane }: { pane: MockPane }) {
             </span>
           ) : null}
         </span>
-        {pane.badge ? (
-          <span className="pane-tab-meta">
-            <small className="pane-tab-status">{pane.badge}</small>
-          </span>
-        ) : null}
+        <span className="pane-tab-meta">
+          {pane.badge ? (
+            <small className="pane-tab-status" data-mock-restored-badge={pane.badge === "Restored" ? "" : undefined}>{pane.badge}</small>
+          ) : null}
+          <small className="pane-tab-status" data-mock-browser-badge title="Browser open" aria-label="Browser open" hidden>
+            <PictureInPicture2Icon size={14} />
+          </small>
+        </span>
       </span>
     </div>
   );
@@ -2102,6 +2106,25 @@ function PaneGroupMenu({ group }: { group: MockGroup }) {
   );
 }
 
+function TranscriptDisclosure({ text, role = "user", step = 0, pending }: {
+  text: string;
+  role?: string;
+  step?: number;
+  pending?: string;
+}) {
+  const label = transcriptDisclosureLabel(text, role) ?? "Instructions";
+  return (
+    <article className={`turn-card role-${role} is-tagged-instruction-message`} data-step={step} data-replay-pending={pending}>
+      <div className="turn-blocks">
+        <div className="tagged-user-instruction is-collapsed">
+          <span className="control-button tagged-user-instruction-toggle" data-mock-disclosure title={`Show ${label}`}>{label}</span>
+          <p className="turn-text is-tagged-instruction" data-mock-disclosure-body hidden>{text}</p>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function TranscriptSession({
   sessionId,
   session,
@@ -2120,14 +2143,14 @@ function TranscriptSession({
       data-mock-session-view={sessionId}
       hidden={sessionId !== DEFAULT_SESSION_ID}
     >
+      {session.userTurn.tags.map((tag) => (
+        <TranscriptDisclosure key={tag} text={tag === "<environment_context>"
+          ? `<environment_context>\n<cwd>/Users/example/Code/${session.project}</cwd>\n</environment_context>`
+          : "<INSTRUCTIONS>\nFollow the repository guidelines and run checks appropriate to the change.\n</INSTRUCTIONS>"} />
+      ))}
       <article className="turn-card role-user" data-step={0}>
         <TurnHeader label="You" />
         <div className="turn-blocks">
-          {session.userTurn.tags.map((tag) => (
-            <div key={tag} className="turn-message-block">
-              <p className="turn-text is-tagged-instruction">{tag}</p>
-            </div>
-          ))}
           <div className="turn-message-block">
             <p className="turn-text">{session.userTurn.text}</p>
           </div>
@@ -2161,6 +2184,8 @@ function TranscriptSession({
               </div>
             </div>
           </article>
+        ) : item.type === "metadata" ? (
+          <TranscriptDisclosure key={index} text={item.text} role={item.role} step={item.step} pending={replayPending(stageReplay, sessionId, item.step)} />
         ) : item.type === "image" ? (
           <article
             key={index}
@@ -2320,12 +2345,13 @@ export const MOCKUP_FEATURES = [
   "menus",
   "sidebar-menus",
   "images",
+  "disclosures",
 ] as const;
 
 // The research replica's own set. Research mode has its own list, stage, and
 // composer, so it enhances none of the terminal surfaces — and the terminal
 // half it keeps behind the mode toggle stays the inert finished state.
-export const RESEARCH_MOCKUP_FEATURES = ["research", "journal", "research-menus"] as const;
+export const RESEARCH_MOCKUP_FEATURES = ["research", "journal", "research-menus", "disclosures"] as const;
 
 export default function AppMockup({
   labelledBy,

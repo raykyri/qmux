@@ -12,8 +12,8 @@ import type {
 import {
   stripTaggedInstructionBlocks,
   stripTaggedUserInstructionBlocks,
-  taggedUserInstructionDetails,
 } from "./taggedInstructions";
+import { transcriptDisclosureLabel } from "./transcriptDisclosures";
 
 export type TextBlock = Extract<TurnBlock, { type: "text" }>;
 export type ToolUseBlock = Extract<TurnBlock, { type: "toolUse" }>;
@@ -353,7 +353,9 @@ export function buildTimelineItems(turns: Turn[], showActivityDetail = true): Me
       previous.status === status &&
       previous.contextStatus === contextStatus &&
       participantKey(previous.participant) === participantKey(participant) &&
-      previous.activities.length === 0
+      previous.activities.length === 0 &&
+      !(block.type === "text" && transcriptDisclosureLabel(block.text, role)) &&
+      !messageItemIsTaggedInstruction(previous)
     ) {
       // Deliberately keeps the existing anchor: the card now spans several
       // turns, and a fork from it must branch before the earliest.
@@ -946,11 +948,11 @@ export function assistantRunCopyTextByItemKey(items: MessageItem[]) {
 }
 
 export function messageItemIsTaggedInstruction(item: MessageItem) {
-  if (item.role !== "user" || item.blocks.length !== 1) {
+  if (item.blocks.length !== 1) {
     return false;
   }
   const [block] = item.blocks;
-  return block.type === "text" && taggedUserInstructionDetails(block.text) !== null;
+  return block.type === "text" && transcriptDisclosureLabel(block.text, item.role) !== null;
 }
 
 // True when the item carries a tool call (a tool row, or a tool inside a grouped

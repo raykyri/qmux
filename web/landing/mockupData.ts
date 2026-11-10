@@ -261,11 +261,19 @@ export interface TranscriptVisualization {
   file: string;
 }
 
+export interface TranscriptMetadata {
+  type: "metadata";
+  step: number;
+  role: "user" | "system";
+  text: string;
+}
+
 export type TranscriptItem =
   | TranscriptParagraph
   | TranscriptActivity
   | TranscriptImage
-  | TranscriptVisualization;
+  | TranscriptVisualization
+  | TranscriptMetadata;
 
 const p = (
   step: number,
@@ -336,16 +344,34 @@ export const MOCK_SESSIONS: Record<string, MockSession> = {
         "I'll make qmux the default project, excerpt this landing-page iteration into a real session, and add an inline image item to the mock transcript renderer. The active replay will start with existing output and run long enough to visibly scroll.",
       ),
       activity(2, "Called 5 tools"),
+      {
+        type: "metadata",
+        step: 2,
+        role: "user",
+        text: "Base directory for this skill: /Users/example/.claude/skills/docs\n\nUse the docs connector to read and update project documentation. Check the existing document before editing and preserve its structure.",
+      },
       p(
         3,
         "The current transcript union only handles paragraphs and activity summaries. I'll add a typed image block, render the bundled qmux capture with fixed dimensions, and keep Porffor available as a collapsed secondary group.",
       ),
       activity(4, "Called 5 tools"),
+      {
+        type: "metadata",
+        step: 4,
+        role: "system",
+        text: "# Environment update\n - Primary working directory: /Users/example/Code/qmux/web (was /Users/example/Code/qmux)",
+      },
       p(
         5,
         "The new qmux session is now the server-rendered default. Its first completed inspection is visible immediately, while later edits, checks, and the image arrive through the working-session replay.",
       ),
       activity(6, "Called 5 tools"),
+      {
+        type: "metadata",
+        step: 6,
+        role: "system",
+        text: "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.\nDo NOT interpret this as user acknowledgement, confirmation, or response to any pending question.\n\n<task-notification>\n<task-id>preview-server</task-id>\n<status>completed</status>\n<summary>Background command checking the preview server completed (exit code 0)</summary>\n</task-notification>",
+      },
       p(
         7,
         "The rendered document now contains fourteen terminal sessions, one inline transcript image, and an active qmux timeline. Completed sessions still bypass replay and show their full history immediately.",

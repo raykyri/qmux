@@ -570,6 +570,14 @@ export const MOCKUP_CSS = `
   white-space: nowrap;
 }
 
+.app-mockup .pane-tab-status[hidden] {
+  display: none;
+}
+
+.app-mockup .pane-tab-meta .pane-tab-status {
+  pointer-events: auto;
+}
+
 .app-mockup .pane-tab-dot {
   grid-column: 1;
   justify-self: start;
@@ -909,6 +917,65 @@ export const MOCKUP_CSS = `
 
 .app-mockup .turn-card.role-user {
   margin: 7px 0;
+}
+
+/* Keep injected messages in the same quiet disclosure rows as the app. */
+.app-mockup .turn-card.is-tagged-instruction-message {
+  margin: 0;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+}
+
+.app-mockup .turn-card.is-tagged-instruction-message .turn-blocks {
+  gap: 0;
+  margin-top: 0;
+}
+
+.app-mockup .tagged-user-instruction {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.app-mockup .tagged-user-instruction .turn-text {
+  white-space: pre-wrap;
+}
+
+.app-mockup .tagged-user-instruction-toggle {
+  display: inline;
+  justify-self: start;
+  min-height: 0;
+  min-width: 0;
+  max-width: 100%;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  padding: 0 1px;
+  color: var(--text-activity);
+  font: inherit;
+  font-size: calc(14px + var(--font-ui-size-offset));
+  line-height: 1.35;
+  overflow: hidden;
+  text-align: left;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-mockup.is-interactive .tagged-user-instruction-toggle:hover {
+  color: var(--text-tertiary);
+}
+
+.app-mockup .tagged-user-instruction-toggle:focus-visible {
+  outline: 1px solid var(--text-activity);
+  outline-offset: 2px;
+}
+
+.app-mockup .app-shell.is-transcript-expanded
+  .turn-card.is-tagged-instruction-message:has(.tagged-user-instruction.is-collapsed) {
+  display: none;
 }
 
 .app-mockup .turn-card header {

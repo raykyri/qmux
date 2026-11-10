@@ -10,6 +10,7 @@ import {
   formatMessageTimestamp,
   formatPlainTextTranscript,
   messageItemCopyText,
+  messageItemIsTaggedInstruction,
   messageItemText,
   shouldShowAssistantGroupTimestamp,
   thinkingProseText,
@@ -47,6 +48,33 @@ function toolResult(
 ): TurnBlock {
   return { type: "toolResult", toolUseId, content, isError };
 }
+
+test("injected notifications, environment updates, and skills stay separate from ordinary messages", () => {
+  for (const role of ["user", "system", "assistant"]) {
+    const messages = [
+      "Ordinary message before.",
+      "[SYSTEM NOTIFICATION - NOT USER INPUT]\nAutomated event.\n<task-notification><status>completed</status></task-notification>",
+      "# Environment update\n - Primary working directory: /project/src",
+      "Base directory for this skill: /skills/docs\n\nFull instructions.",
+      "Ordinary message after.",
+    ];
+    const items = buildTimelineItems(messages.map((message) => turn(role, [text(message)])));
+    assert.equal(items.length, messages.length);
+    assert.deepEqual(items.map(messageItemIsTaggedInstruction), [false, true, true, true, false]);
+    assert.deepEqual(items.map(messageItemText), messages);
+  }
+});
+
+test("adjacent user instructions do not swallow the real prompt", () => {
+  const items = buildTimelineItems([
+    turn("user", [text("<system-reminder>Injected guidance</system-reminder>")]),
+    turn("user", [text("Please fix the build.")]),
+  ]);
+  assert.equal(items.length, 2);
+  assert.equal(messageItemIsTaggedInstruction(items[0]), true);
+  assert.equal(messageItemIsTaggedInstruction(items[1]), false);
+  assert.equal(messageItemText(items[1]), "Please fix the build.");
+});
 
 test("activities of a new reply render below the user message that triggered them", () => {
   nextIndex = 0;

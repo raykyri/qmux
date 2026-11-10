@@ -37,7 +37,8 @@ import {
   type TranscriptMessageContextMenuPoint,
 } from "../lib/messageContextMenu";
 import { requestSaveDraftAsPrompt } from "../lib/promptLibrary";
-import { taggedUserInstructionDetails } from "../lib/taggedInstructions";
+import { transcriptDisclosureLabel } from "../lib/transcriptDisclosures";
+import CollapsedTranscriptDisclosure from "./CollapsedTranscriptDisclosure";
 import { formatEstimatedTokenCount } from "../lib/tokenEstimate";
 import {
   captureTranscriptScrollPosition,
@@ -2139,14 +2140,11 @@ function turnRoleLabel(
 
 function MessageBlockView({ block, role }: { block: MessageBlock; role: string }) {
   if (block.type === "text") {
+    const disclosureLabel = transcriptDisclosureLabel(block.text, role);
+    if (disclosureLabel) {
+      return <CollapsedTranscriptDisclosure label={disclosureLabel} text={block.text} />;
+    }
     if (role !== "assistant") {
-      const taggedInstruction =
-        role === "user" ? taggedUserInstructionDetails(block.text) : null;
-      if (taggedInstruction) {
-        return (
-          <CollapsedTaggedUserInstruction label={taggedInstruction.label} text={block.text} />
-        );
-      }
       // Pasted-image markers take precedence over the long-message collapse:
       // the whole point of a pasted screenshot is to be seen, and marker-bearing
       // messages are overwhelmingly short prompts around the paste.
@@ -2187,26 +2185,6 @@ function UserTextWithImages({ segments }: { segments: ImageMarkerSegment[] }) {
         ),
       )}
     </p>
-  );
-}
-
-function CollapsedTaggedUserInstruction({ label, text }: { label: string; text: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const title = expanded ? `Collapse ${label}` : `Show ${label}`;
-
-  return (
-    <div className={`tagged-user-instruction${expanded ? " is-expanded" : " is-collapsed"}`}>
-      <button
-        type="button"
-        className="control-button tagged-user-instruction-toggle"
-        aria-expanded={expanded}
-        title={title}
-        onClick={() => setExpanded((current) => !current)}
-      >
-        {label}
-      </button>
-      {expanded ? <p className="turn-text is-tagged-instruction">{text}</p> : null}
-    </div>
   );
 }
 

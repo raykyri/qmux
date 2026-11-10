@@ -711,7 +711,7 @@
   text-decoration-thickness: 1px;
 }
 
-.turn-card.role-user.is-tagged-instruction-message {
+.turn-card.is-tagged-instruction-message {
   margin: 0;
   padding: 0 10px;
   border: 0;
@@ -719,26 +719,26 @@
 }
 
 /* Expanded transcripts are for reading the conversation at full width, so omit
-   collapsed metadata-style user messages instead of filling the reading column
+   collapsed metadata messages instead of filling the reading column
    with tag pills. A tag opened before expansion remains visible. */
 .turn-pane.is-expanded
-  .turn-card.role-user.is-tagged-instruction-message:has(
+  .turn-card.is-tagged-instruction-message:has(
     .tagged-user-instruction.is-collapsed
   ) {
   display: none;
 }
 
-.turn-card.role-user.is-tagged-instruction-message
-  + .turn-card.role-user.is-tagged-instruction-message {
+.turn-card.is-tagged-instruction-message
+  + .turn-card.is-tagged-instruction-message {
   margin-top: -3px;
 }
 
 /* Give a collapsed tagged instruction (e.g. a task notification) breathing room
    before whatever the agent does next — text or straight into tool activity. */
-.turn-card.role-user.is-tagged-instruction-message + .turn-card.role-assistant,
-.turn-card.role-user.is-tagged-instruction-message + .activity-group-block,
-.turn-card.role-user.is-tagged-instruction-message + .tool-block,
-.turn-card.role-user.is-tagged-instruction-message + .thinking-block {
+.turn-card.is-tagged-instruction-message + .turn-card.role-assistant,
+.turn-card.is-tagged-instruction-message + .activity-group-block,
+.turn-card.is-tagged-instruction-message + .tool-block,
+.turn-card.is-tagged-instruction-message + .thinking-block {
   margin-top: 5px;
 }
 

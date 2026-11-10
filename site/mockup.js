@@ -26,6 +26,8 @@
 //             notifications.
 //   images  — opens transcript thumbnails at their original resolution in the
 //             same modal lightbox as the desktop app.
+//   disclosures — expands injected task notifications, environment updates,
+//             and skill instructions without crowding the conversation.
 //   menus   — opens the transcript-message and composer overflow menus. Their
 //             items are intentionally inert: this is a product tour, not a
 //             clipboard, publishing, or session-management surface.
@@ -1173,6 +1175,25 @@ function enhanceQmuxMockup(mockup, replayBoot) {
 
     /** @type {Map<string, HTMLElement[]>} */
     const triggers = new Map();
+    /** @type {Map<string, { address: string; kind: "default" | "visualization" }>} */
+    const browsersBySession = new Map();
+    const initialBrowserAddress = mockup.querySelector("[data-mock-browser-url]");
+    const defaultBrowserAddress = initialBrowserAddress ? browserAddressText(initialBrowserAddress) : "";
+    function selectedBrowserSession() {
+      const row = mockup.querySelector(".pane-tab-row.is-selected");
+      return row instanceof HTMLElement ? row.dataset.mockSessionTab ?? "" : "";
+    }
+    function syncBrowserBadges() {
+      for (const row of mockup.querySelectorAll("[data-mock-session-tab]")) {
+        if (!(row instanceof HTMLElement)) continue;
+        const badge = row.querySelector("[data-mock-browser-badge]");
+        const restored = row.querySelector("[data-mock-restored-badge]");
+        if (badge instanceof HTMLElement) {
+          badge.hidden = !browsersBySession.has(row.dataset.mockSessionTab ?? "") ||
+            (restored instanceof HTMLElement && !restored.hidden);
+        }
+      }
+    }
     /** @param {string} name */
     const isOpen = (name) => {
       const panel = panels.get(name);
@@ -1184,8 +1205,26 @@ function enhanceQmuxMockup(mockup, replayBoot) {
     /**
      * @param {string} name
      * @param {boolean} open
+     * @param {boolean} rememberBrowser
      */
-    function setPanel(name, open) {
+    function setPanel(name, open, rememberBrowser = true) {
+      if (name === "browser") {
+        const sessionId = selectedBrowserSession();
+        if (rememberBrowser && sessionId) {
+          if (open) {
+            const address = mockup.querySelector("[data-mock-browser-url]");
+            const page = mockup.querySelector(".browser-overlay-page");
+            browsersBySession.set(sessionId, {
+              address: address ? browserAddressText(address) : "",
+              kind: page instanceof HTMLElement && page.dataset.mockBrowserKind === "visualization"
+                ? "visualization" : "default",
+            });
+          } else {
+            browsersBySession.delete(sessionId);
+          }
+        }
+        syncBrowserBadges();
+      }
       if (name === "queue-split") {
         if (splitTarget) {
           splitTarget.classList.toggle("is-split", open);
@@ -1221,6 +1260,24 @@ function enhanceQmuxMockup(mockup, replayBoot) {
         }
       }
     }
+
+    // An inactive tab keeps its browser and badge. Switching back restores
+    // that tab's page, while a tab without a browser leaves the overlay closed.
+    mockup.addEventListener("mock-session-change", () => {
+      const row = mockup.querySelector(".pane-tab-row.is-selected");
+      const restored = row?.querySelector("[data-mock-restored-badge]");
+      if (restored instanceof HTMLElement) restored.hidden = true;
+      const browser = browsersBySession.get(selectedBrowserSession());
+      const address = mockup.querySelector("[data-mock-browser-url]");
+      if (browser) {
+        if (address) setBrowserAddress(address, browser.address);
+        showBrowserPage(browser.kind);
+      } else {
+        if (address) setBrowserAddress(address, defaultBrowserAddress);
+        showBrowserPage("default");
+      }
+      setPanel("browser", Boolean(browser), false);
+    });
 
     // Only one popover at a time, the way the app's menus behave.
     /** @param {string} name */
@@ -2845,6 +2902,40 @@ function enhanceQmuxMockup(mockup, replayBoot) {
 
   // ------------------------------------------------------------- bootstrap
 
+  function createDisclosures() {
+    const nodes = [...mockup.querySelectorAll("[data-mock-disclosure]")];
+    let index = 0;
+    for (const node of nodes) {
+      const container = node.closest(".tagged-user-instruction");
+      const bodyNode = container?.querySelector("[data-mock-disclosure-body]");
+      const button = promote(node, "button");
+      if (!button || !container || !(bodyNode instanceof HTMLElement)) continue;
+      const body = bodyNode;
+      index += 1;
+      const replicaIndex = [...document.querySelectorAll(".app-mockup")].indexOf(mockup);
+      body.id = `mock-disclosure-${replicaIndex}-${index}`;
+      button.setAttribute("aria-controls", body.id);
+      const label = button.textContent?.trim() ?? "Instructions";
+      /** @param {boolean} expanded */
+      function setExpanded(expanded) {
+        body.hidden = !expanded;
+        container?.classList.toggle("is-collapsed", !expanded);
+        container?.classList.toggle("is-expanded", expanded);
+        button?.setAttribute("aria-expanded", String(expanded));
+        button?.setAttribute("title", `${expanded ? "Collapse" : "Show"} ${label}`);
+      }
+      setExpanded(false);
+      button.addEventListener("click", () => setExpanded(body.hidden));
+      button.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && !body.hidden) {
+          event.stopPropagation();
+          setExpanded(false);
+        }
+      });
+    }
+    return nodes.length ? {} : null;
+  }
+
   const replay = features.has("replay") ? createReplay() : null;
   const groups = features.has("groups") ? createGroups() : null;
   const sessions = features.has("sessions") ? createSessions(replay) : null;
@@ -2853,6 +2944,7 @@ function enhanceQmuxMockup(mockup, replayBoot) {
   const terminalMap = features.has("terminal-map") ? createTerminalMap() : null;
   const panels = features.has("panels") ? createPanels() : null;
   const images = features.has("images") ? createImageLightbox() : null;
+  const disclosures = features.has("disclosures") ? createDisclosures() : null;
   const menus = features.has("menus") ? createMenus() : null;
   const sidebarMenus = features.has("sidebar-menus") ? createSidebarMenus() : null;
   const research = features.has("research") ? createResearch() : null;
@@ -2870,6 +2962,7 @@ function enhanceQmuxMockup(mockup, replayBoot) {
     !terminalMap &&
     !panels &&
     !images &&
+    !disclosures &&
     !menus &&
     !sidebarMenus &&
     !research &&

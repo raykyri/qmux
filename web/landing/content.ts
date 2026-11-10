@@ -35,7 +35,7 @@ export const FEATURES: Feature[] = [
   {
     name: "Rich text transcripts",
     copy:
-      "Easy-to-read transcripts with Markdown, tables, code, diagrams, and interactive visualization attachments.",
+      "Easy-to-read transcripts with Markdown, tables, code, diagrams, and interactive visualization attachments. Background notifications, environment updates, and skill instructions collapse out of the way.",
   },
   {
     name: "Cross-agent queueing",
@@ -80,7 +80,7 @@ export const FEATURES: Feature[] = [
   },
   {
     name: "Built-in browser",
-    copy: "Open normal URLs in the native browser beside the terminal.",
+    copy: "Open normal URLs in the native browser beside the terminal. A tab badge shows where a browser is open before you switch.",
   },
   {
     name: "Keyboard-first",
