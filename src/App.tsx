@@ -14893,6 +14893,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     const paneTopQueueWaitsOnOtherPane = paneWaitsOnOtherPane(paneAgent);
     const paneDotClass = agentTabStatusDotClass(paneAgent?.status, paneTopQueueWaitsOnOtherPane);
     const paneStatus = paneTabStatusLabel(pane, paneAgent);
+    const showRestoredBadge = pane.recovered && !pane.remoteSession;
+    const showBrowserBadge = !showRestoredBadge && browserOverlayByPane[pane.id]?.open;
     const paneStatusQueueClass =
       paneAgent &&
       (paneAgent.status === "running" || paneAgent.status === "idle") &&
@@ -15057,11 +15059,15 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               </span>
             ) : null}
           </span>
-          {(pane.recovered && !pane.remoteSession) || paneStatus ? (
+          {showRestoredBadge || showBrowserBadge || paneStatus ? (
             <span className="pane-tab-meta">
-              {pane.recovered && !pane.remoteSession ? (
+              {showRestoredBadge ? (
                 <small className="pane-tab-status" title="Restored after restart">
                   Restored
+                </small>
+              ) : showBrowserBadge ? (
+                <small className="pane-tab-status" title="Browser open" aria-label="Browser open">
+                  <PictureInPicture2 size={14} aria-hidden="true" />
                 </small>
               ) : null}
               {paneStatus ? (
