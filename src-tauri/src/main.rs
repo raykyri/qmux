@@ -1006,6 +1006,37 @@ fn remote_preview_close(state: tauri::State<'_, AppState>, request_id: String) {
     remote_preview::close(&state, &request_id);
 }
 
+#[tauri::command(async)]
+fn remote_file_download(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+    transcript: String,
+    path: String,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    remote_transcript::preview_source(&state, &pane_id, &transcript)?;
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| qmux_proto::is_safe_file_name(name))
+        .ok_or("Invalid remote filename")?;
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Download remote file")
+        .set_file_name(name);
+    if let Some(window) = app.get_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    let Some(destination) = dialog.blocking_save_file() else {
+        return Ok(false);
+    };
+    let destination = destination.into_path().map_err(|e| e.to_string())?;
+    remote_preview::download(&state, &pane_id, &transcript, &path, &destination)?;
+    Ok(true)
+}
+
 fn grant_staged_artifact_to_pane(
     state: &AppState,
     pane_id: &str,
@@ -4158,6 +4189,7 @@ fn main() {
             remote_preview_start,
             remote_preview_status,
             remote_preview_close,
+            remote_file_download,
             browser_open_local_path,
             browser_open_terminal_path,
             browser_reveal_local_path,

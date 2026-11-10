@@ -140,14 +140,20 @@ pub fn is_browser_preview_extension(extension: &str) -> bool {
 /// Whether an untrusted remote basename is safe to materialize and maps to one
 /// of the explicit embedded-browser preview types.
 pub fn is_safe_browser_preview_name(name: &str) -> bool {
+    is_safe_file_name(name)
+        && name
+            .rsplit_once('.')
+            .is_some_and(|(_, extension)| is_browser_preview_extension(extension))
+}
+
+/// A single safe basename for a user-requested file download. This grants no
+/// browser preview capability, regardless of the file's extension.
+pub fn is_safe_file_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 240
         && !name.contains(['/', '\\'])
         && !name.chars().any(char::is_control)
         && !matches!(name, "." | "..")
-        && name
-            .rsplit_once('.')
-            .is_some_and(|(_, extension)| is_browser_preview_extension(extension))
 }
 
 pub const PUBLIC_API_VERSION: u32 = 1;
@@ -207,6 +213,11 @@ mod tests {
         assert!(is_safe_browser_preview_name("report.HTML"));
         assert!(!is_safe_browser_preview_name("../report.html"));
         assert!(!is_safe_browser_preview_name("archive.zip"));
+        assert!(is_safe_file_name("archive.zip"));
+        assert!(is_safe_file_name("README"));
+        for name in ["../archive.zip", "a/b.zip", "a\\b.zip", "..", "", "file\n.zip"] {
+            assert!(!is_safe_file_name(name));
+        }
     }
 
     #[test]

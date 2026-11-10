@@ -13,6 +13,8 @@ pub struct Request {
     pub cwd: String,
     pub roots: Vec<String>,
     pub previous: Option<Metadata>,
+    #[serde(default)]
+    pub download: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Metadata {
@@ -68,7 +70,8 @@ fn prepare(request: &Request) -> Result<(File, Metadata), String> {
     if !meta.is_file() { return Err("Remote preview requires a regular file, not a directory or device".into()); }
     if meta.len() > MAX_REMOTE_OPEN_FILE_BYTES { return Err("Remote preview exceeds the 10 MiB limit".into()); }
     let name = canonical.file_name().and_then(|n| n.to_str()).ok_or("Invalid remote filename")?;
-    if !qmux_proto::is_safe_browser_preview_name(name) { return Err("This file format cannot be previewed".into()); }
+    if !qmux_proto::is_safe_file_name(name) { return Err("Invalid remote filename".into()); }
+    if !request.download && !qmux_proto::is_safe_browser_preview_name(name) { return Err("This file format cannot be previewed".into()); }
     Ok((file, identity(&canonical, &meta)))
 }
 fn write_json(writer: &mut impl Write, value: &impl Serialize) -> Result<(), String> {
@@ -101,13 +104,38 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
+    fn explicit_download_streams_binary_files_without_allowing_them_as_previews() {
+        let root = std::env::current_dir().unwrap().join(format!(".download-test-{}", std::process::id()));
+        fs::create_dir_all(root.join("allowed")).unwrap();
+        let body = b"PK\x03\x04\x00\xff";
+        fs::write(root.join("allowed/reports.zip"), body).unwrap();
+        fs::write(root.join("secret.zip"), body).unwrap();
+        std::os::unix::fs::symlink(root.join("secret.zip"), root.join("allowed/link.zip")).unwrap();
+        let mut request = Request { path: "reports.zip".into(), cwd: root.join("allowed").to_string_lossy().into(), roots: vec![root.join("allowed").to_string_lossy().into()], previous: None, download: false };
+        assert!(prepare(&request).unwrap_err().contains("cannot be previewed"));
+        request.download = true;
+        let mut output = Vec::new();
+        send(request.clone(), &mut output).unwrap();
+        let end = output.iter().position(|b| *b == b'\n').unwrap();
+        let header: Header = serde_json::from_slice(&output[..end]).unwrap();
+        assert!(header.error.is_none());
+        assert_eq!(header.metadata.unwrap().size, body.len() as u64);
+        assert_eq!(&output[end + 1..end + 1 + body.len()], body);
+        assert!(output.ends_with(b"{\"complete\":true}\n"));
+        request.path = "link.zip".into();
+        assert!(prepare(&request).unwrap_err().contains("outside"));
+        let legacy: Request = serde_json::from_value(serde_json::json!({ "path":"report.txt", "cwd":"/tmp", "roots":["/tmp"], "previous":null })).unwrap();
+        assert!(!legacy.download);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn exact_fetch_revalidates_and_denies_symlink_escape() {
         let root = std::env::current_dir().unwrap().join(format!(".fetch-test-{}", std::process::id()));
         fs::create_dir_all(root.join("allowed")).unwrap();
         fs::write(root.join("allowed/report.html"), "hello").unwrap();
         fs::write(root.join("secret.html"), "secret").unwrap();
         std::os::unix::fs::symlink(root.join("secret.html"), root.join("allowed/link.html")).unwrap();
-        let mut req = Request { path: "report.html".into(), cwd: root.join("allowed").to_string_lossy().into(), roots: vec![root.join("allowed").to_string_lossy().into()], previous: None };
+        let mut req = Request { path: "report.html".into(), cwd: root.join("allowed").to_string_lossy().into(), roots: vec![root.join("allowed").to_string_lossy().into()], previous: None, download: false };
         let mut bytes = Vec::new(); send(req.clone(), &mut bytes).unwrap();
         let end = bytes.iter().position(|b| *b == b'\n').unwrap();
         let header: Header = serde_json::from_slice(&bytes[..end]).unwrap();

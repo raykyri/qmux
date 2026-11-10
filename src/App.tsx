@@ -637,6 +637,7 @@ import {
   moveQueuedAgentTurn,
   reorderQueuedAgentTurn,
   movePaneToGroup,
+  downloadRemoteFile,
   openExternalUrl,
   browserOpenCodexInlineVisualization,
   browserOpenCodexVisualizationReference,
@@ -19099,10 +19100,16 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           url={activePreviewUrl}
           sourceLabel={activeRemotePreview?.target.path}
           previewStatus={activeRemotePreview ? <RemotePreviewStatus
+            key={JSON.stringify(activeRemotePreview.target)}
             preview={activeRemotePreview}
             onRetry={() => startRemotePreview(activeRemotePreview.target)}
             onCached={() => startRemotePreview(activeRemotePreview.target, true)}
             onCopy={() => { void writeClipboardText(activeRemotePreview.target.path).catch(reportHumanBrowserError); }}
+            onDownload={async () => {
+              const saved = await downloadRemoteFile(activeRemotePreview.target.paneId, activeRemotePreview.target.transcript, activeRemotePreview.target.path);
+              if (saved) showAppToast("File downloaded");
+              return saved;
+            }}
             onClose={() => closeActiveBrowserOverlay(activeBrowserOwnerId)}
           /> : undefined}
           reloadNonce={activeBrowserOverlay.reloadNonce}

@@ -260,4 +260,7 @@
   font-size: var(--fs-base);
 }
 .remote-preview-status progress { width: 100%; }
-.remote-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.remote-preview-status-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+.remote-preview-message { flex: 1 1 180px; min-width: 0; }
+.remote-preview-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; gap: 8px; }
+.remote-preview-actions .control-button { white-space: nowrap; }

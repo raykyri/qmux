@@ -80,10 +80,26 @@ pub fn stage_in_directory<R: Read>(
     name: &str,
     size: u64,
     reader: &mut R,
-    mut progress: impl FnMut(u64) -> Result<(), String>,
+    progress: impl FnMut(u64) -> Result<(), String>,
     validate_completion: impl FnOnce(&mut R) -> Result<(), String>,
 ) -> Result<PathBuf, String> {
     validate_name(name)?;
+    stage_download_in_directory(directory, name, size, reader, progress, validate_completion)
+}
+
+/// Download-only staging accepts other extensions but never grants a browser
+/// token. Transfer bounds, private files, and completion validation stay shared.
+pub fn stage_download_in_directory<R: Read>(
+    directory: &Path,
+    name: &str,
+    size: u64,
+    reader: &mut R,
+    mut progress: impl FnMut(u64) -> Result<(), String>,
+    validate_completion: impl FnOnce(&mut R) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    if !qmux_proto::is_safe_file_name(name) {
+        return Err("Invalid remote filename".into());
+    }
     if size > MAX_REMOTE_OPEN_FILE_BYTES {
         return Err("Remote preview exceeds the 10 MiB limit".into());
     }

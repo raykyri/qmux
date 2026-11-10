@@ -204,14 +204,19 @@ export default function ComponentCatalog() {
         </section>
         <section style={sectionStyle}>
           <h2 style={{ margin: 0 }}>Remote file previews</h2>
-          {["loading", "error", "cached"].map((state) => <RemotePreviewStatus key={state}
-            preview={{ target: { paneId: "preview", transcript: "session", path: "/remote/report.html", fragment: "" },
+          {["loading", "error", "unsupported", "cached"].map((state) => <RemotePreviewStatus key={state}
+            preview={{ target: { paneId: "preview", transcript: "session", path: state === "unsupported" ? "/remote/reports.zip" : "/remote/report.html", fragment: "" },
               cachedOnly: state === "cached", bytes: 2048, total: 4096,
-              error: state === "error" ? "Remote host is unavailable" : null,
+              error: state === "unsupported" ? "This file format cannot be previewed" : state === "error" ? "Remote host is unavailable" : null,
               cachedAvailable: state !== "loading", fetchedAt: state === "cached" ? 1700000000 : null,
               url: state === "cached" ? "about:blank" : null,
             }}
-            onRetry={() => undefined} onCached={() => undefined} onCopy={() => undefined} onClose={() => undefined} />)}
+            onRetry={() => undefined} onCached={() => undefined} onCopy={() => undefined} onClose={() => undefined}
+            onDownload={async () => {
+              await new Promise((resolve) => setTimeout(resolve, 750));
+              if (state === "error") throw new Error("Remote host is unavailable");
+              return true;
+            }} />)}
           <Button onClick={(event) => setRemoteMenu({ x: event.clientX, y: event.clientY })}>Remote link menu</Button>
           {remoteMenu ? <LinkContextMenu {...remoteMenu} canOpenInternal onOpenInternal={() => undefined}
             onOpenExternal={() => undefined} onClose={() => setRemoteMenu(null)}

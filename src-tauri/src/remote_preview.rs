@@ -277,6 +277,7 @@ pub fn start(
                         cwd,
                         roots,
                         previous: previous.as_ref().map(|e| e.metadata.clone()),
+                        download: false,
                     },
                     &key,
                     &upload,
@@ -344,6 +345,74 @@ pub fn close(state: &AppState, id: &str) {
         }
     }
 }
+
+/// A user-requested save has no browser capability and uses an isolated
+/// temporary transfer, independent of the preview cache and its lifecycle.
+pub fn download(
+    state: &AppState,
+    pane: &str,
+    transcript: &str,
+    path: &str,
+    destination: &Path,
+) -> Result<(), String> {
+    if path.is_empty() || path.len() > 8192 {
+        return Err("Invalid remote file path".into());
+    }
+    let (host, cwd, roots, identity) = remote_transcript::preview_source(state, pane, transcript)?;
+    let key = cache_key(&identity, &cwd, path)?;
+    let job = Arc::new(Job {
+        progress: Mutex::new(Progress::default()),
+        cancel: AtomicBool::new(false),
+        previous: None,
+    });
+    let entry = fetch(
+        state,
+        &host,
+        Request {
+            path: path.into(),
+            cwd,
+            roots,
+            previous: None,
+            download: true,
+        },
+        &key,
+        &state.next_id("qmux-remote-download"),
+        &job,
+        None,
+    )?;
+    let result = (|| {
+        let (_, current_cwd, _, current_identity) =
+            remote_transcript::preview_source(state, pane, transcript)?;
+        if cache_key(&current_identity, &current_cwd, path)? != key {
+            return Err("The remote file's session changed during download; retry".into());
+        }
+        save_download(state, &entry.path(), destination)
+    })();
+    let _ = fs::remove_dir_all(entry.dir);
+    result
+}
+
+fn save_download(state: &AppState, source: &Path, destination: &Path) -> Result<(), String> {
+    let parent = destination.parent().ok_or("Invalid download destination")?;
+    let temporary = parent.join(format!(".{}", state.next_id("qmux-download")));
+    let result = (|| {
+        let mut input = fs::File::open(source).map_err(|e| e.to_string())?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|e| e.to_string())?;
+        std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
+        output.sync_all().map_err(|e| e.to_string())?;
+        drop(output);
+        fs::rename(&temporary, destination).map_err(|e| e.to_string())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
 fn json_line<T: serde::de::DeserializeOwned>(reader: &mut impl BufRead) -> Result<T, String> {
     let mut bytes = Vec::new();
     reader
@@ -364,8 +433,15 @@ fn fetch(
     job: &Arc<Job>,
     previous: Option<Entry>,
 ) -> Result<Entry, String> {
-    let cache = root(state);
-    private_dir(&cache)?;
+    let download = request.download;
+    let cache = if download {
+        std::env::temp_dir()
+    } else {
+        root(state)
+    };
+    if !download {
+        private_dir(&cache)?;
+    }
     let cache = fs::canonicalize(cache).map_err(|e| e.to_string())?;
     let dir = cache.join(upload);
     fs::create_dir(&dir).map_err(|e| e.to_string())?;
@@ -419,7 +495,14 @@ fn fetch(
             let _ = std::io::copy(&mut stderr, &mut std::io::sink());
             String::from_utf8_lossy(&bytes).into_owned()
         });
-        let transfer = receive(&mut BufReader::new(stdout), &dir, key, job, previous);
+        let transfer = receive_file(
+            &mut BufReader::new(stdout),
+            &dir,
+            key,
+            job,
+            previous,
+            download,
+        );
         // Kill on malformed/failed reads too; never block waiting for a hostile helper.
         if transfer.is_err() {
             let _ = child.lock().unwrap().kill();
@@ -471,6 +554,7 @@ fn save_entry(entry: &Entry) -> Result<(), String> {
     fs::rename(entry.dir.join("entry.tmp"), entry.dir.join("entry.json")).map_err(|e| e.to_string())
 }
 
+#[cfg(test)]
 fn receive(
     reader: &mut impl BufRead,
     dir: &Path,
@@ -478,11 +562,25 @@ fn receive(
     job: &Job,
     previous: Option<Entry>,
 ) -> Result<Entry, String> {
+    receive_file(reader, dir, key, job, previous, false)
+}
+
+fn receive_file(
+    reader: &mut impl BufRead,
+    dir: &Path,
+    key: &str,
+    job: &Job,
+    previous: Option<Entry>,
+    download: bool,
+) -> Result<Entry, String> {
     let header: Header = json_line(reader)?;
     if header.version != 1 {
         return Err("Update remote qmux-cli to support file previews".into());
     }
     if let Some(error) = header.error {
+        if download && error == "This file format cannot be previewed" {
+            return Err("Update qmux-cli on the remote to download this file format".into());
+        }
         return Err(error);
     }
     let metadata = header.metadata.ok_or("Remote file metadata missing")?;
@@ -491,8 +589,11 @@ fn receive(
         .and_then(|n| n.to_str())
         .ok_or("Invalid remote filename")?
         .to_string();
-    if !qmux_proto::is_safe_browser_preview_name(&name)
-        || metadata.size > qmux_proto::MAX_REMOTE_OPEN_FILE_BYTES
+    if !(if download {
+        qmux_proto::is_safe_file_name(&name)
+    } else {
+        qmux_proto::is_safe_browser_preview_name(&name)
+    }) || metadata.size > qmux_proto::MAX_REMOTE_OPEN_FILE_BYTES
     {
         return Err("Unsupported remote file or preview exceeds 10 MiB".into());
     }
@@ -513,7 +614,7 @@ fn receive(
     } else {
         let content = dir.join("content");
         private_dir(&content)?;
-        crate::remote_files::stage_in_directory(
+        crate::remote_files::stage_download_in_directory(
             &content,
             &name,
             metadata.size,
@@ -542,6 +643,76 @@ fn receive(
 mod tests {
     use super::*;
     use std::io::Cursor;
+    #[test]
+    fn download_receives_binary_without_granting_preview_support_and_requires_completion() {
+        let dir = directory();
+        let body = b"PK\x03\x04\x00\xff";
+        let data = wire(body.len() as u64, body, true);
+        let end = data.iter().position(|b| *b == b'\n').unwrap();
+        let mut header: Header = serde_json::from_slice(&data[..end]).unwrap();
+        header.metadata.as_mut().unwrap().path = "/remote/reports.zip".into();
+        let mut data = serde_json::to_vec(&header).unwrap();
+        data.push(b'\n');
+        data.extend(body);
+        data.extend(b"{\"complete\":true}\n");
+        assert!(receive(&mut Cursor::new(data.clone()), &dir, "host", &job(), None).is_err());
+        let entry = receive_file(
+            &mut Cursor::new(data.clone()),
+            &dir,
+            "host",
+            &job(),
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(fs::read(entry.path()).unwrap(), body);
+        let incomplete = directory();
+        data.truncate(data.len() - b"{\"complete\":true}\n".len());
+        assert!(
+            receive_file(
+                &mut Cursor::new(data),
+                &incomplete,
+                "host",
+                &job(),
+                None,
+                true
+            )
+            .is_err()
+        );
+        assert!(!incomplete.join("content/reports.zip").exists());
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(incomplete).unwrap();
+    }
+
+    #[test]
+    fn saving_download_is_atomic_and_failure_keeps_existing_destination() {
+        let root = directory();
+        let state = AppState::new(
+            serde_json::from_value(
+                serde_json::json!({"workspaceRoot": root, "socketPath": root.join("unused.sock")}),
+            )
+            .unwrap(),
+        );
+        let source = root.join("source.zip");
+        let destination = root.join("saved.zip");
+        fs::write(&destination, b"previous file").unwrap();
+        assert!(save_download(&state, &source, &destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"previous file");
+        fs::write(&source, b"PK\x03\x04\x00\xff").unwrap();
+        save_download(&state, &source, &destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), fs::read(&source).unwrap());
+        assert_eq!(
+            fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!fs::read_dir(&root).unwrap().flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".qmux-download")
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
     fn job() -> Job {
         Job {
             progress: Mutex::new(Progress::default()),

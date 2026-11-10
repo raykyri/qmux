@@ -1618,6 +1618,11 @@ export function movePaneToGroup(
   return invoke<PaneInfo[]>("pane_move_to_group", { paneId, targetGroupId, items });
 }
 
+/** Prompts for a local destination and saves an explicitly requested remote file. */
+export function downloadRemoteFile(paneId: string, transcript: string, path: string) {
+  return invoke<boolean>("remote_file_download", { paneId, transcript, path });
+}
+
 /** Moves `paneId` immediately after `siblingPaneId` in the flat sidebar order. */
 export function placePaneAfter(paneId: string, siblingPaneId: string) {
   return invoke<PaneInfo[]>("pane_place_after", { paneId, siblingPaneId });
