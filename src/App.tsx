@@ -3257,6 +3257,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const artifactUndoTimerRef = useRef<number | null>(null);
   // Per-workspace tray chrome: closed (paperclip toggle / titlebar ×), collapsed
   // to the titlebar, and the dragged position (null = default top-right anchor).
+  // Unset means hidden at startup. Only live additions or the paperclip open it.
   // This is intentionally a hard cutover from pane-keyed state: every tab in a
   // workspace reads and updates the same entry.
   const [artifactTrayUiByWorkspace, setArtifactTrayUiByWorkspace] = useState<
@@ -8409,6 +8410,14 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       );
       for (const id of removedIds) startupArtifactOverridesRef.current?.set(id, null);
       startupArtifactOverridesRef.current?.set(artifact.id, artifact);
+      const groupId = artifact.groupId;
+      if (groupId) {
+        setArtifactTrayUiByWorkspace((current) =>
+          current[groupId]?.closed !== undefined
+            ? current
+            : { ...current, [groupId]: { ...current[groupId], closed: false } },
+        );
+      }
       setArtifacts((current) =>
         [
           ...current.filter(
@@ -15561,12 +15570,12 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               browserOpen={surface.browserOverlay?.open ?? false}
               onToggleBrowser={toggleActiveBrowserOverlay}
               artifactCount={artifactsForGroup(surface.pane.groupId).length}
-              artifactTrayOpen={!artifactTrayUiByWorkspace[surface.pane.groupId]?.closed}
+              artifactTrayOpen={artifactTrayUiByWorkspace[surface.pane.groupId]?.closed === false}
               onToggleArtifactTray={() =>
                 setArtifactTrayClosed(
                   surface.pane.groupId,
                   surface.pane.id,
-                  !artifactTrayUiByWorkspace[surface.pane.groupId]?.closed,
+                  artifactTrayUiByWorkspace[surface.pane.groupId]?.closed === false,
                 )
               }
               transcriptExpanded={activeTranscriptExpanded}

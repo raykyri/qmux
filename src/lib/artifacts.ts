@@ -17,13 +17,13 @@ const HTML_EXTENSIONS = new Set(["htm", "html"]);
 
 export type ArtifactKind = "url" | "image" | "html" | "file";
 
-/** A workspace tray renders only in its designated host pane while open. */
+/** Trays start hidden; only an in-session open renders in the workspace host. */
 export function artifactTrayVisible(
   hasArtifacts: boolean,
   closed: boolean | undefined,
   workspaceHost: boolean,
 ): boolean {
-  return hasArtifacts && closed !== true && workspaceHost;
+  return hasArtifacts && closed === false && workspaceHost;
 }
 
 export function isArtifactBrowserOpen(

@@ -54,8 +54,8 @@ test("an open browser toggles only for the artifact that owns its page", () => {
   assert.equal(isArtifactBrowserOpen({ ...browser, open: false }, "artifact-1"), false);
 });
 
-test("only the workspace host shows its shared artifact tray", () => {
-  assert.equal(artifactTrayVisible(true, undefined, true), true);
+test("artifact trays start hidden and open only in their workspace host", () => {
+  assert.equal(artifactTrayVisible(true, undefined, true), false);
   assert.equal(artifactTrayVisible(true, undefined, false), false);
   assert.equal(artifactTrayVisible(true, false, true), true);
   assert.equal(artifactTrayVisible(true, false, false), false);
