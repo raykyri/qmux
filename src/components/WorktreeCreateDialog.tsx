@@ -20,7 +20,6 @@ type Props = {
   dismissWorktreeCreateDialog: (created: boolean) => void;
   createWorktreeFromDialog: () => Promise<void>;
   worktreeNameInputRef: RefObject<HTMLInputElement | null>;
-  formatPaneDir: (path: string) => string;
 };
 
 export default function WorktreeCreateDialog({
@@ -29,13 +28,7 @@ export default function WorktreeCreateDialog({
   dismissWorktreeCreateDialog,
   createWorktreeFromDialog,
   worktreeNameInputRef,
-  formatPaneDir,
 }: Props) {
-  const worktreeStartBranch = worktreeCreateDialog?.startRef
-    ? worktreeCreateDialog.inventory?.branches.find(
-        (branch) => branch.fullRef === worktreeCreateDialog.startRef,
-      )
-    : undefined;
   return (
     <DialogRoot
       onDismiss={() => dismissWorktreeCreateDialog(false)}
@@ -60,11 +53,15 @@ export default function WorktreeCreateDialog({
               className="confirm-dialog-field-label"
               htmlFor="create-worktree-start"
             >
-              Start at
+              Start at commit
             </label>
             <Select
               id="create-worktree-start"
               className="create-worktree-start-select"
+              searchable
+              searchPlaceholder="Search branches…"
+              emptyMessage="No matching branches"
+              loading={worktreeCreateDialog.inventoryLoading}
               value={worktreeCreateDialog.startRef ?? ""}
               disabled={worktreeCreateDialog.creating}
               options={[
@@ -83,15 +80,6 @@ export default function WorktreeCreateDialog({
                     label: branch.name,
                     group: "Remote branches",
                   })) ?? []),
-                ...(worktreeCreateDialog.inventoryLoading
-                  ? [
-                      {
-                        value: "__loading",
-                        label: "Loading branches…",
-                        disabled: true,
-                      },
-                    ]
-                  : []),
               ]}
               onChange={(nextValue) => {
                 const startRef = nextValue || null;
@@ -124,7 +112,7 @@ export default function WorktreeCreateDialog({
           className="confirm-dialog-field-label"
           htmlFor="create-worktree-name"
         >
-          Worktree name
+          New worktree name
         </label>
         <Input
           ref={worktreeNameInputRef}
@@ -143,15 +131,7 @@ export default function WorktreeCreateDialog({
           aria-describedby="create-worktree-name-hint"
         />
         <p id="create-worktree-name-hint" className="rename-dialog-hint">
-          {worktreeCreateDialog.action.kind === "fork"
-            ? "Use letters, numbers, hyphens, or underscores. The worktree and branch use this exact name and start at this tab’s current commit."
-            : worktreeStartBranch?.checkedOutPath
-              ? `This branch is already checked out at ${formatPaneDir(worktreeStartBranch.checkedOutPath)}. qmux will open that checkout.`
-              : worktreeStartBranch?.remote
-                ? `Use letters, numbers, hyphens, or underscores. qmux creates a local branch and worktree with this name, tracking ${worktreeStartBranch.name}.`
-                : worktreeStartBranch
-                  ? `Use letters, numbers, hyphens, or underscores. The worktree uses this name and checks out ${worktreeStartBranch.name}.`
-                  : "Use letters, numbers, hyphens, or underscores. The worktree and new branch use this exact name and start at this tab’s current commit."}
+          Also used as the directory name. Letters, numbers, hyphens, or underscores only.
         </p>
         {worktreeCreateDialog.error ? (
           <p className="confirm-dialog-error" role="alert">

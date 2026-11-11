@@ -35,7 +35,8 @@ function assignRef<ElementType>(ref: Ref<ElementType> | undefined, value: Elemen
 
 function focusableElements(backdrop: HTMLElement): HTMLElement[] {
   return Array.from(backdrop.querySelectorAll<HTMLElement>(focusableSelector)).filter(
-    (element) => !element.hidden && element.getAttribute("aria-hidden") !== "true",
+    (element) =>
+      element.tabIndex >= 0 && !element.hidden && element.getAttribute("aria-hidden") !== "true",
   );
 }
 

@@ -94,13 +94,17 @@ export function useAnchoredPopover({
 
   useEffect(() => {
     if (!open) return;
+    // Search results and asynchronously loaded options can resize an open surface.
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reposition);
+    if (popoverRef.current) observer?.observe(popoverRef.current);
     window.addEventListener("resize", reposition);
     window.addEventListener("scroll", reposition, true);
     return () => {
+      observer?.disconnect();
       window.removeEventListener("resize", reposition);
       window.removeEventListener("scroll", reposition, true);
     };
-  }, [open, reposition]);
+  }, [open, popoverRef, reposition]);
 
   useEffect(() => {
     if (!open || suspended) return;

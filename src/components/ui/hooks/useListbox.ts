@@ -57,6 +57,8 @@ export function typeaheadIndex(
 
 interface UseListboxOptions<Option extends ListboxOption> {
   disabled?: boolean;
+  /** Editable comboboxes keep text editing keys and filter their own options. */
+  editable?: boolean;
   allowReselect?: boolean;
   options: Option[];
   value: string;
@@ -67,6 +69,7 @@ interface UseListboxOptions<Option extends ListboxOption> {
 
 export function useListbox<Option extends ListboxOption>({
   disabled = false,
+  editable = false,
   allowReselect = false,
   options,
   value,
@@ -90,11 +93,11 @@ export function useListbox<Option extends ListboxOption>({
   const previousValueRef = useRef(value);
 
   useEffect(() => {
-    if (!open) return;
     const reset =
       previousSignatureRef.current !== optionSignature || previousValueRef.current !== value;
     previousSignatureRef.current = optionSignature;
     previousValueRef.current = value;
+    if (!open) return;
     setActiveIndex((current) => {
       if (reset) return initialIndex;
       if (current >= 0 && current < options.length && !options[current].disabled) return current;
@@ -103,7 +106,7 @@ export function useListbox<Option extends ListboxOption>({
   }, [initialIndex, open, optionSignature, options, value]);
 
   const openListbox = () => {
-    if (disabled || firstEnabledIndex(options) < 0) return;
+    if (disabled || (!editable && firstEnabledIndex(options) < 0)) return;
     setActiveIndex(initialIndex);
     onOpenChange(true);
   };
@@ -119,6 +122,7 @@ export function useListbox<Option extends ListboxOption>({
 
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (disabled) return;
+    if (event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       if (!open) {
@@ -130,13 +134,13 @@ export function useListbox<Option extends ListboxOption>({
       }
       return;
     }
-    if (event.key === "Home" || event.key === "End") {
+    if (!editable && (event.key === "Home" || event.key === "End")) {
       event.preventDefault();
       if (!open) openListbox();
       setActiveIndex(event.key === "Home" ? firstEnabledIndex(options) : lastEnabledIndex(options));
       return;
     }
-    if (event.key === "Enter" || event.key === " ") {
+    if (event.key === "Enter" || (!editable && event.key === " ")) {
       event.preventDefault();
       if (!open) openListbox();
       else chooseIndex(activeIndex);
@@ -152,7 +156,7 @@ export function useListbox<Option extends ListboxOption>({
       closeListbox();
       return;
     }
-    if (event.key.length === 1 && !event.altKey && !event.ctrlKey && !event.metaKey) {
+    if (!editable && event.key.length === 1) {
       const now = Date.now();
       const previous = typeaheadRef.current;
       const query = nextTypeaheadQuery(previous.query, event.key, now - previous.updatedAt);

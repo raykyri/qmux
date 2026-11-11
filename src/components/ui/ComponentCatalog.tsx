@@ -30,6 +30,7 @@ const sectionStyle = {
 
 export default function ComponentCatalog() {
   const [selectValue, setSelectValue] = useState("current");
+  const [branchValue, setBranchValue] = useState("current");
   const [remoteMenu, setRemoteMenu] = useState<{x: number; y: number} | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [mediaOpen, setMediaOpen] = useState(false);
@@ -133,6 +134,38 @@ export default function ComponentCatalog() {
             options={[{ value: "one", label: "Unavailable" }]}
             onChange={() => undefined}
           />
+        </section>
+        <section style={sectionStyle}>
+          <h2 style={{ margin: 0 }}>Searchable select</h2>
+          <p style={{ margin: 0, color: "var(--text-secondary)" }}>
+            Type any part of a branch name, then use arrows and Enter. Escape cancels;
+            Tab moves to the next field. Try “no-match” for the empty state.
+          </p>
+          <label htmlFor="catalog-branch">Start at</label>
+          <Select
+            id="catalog-branch"
+            searchable
+            searchPlaceholder="Search branches…"
+            emptyMessage="No matching branches"
+            value={branchValue}
+            onChange={setBranchValue}
+            options={[
+              { value: "current", label: "Current commit (new branch)" },
+              { value: "main", label: "main", group: "Local branches" },
+              { value: "review", label: "fix/review — checked out", group: "Local branches" },
+              { value: "unavailable", label: "Unavailable branch", disabled: true, group: "Local branches" },
+              ...Array.from({ length: 20 }, (_, index) => ({
+                value: `feature-${index}`,
+                label: `feature/branch-${index}-with-a-long-descriptive-name-for-truncation`,
+                group: "Local branches",
+              })),
+              { value: "origin/main", label: "origin/main", group: "Remote branches" },
+            ]}
+          />
+          <Select searchable loading ariaLabel="Loading branches" value="" options={[]} onChange={() => undefined} />
+          <Select searchable ariaLabel="No branches" value="" options={[]} onChange={() => undefined} />
+          <Select searchable disabled ariaLabel="Disabled branch select" value="main"
+            options={[{ value: "main", label: "main" }]} onChange={() => undefined} />
         </section>
         <section style={sectionStyle}>
           <h2 style={{ margin: 0 }}>Segmented control</h2>
@@ -284,6 +317,15 @@ export default function ComponentCatalog() {
         <Dialog aria-labelledby="catalog-dialog-title">
           <DialogTitle id="catalog-dialog-title">Example dialog</DialogTitle>
           <p>Tab focus remains inside this surface and returns to the trigger when closed.</p>
+          <label htmlFor="catalog-dialog-branch">Start at</label>
+          <Select id="catalog-dialog-branch" searchable searchPlaceholder="Search branches…"
+            value={branchValue} onChange={setBranchValue}
+            options={[
+              { value: "current", label: "Current commit (new branch)" },
+              { value: "main", label: "main", group: "Local branches" },
+              { value: "origin/main", label: "origin/main", group: "Remote branches" },
+            ]} />
+          <Input aria-label="Worktree name" placeholder="Worktree name" />
           <DialogActions>
             <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
             <Button tone="primary" onClick={() => setDialogOpen(false)}>

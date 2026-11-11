@@ -18367,7 +18367,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           dismissWorktreeCreateDialog={dismissWorktreeCreateDialog}
           createWorktreeFromDialog={createWorktreeFromDialog}
           worktreeNameInputRef={worktreeNameInputRef}
-          formatPaneDir={formatPaneDir}
         />
       ) : null}
 
