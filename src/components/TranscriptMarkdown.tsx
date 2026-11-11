@@ -230,7 +230,7 @@ function readMathPlugins() {
 // keeps link closures stable above memoized message items while giving ordinary
 // links and links injected into diagram SVGs exactly the same behavior.
 export interface LinkActions {
-  openLink: (url: string, trigger?: HTMLElement) => void;
+  openLink: (url: string, trigger?: HTMLElement, external?: boolean) => void;
   openLinkMenu: (url: string, x: number, y: number, trigger?: HTMLElement) => void;
   openCodexInlineVisualization?: (file: string) => void;
   openCodexVisualizationReference?: (
@@ -260,7 +260,7 @@ function TranscriptArtifactOpenButton({
   onOpen,
 }: {
   label: string;
-  onOpen: () => void;
+  onOpen: (external: boolean) => void;
 }) {
   return (
     <button
@@ -273,7 +273,7 @@ function TranscriptArtifactOpenButton({
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        onOpen();
+        onOpen(event.metaKey);
       }}
     >
       <ExternalLink aria-hidden="true" />
@@ -303,7 +303,7 @@ function MarkdownLink({
       href={safe}
       onClick={(event) => {
         event.preventDefault();
-        openLink(safe, event.currentTarget);
+        openLink(safe, event.currentTarget, event.metaKey);
       }}
       onAuxClick={(event) => {
         // A middle (or other auxiliary) click would otherwise keep WebKit's
@@ -313,7 +313,7 @@ function MarkdownLink({
         // route a middle click through the same classifier as a primary click.
         event.preventDefault();
         if (event.button === 1) {
-          openLink(safe, event.currentTarget);
+          openLink(safe, event.currentTarget, event.metaKey);
         }
       }}
       onContextMenu={(event) => {
@@ -328,7 +328,7 @@ function MarkdownLink({
       {link}
       <TranscriptArtifactOpenButton
         label="Open local HTML in browser"
-        onOpen={() => openLink(localHtmlUrl)}
+        onOpen={(external) => openLink(localHtmlUrl, undefined, external)}
       />
     </span>
   ) : (
@@ -358,7 +358,7 @@ function MarkdownCode({
       {code}
       <TranscriptArtifactOpenButton
         label="Open local HTML in browser"
-        onOpen={() => openLink(localHtmlUrl)}
+        onOpen={(external) => openLink(localHtmlUrl, undefined, external)}
       />
     </span>
   ) : (
@@ -467,7 +467,7 @@ function BlockedMarkdownImage({ src, alt }: ComponentPropsWithoutRef<"img">) {
     <button
       type="button"
       className="control-button research-blocked-image"
-      onClick={() => openLink(safe)}
+      onClick={(event) => openLink(safe, event.currentTarget, event.metaKey)}
       onContextMenu={(event) => {
         event.preventDefault();
         openLinkMenu(safe, event.clientX, event.clientY);

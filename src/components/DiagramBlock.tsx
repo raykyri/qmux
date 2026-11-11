@@ -257,7 +257,7 @@ type RenderState =
 interface DiagramBlockProps {
   lang: DiagramLang;
   code: string;
-  openLink: (url: string) => void;
+  openLink: (url: string, trigger?: HTMLElement, external?: boolean) => void;
   openLinkMenu: (url: string, x: number, y: number) => void;
 }
 
@@ -340,7 +340,7 @@ export default function DiagramBlock({
               return;
             }
             event.preventDefault();
-            openLink(href);
+            openLink(href, event.currentTarget, event.metaKey);
           }}
           onAuxClick={(event) => {
             if (!diagramLinkFromEvent(event)) return;

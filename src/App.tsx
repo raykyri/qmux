@@ -5176,7 +5176,18 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   }, [remotePreviews, remotePreviewRequests, agents, panes, browserOverlayByPane]);
 
   const openLinkForPane = useCallback(
-    (paneId: string | null | undefined, url: string, trigger?: HTMLElement) => {
+    (paneId: string | null | undefined, url: string, trigger?: HTMLElement, external = false) => {
+      // Command-click bypasses the overlay, including its toggle-on-repeat
+      // behavior. Protected previews must use the validated source-file opener.
+      if (external && canRenderInInternalBrowser(url)) {
+        const open = isFileServerUrl(url, configRef.current?.fileServerPort ?? null)
+          ? browserOpenPreviewExternal(url)
+          : openExternalUrl(url);
+        void open.catch((err) => {
+          setError(err instanceof Error ? err.message : String(err));
+        });
+        return;
+      }
       const fileTarget = transcriptFileTarget(url);
       const localPath = fileTarget?.path ?? pathFromQmuxFileHref(url);
       if (localPath && paneId && panesRef.current.find((pane) => pane.id === paneId)?.remoteSession) {
@@ -5646,8 +5657,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     let actions = cache.get(paneId);
     if (!actions) {
       actions = {
-        openLink: (url, trigger) => {
-          openLinkForPaneRef.current(paneId, url, trigger);
+        openLink: (url, trigger, external) => {
+          openLinkForPaneRef.current(paneId, url, trigger, external);
         },
         openLinkMenu: (url, x, y, trigger) => setLinkMenu({
           url, x, y, paneId, trigger,
