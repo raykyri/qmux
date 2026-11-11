@@ -6876,6 +6876,183 @@ fn move_pane_to_group_moves_shell_pane_and_removes_emptied_group() {
 }
 
 #[test]
+fn move_pane_to_new_group_preserves_shell_and_project_and_survives_restart() {
+    let workspace = temp_workspace();
+    let config = test_config(workspace.clone());
+    let new_group_id;
+    {
+        let state = AppState::new(config.clone());
+        assert!(state.restore_session().is_empty());
+        let mut source = sample_group_with_id("group-1");
+        source.dir = std::fs::canonicalize(&workspace)
+            .unwrap()
+            .display()
+            .to_string();
+        state.insert_group_after(source.clone(), None).unwrap();
+        state
+            .insert_group_after(sample_group_with_id("group-2"), Some("group-1"))
+            .unwrap();
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+        state
+            .set_pane_splits(vec![PaneSplitInfo {
+                id: "split-a".to_string(),
+                pane_ids: vec!["pane-1".to_string(), "pane-2".to_string()],
+                sizes: HashMap::new(),
+                intent: HashMap::new(),
+                axis: PaneSplitAxis::Vertical,
+                root: None,
+            }])
+            .unwrap();
+        let before = state
+            .list_panes()
+            .unwrap()
+            .into_iter()
+            .find(|pane| pane.id == "pane-1")
+            .unwrap();
+
+        let panes = state.move_pane_to_new_group("pane-1").unwrap();
+        assert_eq!(
+            panes
+                .iter()
+                .map(|pane| pane.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pane-2", "pane-1"]
+        );
+        let moved = panes.last().unwrap();
+        new_group_id = moved.group_id.clone();
+        let mut expected = before;
+        expected.group_id = new_group_id.clone();
+        assert_eq!(
+            serde_json::to_value(moved).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert!(state.pane_splits().unwrap().is_empty());
+        let groups = state.list_groups().unwrap();
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["group-1", "group-2", &new_group_id]
+        );
+        let created = groups.last().unwrap();
+        assert_eq!(created.dir, source.dir);
+        assert_eq!(created.base_repo, source.base_repo);
+        assert_eq!(created.base_ref, source.base_ref);
+        assert_eq!(created.scope, WorkspaceScope::Terminal);
+        assert!(!created.collapsed);
+        assert!(created.agents.is_empty());
+    }
+    let state = AppState::new(config);
+    let recovered = state.restore_session();
+    assert_eq!(recovered.last().unwrap().id, "pane-1");
+    assert_eq!(recovered.last().unwrap().group_id, new_group_id);
+    assert_eq!(
+        state.list_groups().unwrap().last().unwrap().id,
+        new_group_id
+    );
+}
+
+#[test]
+fn move_pane_to_new_group_removes_empty_source_and_preserves_remote() {
+    let workspace = temp_workspace();
+    let state = AppState::new(test_config(workspace));
+    let mut source = sample_group_with_id("group-1");
+    source.dir = "/remote/only/project".to_string();
+    source.remote = Some(crate::workspace::RemoteRef {
+        id: "devbox".to_string(),
+        label: "Dev box".to_string(),
+        host: "devbox".to_string(),
+        multiplexer: crate::workspace::RemoteMultiplexer::Tmux,
+        qmux_cli: None,
+        workspace_root: Some("/srv/qmux/workspaces".to_string()),
+    });
+    state.insert_group_after(source.clone(), None).unwrap();
+    state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+    let panes = state.move_pane_to_new_group("pane-1").unwrap();
+    let groups = state.list_groups().unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_ne!(groups[0].id, source.id);
+    assert_eq!(panes[0].group_id, groups[0].id);
+    assert_eq!(groups[0].dir, source.dir);
+    assert_eq!(
+        serde_json::to_value(&groups[0].remote).unwrap(),
+        serde_json::to_value(&source.remote).unwrap()
+    );
+}
+
+#[test]
+fn move_pane_to_new_group_rejects_invalid_moves_without_creating_groups() {
+    let workspace = temp_workspace();
+    let state = AppState::new(test_config(workspace.clone()));
+    let mut source = sample_group_with_id("group-1");
+    source.dir = std::fs::canonicalize(&workspace)
+        .unwrap()
+        .display()
+        .to_string();
+    state.insert_group_after(source.clone(), None).unwrap();
+    let mut pane = sample_pane_runtime("pane-1");
+    pane.info.agent_id = Some("agent-1".to_string());
+    state.insert_pane(pane).unwrap();
+    assert!(
+        state
+            .move_pane_to_new_group("pane-1")
+            .unwrap_err()
+            .contains("agent tabs")
+    );
+    let mut agent = sample_pane_runtime("agent");
+    agent.info.kind = PaneKind::Agent;
+    state.insert_pane(agent).unwrap();
+    assert!(state.move_pane_to_new_group("agent").is_err());
+    assert!(state.move_pane_to_new_group("missing").is_err());
+
+    source.scope = WorkspaceScope::Research;
+    state.update_group(source).unwrap();
+    state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+    assert!(
+        state
+            .move_pane_to_new_group("pane-2")
+            .unwrap_err()
+            .contains("terminal groups")
+    );
+    assert_eq!(state.list_groups().unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read_dir(workspace)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir())
+            .count(),
+        0
+    );
+    assert!(
+        state
+            .list_panes()
+            .unwrap()
+            .iter()
+            .all(|pane| pane.group_id == "group-1")
+    );
+}
+
+#[test]
+fn move_pane_to_new_group_creation_failure_keeps_membership_and_order() {
+    let workspace = temp_workspace();
+    let state = AppState::new(test_config(workspace.clone()));
+    let mut source = sample_group_with_id("group-1");
+    source.dir = workspace.join("missing-project").display().to_string();
+    state.insert_group_after(source, None).unwrap();
+    state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+    state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+    let before = state.list_panes().unwrap();
+    assert!(state.move_pane_to_new_group("pane-1").is_err());
+    assert_eq!(state.list_groups().unwrap().len(), 1);
+    assert_eq!(
+        serde_json::to_value(state.list_panes().unwrap()).unwrap(),
+        serde_json::to_value(before).unwrap()
+    );
+}
+
+#[test]
 fn move_pane_to_group_rejects_agent_tabs_and_non_terminal_targets() {
     let workspace = temp_workspace();
     let state = AppState::new(test_config(workspace));

@@ -4700,6 +4700,75 @@ impl AppState {
         Ok(panes)
     }
 
+    /// Creates a group at the end and re-homes a shell without respawning its
+    /// terminal. Creation and membership changes commit together; rejected moves
+    /// never leave an empty group. Agent bookkeeping remains group-bound.
+    pub fn move_pane_to_new_group(&self, pane_id: &str) -> Result<Vec<PaneInfo>, String> {
+        let (panes, group, removed_source_group_id) = {
+            let mut model = self
+                .inner
+                .model
+                .lock()
+                .map_err(|_| "model lock poisoned".to_string())?;
+            let pane = model
+                .panes
+                .get(pane_id)
+                .ok_or_else(|| format!("pane {pane_id} was not found"))?;
+            if !matches!(pane.info.kind, PaneKind::Shell) || pane.info.agent_id.is_some() {
+                return Err("agent tabs can't move to another group".to_string());
+            }
+            let source_group_id = pane.info.group_id.clone();
+            let source = model
+                .groups
+                .get(&source_group_id)
+                .ok_or_else(|| format!("group {source_group_id} was not found"))?;
+            if source.scope != WorkspaceScope::Terminal {
+                return Err("tabs can only move between terminal groups".to_string());
+            }
+            // Inherit the project's launch context, including the remote snapshot.
+            // This allocates only local group metadata, never a shell or worktree.
+            let group = crate::workspace::create_group_record(
+                self,
+                crate::workspace::CreateGroupRequest {
+                    name: None,
+                    dir: Some(source.dir.clone()),
+                    after_group_id: None,
+                    base_repo: source.base_repo.clone(),
+                    base_ref: source.base_ref.clone(),
+                    remote: source.remote.clone(),
+                    remote_id: None,
+                },
+                WorkspaceScope::Terminal,
+            )?;
+            model.groups.insert(group.id.clone(), group.clone());
+            model.group_order.push(group.id.clone());
+            model.panes.get_mut(pane_id).unwrap().info.group_id = group.id.clone();
+            model.pane_order.retain(|id| id != pane_id);
+            model.pane_order.push(pane_id.to_string());
+            normalize_pane_splits_locked(&mut model);
+            let removed_source_group_id =
+                remove_group_without_open_panes_locked(&mut model, &source_group_id, true)
+                    .then_some(source_group_id);
+            (ordered_panes(&model), group, removed_source_group_id)
+        };
+        self.persist();
+        self.emit(QmuxEvent::new(
+            "group.created",
+            None,
+            None,
+            json!({ "group": group }),
+        ));
+        if let Some(group_id) = removed_source_group_id {
+            self.emit(QmuxEvent::new(
+                "group.removed",
+                None,
+                None,
+                json!({ "groupId": group_id }),
+            ));
+        }
+        Ok(panes)
+    }
+
     /// Moves `pane_id` to sit immediately after `sibling_pane_id`.
     pub fn place_pane_after(
         &self,

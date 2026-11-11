@@ -707,6 +707,30 @@
   gap: 1px;
 }
 
+/* Retain a reachable target after the final group even in a full sidebar. */
+.pane-new-group-drop-zone {
+  flex: 1 0 44px;
+  min-height: 44px;
+  padding-top: 4px;
+}
+
+.pane-new-group-drop-hint {
+  display: block;
+  padding: 10px 8px;
+  border: 1px dashed var(--control-border);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  text-align: center;
+  pointer-events: none;
+}
+
+.pane-new-group-drop-zone.is-drop-target .pane-new-group-drop-hint {
+  border-color: var(--accent-color);
+  background: var(--accent-shadow);
+  color: var(--accent-color);
+}
+
 /* The drop target is a standalone horizontal rule sitting in the 2px gap between
    rows rather than an inset border hugging the tab — a border would curl around
    the tab's rounded corners. */

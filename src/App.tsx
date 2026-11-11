@@ -381,6 +381,7 @@ import type {
   PaneDropTarget,
   PaneTabPointerDrag,
 } from "./appTypes";
+import { computeSidebarPaneDropTarget } from "./lib/sidebarPaneDropTarget";
 import {
   movePaneAdjacentToPane,
   movePaneAfter,
@@ -637,6 +638,7 @@ import {
   moveQueuedAgentTurn,
   reorderQueuedAgentTurn,
   movePaneToGroup,
+  movePaneToNewGroup,
   downloadRemoteFile,
   openExternalUrl,
   browserOpenCodexInlineVisualization,
@@ -909,6 +911,8 @@ function paneDropTargetsEqual(
     return false;
   }
   switch (a.kind) {
+    case "new-group":
+      return b.kind === "new-group";
     case "gap":
       return b.kind === "gap" && a.groupId === b.groupId && a.index === b.index;
     case "terminal-split":
@@ -11600,9 +11604,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       suppressPaneTabClickRef.current = false;
     }, PANE_TAB_DRAG_CLICK_SUPPRESS_MS);
 
-    const target =
-      paneDropTargetRef.current ??
-      computePaneDragDropTarget(event.clientX, event.clientY, drag.paneId);
+    const target = computePaneDragDropTarget(event.clientX, event.clientY, drag.paneId);
     clearPaneTabDrag();
     if (target === null) {
       return;
@@ -11681,7 +11683,15 @@ function MainApp({ onReady }: { onReady?: () => void }) {
 
     const list = paneListRef.current;
     if (list && pointInRect(list.getBoundingClientRect(), clientX, clientY)) {
-      return computeSidebarDropTarget(list, clientY, dragId);
+      const sourceGroupId = panes.find((pane) => pane.id === dragId)?.groupId;
+      return computeSidebarPaneDropTarget(
+        list,
+        clientY,
+        dragId,
+        panes,
+        sidebarMode === "terminal" &&
+          groups.some((group) => group.id === sourceGroupId && group.scope === "terminal"),
+      );
     }
 
     return null;
@@ -11737,56 +11747,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     return gapTarget(lastVisibleIndex >= 0 ? lastVisibleIndex + 1 : terminalGroups.length);
   }
 
-  function computeSidebarDropTarget(
-    container: HTMLElement,
-    clientY: number,
-    dragId: string,
-  ): PaneDropTarget | null {
-    const dragPane = panes.find((pane) => pane.id === dragId);
-    if (!dragPane) {
-      return null;
-    }
-    const dragGroupPanes = panes.filter((pane) => pane.groupId === dragPane.groupId);
-    // Ordinary shell tabs may drop into another terminal group. Agent tabs stay
-    // within their workspace because their worktree and queue state are group-bound.
-    const allowCrossGroup = paneCanMoveAcrossGroups(dragGroupPanes, dragId);
-    const rows = Array.from(container.querySelectorAll(".pane-tab-row")).filter(
-      (child): child is HTMLElement =>
-        child instanceof HTMLElement &&
-        child.classList.contains("pane-tab-row") &&
-        typeof child.dataset.groupId === "string" &&
-        (allowCrossGroup || child.dataset.groupId === dragPane.groupId) &&
-        child.dataset.paneDragDisabled !== "true" &&
-        // The fixed Home row isn't a reorder target and isn't in `panes`, so
-        // excluding it keeps row indexes aligned with the group pane arrays below.
-        !child.classList.contains("pane-home-row"),
-    );
-    if (rows.length === 0) {
-      return null;
-    }
-    const dragIndex = dragGroupPanes.findIndex((pane) => pane.id === dragId);
-    const gapTarget = (groupId: string, index: number): PaneDropTarget | null =>
-      groupId === dragPane.groupId && dragIndex >= 0 && (index === dragIndex || index === dragIndex + 1)
-        ? null // dropping into/adjacent to its own block is a no-op
-        : { kind: "gap", groupId, index };
-
-    // Rows arrive in DOM order, section by section, so a per-group counter recovers
-    // each row's index within its own group's pane array.
-    const rowCountByGroup = new Map<string, number>();
-    for (const row of rows) {
-      const groupId = row.dataset.groupId as string;
-      const index = rowCountByGroup.get(groupId) ?? 0;
-      rowCountByGroup.set(groupId, index + 1);
-      const rect = row.getBoundingClientRect();
-      if (clientY >= rect.bottom) {
-        continue;
-      }
-      return gapTarget(groupId, clientY < rect.top + rect.height / 2 ? index : index + 1);
-    }
-    const lastGroupId = rows[rows.length - 1].dataset.groupId as string;
-    return gapTarget(lastGroupId, rowCountByGroup.get(lastGroupId) ?? 0);
-  }
-
   function computeTerminalSplitDropTarget(
     clientX: number,
     clientY: number,
@@ -11834,7 +11794,31 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     };
   }
 
+  function moveTabToNewGroup(paneId: string) {
+    const pane = panes.find((candidate) => candidate.id === paneId);
+    if (
+      !paneCanMoveAcrossGroups(panes, paneId) ||
+      !groups.some((group) => group.id === pane?.groupId && group.scope === "terminal")
+    ) {
+      return;
+    }
+    // The backend allocates the group id and moves the live shell atomically.
+    // Keep this serialized with other tab moves and load groups before the panes.
+    commitPaneLayout(panes, async () => {
+      const next = await movePaneToNewGroup(paneId).catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        throw err;
+      });
+      await refreshGroups();
+      return next;
+    });
+  }
+
   function applyDropTarget(dragId: string, target: PaneDropTarget) {
+    if (target.kind === "new-group") {
+      moveTabToNewGroup(dragId);
+      return;
+    }
     if (target.kind === "terminal-split") {
       void splitDraggedPaneIntoTerminal(dragId, target);
       return;
@@ -16284,6 +16268,18 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           {sidebarMode === "terminal" ? pendingRemoteGroups
             .filter((pending) => !terminalGroups.some((group) => group.id === pending.afterGroupId))
             .map((pending) => <PendingRemoteGroup key={pending.id} group={pending} />) : null}
+          {sidebarMode === "terminal" ? (
+            <div
+              className={`pane-new-group-drop-zone${
+                paneDropTarget?.kind === "new-group" ? " is-drop-target" : ""
+              }`}
+              aria-hidden="true"
+            >
+              {draggingPaneId && paneCanMoveAcrossGroups(panes, draggingPaneId) ? (
+                <span className="pane-new-group-drop-hint">Drop here to create a new group</span>
+              ) : null}
+            </div>
+          ) : null}
           {sidebarMode === "research" && scopedResearchPanes.length > 0 ? (
             <section className="research-live-terminals" aria-label="Live research terminals">
               <div className="research-sidebar-heading">
@@ -16645,6 +16641,19 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             ) : null}
           </dl>
           <div className="pane-context-actions" role="menu" aria-label="Tab actions">
+            {paneCanMoveAcrossGroups(panes, contextMenuPane.id) &&
+            groups.some((group) => group.id === contextMenuPane.groupId && group.scope === "terminal") ? (
+              <Button
+                role="menuitem"
+                onClick={() => {
+                  setPaneContextMenu(null);
+                  moveTabToNewGroup(contextMenuPane.id);
+                }}
+              >
+                <Folder size={13} aria-hidden="true" />
+                <span>Move to new group</span>
+              </Button>
+            ) : null}
             {contextMenuPane.remoteSession ? (
               <button
                 type="button"

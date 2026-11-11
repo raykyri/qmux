@@ -79,10 +79,11 @@ export type GroupPointerDrag = {
   active: boolean;
 };
 
-// Where a tab drag will land: a gap between rows (reorder), or into the visible
-// terminal stack (split above/below the target pane).
+// Where a tab drag will land: a row gap, a new group below the sidebar groups,
+// or the visible terminal stack (split above/below the target pane).
 export type PaneDropTarget =
   | { kind: "gap"; groupId: string; index: number }
+  | { kind: "new-group" }
   | {
       kind: "terminal-split";
       groupId: string;

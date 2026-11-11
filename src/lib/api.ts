@@ -1618,6 +1618,11 @@ export function movePaneToGroup(
   return invoke<PaneInfo[]>("pane_move_to_group", { paneId, targetGroupId, items });
 }
 
+/** Creates a terminal group at the end and moves the existing shell into it. */
+export function movePaneToNewGroup(paneId: string) {
+  return invoke<PaneInfo[]>("pane_move_to_new_group", { paneId });
+}
+
 /** Prompts for a local destination and saves an explicitly requested remote file. */
 export function downloadRemoteFile(paneId: string, transcript: string, path: string) {
   return invoke<boolean>("remote_file_download", { paneId, transcript, path });
