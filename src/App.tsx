@@ -5911,15 +5911,26 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     floatingLeftSidebarRestoreVisible ||
     floatingRestoreButtonVisible ||
     floatingStageTranscriptExpandVisible;
-  // Nested layouts anchor this cluster to the active pane's band. A fixed
-  // top: 8px puts a lower pane's restore control over the top terminal, and
-  // native hit-testing can grant that sibling the keyboard during the click.
+  // Anchor both axes to the active split. Stage-wide right/top offsets put
+  // controls over a sibling terminal, which can also capture their clicks.
   const floatingRestoreAnchorRect =
-    !splitRightPaneMode && activeSplitLayout && activePane
+    !splitRightPaneMode && !activeTranscriptVisibleExpanded && activeSplitLayout && activePane
       ? (activeSplitLayout.panes.get(activePane.id) ?? null)
       : null;
   const floatingRestoreAnchorTop = floatingRestoreAnchorRect
     ? splitCalc(floatingRestoreAnchorRect.topFraction, floatingRestoreAnchorRect.topPx + 8)
+    : "";
+  const floatingRestoreRightFraction = floatingRestoreAnchorRect
+    ? 1 - floatingRestoreAnchorRect.leftFraction - floatingRestoreAnchorRect.widthFraction
+    : 0;
+  // The controls are children of the app shell, but split fractions describe
+  // the stage (shell minus sidebar). These layouts have no global right bar.
+  const floatingRestoreAnchorRight = floatingRestoreAnchorRect
+    ? splitCalc(
+        floatingRestoreRightFraction,
+        12 - floatingRestoreAnchorRect.leftPx - floatingRestoreAnchorRect.widthPx
+          - floatingRestoreRightFraction * effectiveSidebarWidth,
+      )
     : "";
   const floatingPaneRestoreControlsLayoutKey = [
     floatingLeftSidebarRestoreVisible ? "left" : "",
@@ -5928,6 +5939,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     splitRightPaneMode ? activePane?.id : "",
     splitRightPaneMode ? activeTurnPaneSurface?.topFraction : "",
     floatingRestoreAnchorTop,
+    floatingRestoreAnchorRight,
   ].join(":");
   // These controls can float over a native terminal. Register the whole group,
   // including the seam between two buttons, so Ghostty cannot capture any part
@@ -15352,7 +15364,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       surface && splitRightPaneMode && splitIndex >= 0
         ? { top: splitTrackPosition(surface.topFraction, splitIndex, 8) }
         : floatingRestoreAnchorTop
-          ? { top: floatingRestoreAnchorTop }
+          ? { top: floatingRestoreAnchorTop, right: floatingRestoreAnchorRight }
           : undefined;
     const grouped = floatingLeftSidebarRestoreVisible;
 
