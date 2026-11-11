@@ -481,7 +481,14 @@ impl CodexAdapter {
         .and_then(|spec| spawn_pty(state, spec));
 
         match spawn_result {
-            Ok(pane) => Ok(pane),
+            Ok(pane) => {
+                if host.is_local()
+                    && let Ok(Some(agent)) = state.agent(&agent.id)
+                {
+                    ensure_codex_transcript_tail(state, &agent);
+                }
+                Ok(pane)
+            }
             Err(err) => {
                 let _ = mark_agent_spawn_failed(state, &agent.id, &pane_id);
                 Err(err)
@@ -790,8 +797,8 @@ impl CodexAdapter {
             args_contain_prompt(&request.args),
         )?;
         let agent = if host.is_local() {
-            // A resumed shell agent retains its durable binding across restart,
-            // but the process-local watcher must be recreated independently of hooks.
+            // Restore saved watching or discover a concrete resume's rollout
+            // independently of whether Codex sends a startup hook.
             ensure_codex_transcript_tail(state, &agent);
             agent
         } else {
@@ -2007,12 +2014,34 @@ const CODEX_TRANSCRIPT_DISCOVERY_ATTEMPTS: usize = 40;
 const CODEX_TRANSCRIPT_DISCOVERY_DELAY: Duration = Duration::from_millis(250);
 
 fn ensure_codex_transcript_tail(state: &AppState, agent: &AgentInfo) {
+    ensure_codex_transcript_tail_with_home(state, agent, codex_home);
+}
+
+fn ensure_codex_transcript_tail_with_home(
+    state: &AppState,
+    agent: &AgentInfo,
+    resolve_home: impl FnOnce() -> Result<PathBuf, String>,
+) {
     if let Some(path) = agent.transcript_path.as_ref() {
         start_transcript_tail(
             state.clone(),
             agent.id.clone(),
             path.clone(),
             "codex".into(),
+        );
+    } else if let Some(session_id) = agent.session_id.as_ref()
+        && agent.fork_point.as_ref() != Some(session_id)
+    {
+        // A session can predate qmux or have been saved before its rollout was
+        // bound. The resume selector already identifies it; don't wait for a
+        // SessionStart hook to reconstruct its history. Fork sources must wait
+        // for the child identity instead of binding the parent's transcript.
+        start_codex_transcript_binding_with_home(
+            state.clone(),
+            agent.id.clone(),
+            Some(session_id.clone()),
+            None,
+            resolve_home,
         );
     }
 }
@@ -4479,6 +4508,74 @@ trusted_hash = "sha256:trusted"
 
         let agent = wait_for_agent_transcript_path(&state, "agent-1", &transcript_path);
         assert_eq!(agent.session_id.as_deref(), Some(session_id));
+    }
+
+    #[test]
+    fn resumed_codex_discovers_history_without_a_saved_path_or_startup_hook() {
+        let state = test_state();
+        let codex_home = temp_dir();
+        let session_id = "resumed-session";
+        let session_dir = codex_home.join("sessions/2026/11/11");
+        fs::create_dir_all(&session_dir).unwrap();
+        let path = session_dir.join(format!("rollout-{session_id}.jsonl"));
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n{}\n{}\n",
+                json!({"type":"session_meta","payload":{"id":session_id}}),
+                codex_user_message_line("old", "earlier prompt"),
+                codex_assistant_message_line("old", "earlier reply"),
+                json!({"type":"event_msg","payload":{"type":"task_complete"}}),
+            ),
+        )
+        .unwrap();
+        let mut agent = sample_agent();
+        agent.session_id = Some(session_id.into());
+        agent.status = AgentStatus::Idle;
+        state.insert_agent(agent.clone()).unwrap();
+
+        ensure_codex_transcript_tail_with_home(&state, &agent, || Ok(codex_home));
+
+        let bound = wait_for_agent_transcript_path(&state, &agent.id, &path);
+        assert_eq!(bound.session_id.as_deref(), Some(session_id));
+        wait_codex_test(&state, |state| {
+            state.list_turns(Some(&agent.id)).unwrap().len() == 2
+        });
+        let turns = state.list_turns(Some(&agent.id)).unwrap();
+        assert_text_block(&turns[0].blocks[0], "earlier prompt");
+        assert_text_block(&turns[1].blocks[0], "earlier reply");
+        assert_eq!(
+            state.agent(&agent.id).unwrap().unwrap().status,
+            AgentStatus::Idle,
+            "replayed completion must not settle the resumed process"
+        );
+        state
+            .mutate_agent(&agent.id, |agent| agent.transcript_path = None)
+            .unwrap();
+    }
+
+    #[test]
+    fn codex_startup_does_not_discover_a_fresh_session_or_a_fork_source() {
+        for is_fork in [false, true] {
+            let state = test_state();
+            let mut agent = sample_agent();
+            agent.session_id = is_fork.then(|| "source-session".into());
+            agent.fork_point = agent.session_id.clone();
+            state.insert_agent(agent.clone()).unwrap();
+
+            ensure_codex_transcript_tail_with_home(&state, &agent, || {
+                panic!("a fresh launch or fork must wait for its own session identity")
+            });
+
+            assert!(
+                state
+                    .agent(&agent.id)
+                    .unwrap()
+                    .unwrap()
+                    .transcript_path
+                    .is_none()
+            );
+        }
     }
 
     #[test]
