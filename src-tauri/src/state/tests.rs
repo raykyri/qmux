@@ -7035,11 +7035,63 @@ fn move_pane_to_new_group_rejects_invalid_moves_without_creating_groups() {
 }
 
 #[test]
+fn move_pane_to_new_group_uses_default_for_invalid_local_directories() {
+    for invalid in ["missing", "file", "empty"] {
+        let workspace = temp_workspace();
+        let config = test_config(workspace.clone());
+        let state = AppState::new(config.clone());
+        assert!(state.restore_session().is_empty());
+        let mut source = sample_group_with_id("group-1");
+        source.dir = match invalid {
+            "missing" => {
+                let deleted = workspace.join("deleted-project");
+                std::fs::create_dir(&deleted).unwrap();
+                std::fs::remove_dir(&deleted).unwrap();
+                deleted.display().to_string()
+            }
+            "file" => {
+                let file = workspace.join("not-a-directory");
+                std::fs::write(&file, "file").unwrap();
+                file.display().to_string()
+            }
+            _ => String::new(),
+        };
+        state.insert_group_after(source, None).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
+        state.insert_pane(sample_pane_runtime("pane-2")).unwrap();
+        let before = state.list_panes().unwrap().remove(0);
+
+        let panes = state.move_pane_to_new_group("pane-1").unwrap();
+
+        let moved = panes.last().unwrap();
+        let created = state.group(&moved.group_id).unwrap().unwrap();
+        assert_eq!(created.dir, state.default_open_dir().display().to_string());
+        let mut expected = before;
+        expected.group_id = created.id.clone();
+        assert_eq!(
+            serde_json::to_value(moved).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert_eq!(panes[0].group_id, "group-1");
+        assert_eq!(state.list_groups().unwrap().len(), 2);
+
+        let restored = AppState::new(config);
+        restored.restore_session();
+        assert_eq!(
+            restored.group(&created.id).unwrap().unwrap().dir,
+            created.dir
+        );
+    }
+}
+
+#[test]
 fn move_pane_to_new_group_creation_failure_keeps_membership_and_order() {
     let workspace = temp_workspace();
-    let state = AppState::new(test_config(workspace.clone()));
+    let blocked_root = workspace.join("not-a-directory");
+    std::fs::write(&blocked_root, "blocks group metadata creation").unwrap();
+    let state = AppState::new(test_config(blocked_root));
     let mut source = sample_group_with_id("group-1");
-    source.dir = workspace.join("missing-project").display().to_string();
+    source.dir = workspace.display().to_string();
     state.insert_group_after(source, None).unwrap();
     state.insert_pane(sample_pane_runtime("pane-1")).unwrap();
     state.insert_pane(sample_pane_runtime("pane-2")).unwrap();

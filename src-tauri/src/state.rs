@@ -4727,11 +4727,20 @@ impl AppState {
             }
             // Inherit the project's launch context, including the remote snapshot.
             // This allocates only local group metadata, never a shell or worktree.
+            // A stale local directory must not prevent moving the live tab;
+            // omitting it makes group creation use default_open_dir instead.
+            let dir = if source.remote.is_none() {
+                crate::workspace::group_canonical_dir(None, &source.dir)
+                    .ok()
+                    .map(|dir| dir.display().to_string())
+            } else {
+                Some(source.dir.clone())
+            };
             let group = crate::workspace::create_group_record(
                 self,
                 crate::workspace::CreateGroupRequest {
                     name: None,
-                    dir: Some(source.dir.clone()),
+                    dir,
                     after_group_id: None,
                     base_repo: source.base_repo.clone(),
                     base_ref: source.base_ref.clone(),
