@@ -283,7 +283,6 @@ fn classify_app_shortcut(
         "}" => "]",
         other => other,
     };
-    let one_primary_modifier = command != control;
 
     if command && !control && option && !shift && (key == "arrowup" || key == "arrowdown") {
         return Some(AppShortcutCommand::MoveSidebarItem(if key == "arrowup" {
@@ -305,7 +304,7 @@ fn classify_app_shortcut(
         }
     }
 
-    if one_primary_modifier && !option && !shift && key.len() == 1 {
+    if command && !control && !option && !shift && key.len() == 1 {
         let digit = key.as_bytes()[0];
         if (b'1'..=b'9').contains(&digit) {
             return Some(AppShortcutCommand::FocusTab(digit - b'1'));
@@ -336,7 +335,7 @@ fn classify_app_shortcut(
             1
         }));
     }
-    if one_primary_modifier && !option && !shift && key == "," {
+    if command && !control && !option && !shift && key == "," {
         return Some(AppShortcutCommand::OpenSettings);
     }
     if command && !control && !option && shift && key == "enter" {
@@ -345,7 +344,7 @@ fn classify_app_shortcut(
     // ⌘K is deliberately NOT classified here: with a terminal focused it stays
     // native (clear screen). The command palette binds it only for web targets,
     // in appShortcuts.ts.
-    if one_primary_modifier && !option && shift && key == "e" {
+    if command && !control && !option && shift && key == "e" {
         return Some(AppShortcutCommand::ToggleTranscriptOrBrowser);
     }
     // Research-surface commands, claimed even for a focused terminal so they
@@ -2359,6 +2358,43 @@ mod tests {
     }
 
     #[test]
+    fn command_shortcuts_leave_control_counterparts_unclaimed() {
+        use super::AppShortcutCommand;
+
+        let mut chords: Vec<(String, bool, AppShortcutCommand)> = (1..=9)
+            .map(|digit| {
+                (
+                    digit.to_string(),
+                    false,
+                    AppShortcutCommand::FocusTab(digit - 1),
+                )
+            })
+            .collect();
+        chords.extend([
+            (",".into(), false, AppShortcutCommand::OpenSettings),
+            (
+                "e".into(),
+                true,
+                AppShortcutCommand::ToggleTranscriptOrBrowser,
+            ),
+            ("w".into(), false, AppShortcutCommand::ClosePane),
+        ]);
+        for (key, shift, expected) in chords {
+            for classify in [
+                super::classify_app_shortcut,
+                super::classify_web_app_shortcut,
+            ] {
+                assert_eq!(classify(&key, shift, false, false, true), Some(expected));
+                assert_eq!(
+                    classify(&key, shift, true, false, false),
+                    None,
+                    "control counterpart of command-{key} must remain unclaimed"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn native_shortcut_classifier_only_claims_qmux_commands() {
         use super::AppShortcutCommand;
 
@@ -2379,7 +2415,7 @@ mod tests {
             Some(AppShortcutCommand::CyclePaneTab(-1))
         );
         assert_eq!(
-            super::classify_app_shortcut("4", false, true, false, false),
+            super::classify_app_shortcut("4", false, false, false, true),
             Some(AppShortcutCommand::FocusTab(3))
         );
         assert_eq!(

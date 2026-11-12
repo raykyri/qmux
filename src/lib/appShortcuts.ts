@@ -58,7 +58,6 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   const control = input.ctrlKey;
   const option = input.altKey;
   const shift = input.shiftKey;
-  const onePrimaryModifier = command !== control;
 
   if (command && !control && !option && shift && key === "enter") {
     return { type: "toggleTerminalExpanded" };
@@ -87,7 +86,7 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
     }
   }
 
-  if (onePrimaryModifier && !option && !shift && /^[1-9]$/.test(key)) {
+  if (command && !control && !option && !shift && /^[1-9]$/.test(key)) {
     return { type: "focusTab", tabIndex: Number(key) - 1 };
   }
 
@@ -112,7 +111,7 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   if (command && !control && !option && shift && (key === "[" || key === "]")) {
     return { type: "cycleAllTab", direction: key === "[" ? -1 : 1 };
   }
-  if (onePrimaryModifier && !option && !shift && key === ",") {
+  if (command && !control && !option && !shift && key === ",") {
     return { type: "openSettings" };
   }
   // Only for web targets: with a terminal focused, ⌘K stays native (clear
@@ -120,7 +119,7 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   if (command && !control && !option && !shift && key === "k" && !input.terminalTarget) {
     return { type: "openCommandPalette" };
   }
-  if (onePrimaryModifier && !option && shift && key === "e") {
+  if (command && !control && !option && shift && key === "e") {
     return { type: "toggleTranscriptOrBrowser" };
   }
   // Research-surface commands. Ghostty binds neither chord, so claiming them
@@ -145,13 +144,7 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   if (command && !control && !option && shift && key === "n") {
     return { type: "newGroup" };
   }
-  if (
-    key === "w" &&
-    !option &&
-    !shift &&
-    ((command && !control) ||
-      (!command && control && !input.terminalTarget && !input.editableTarget))
-  ) {
+  if (command && !control && !option && !shift && key === "w") {
     return { type: "closePane" };
   }
   if (command && !control && !option && !shift && key === "t") {

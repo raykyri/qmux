@@ -37,7 +37,7 @@ test("resolves qmux command and control shortcuts", () => {
     resolveAppShortcut(shortcut({ key: "Tab", ctrlKey: true, shiftKey: true })),
     { type: "cyclePaneTab", direction: -1 },
   );
-  assert.deepEqual(resolveAppShortcut(shortcut({ key: "4", ctrlKey: true })), {
+  assert.deepEqual(resolveAppShortcut(shortcut({ key: "4", metaKey: true })), {
     type: "focusTab",
     tabIndex: 3,
   });
@@ -234,6 +234,32 @@ test("leaves terminal command chords and control editing keys alone", () => {
   assert.equal(resolveAppShortcut(shortcut({ key: "t", ctrlKey: true })), null);
 });
 
+test("command shortcuts do not capture their control counterparts", () => {
+  const chords = [
+    ...Array.from({ length: 9 }, (_, index) => ({
+      key: String(index + 1),
+      shiftKey: false,
+      command: { type: "focusTab", tabIndex: index },
+    })),
+    { key: ",", shiftKey: false, command: { type: "openSettings" } },
+    { key: "e", shiftKey: true, command: { type: "toggleTranscriptOrBrowser" } },
+    { key: "w", shiftKey: false, command: { type: "closePane" } },
+  ];
+  for (const { key, shiftKey, command } of chords) {
+    for (const target of [{}, { terminalTarget: true }, { editableTarget: true }]) {
+      assert.deepEqual(
+        resolveAppShortcut(shortcut({ key, shiftKey, metaKey: true, ...target })),
+        command,
+      );
+      assert.equal(
+        resolveAppShortcut(shortcut({ key, shiftKey, ctrlKey: true, ...target })),
+        null,
+        `Control counterpart must stay unclaimed: ${JSON.stringify({ key, shiftKey, ...target })}`,
+      );
+    }
+  }
+});
+
 test("continuous adjustment commands repeat", () => {
   assert.equal(appShortcutAllowsRepeat({ type: "fontZoomIn" }), true);
   assert.equal(
@@ -301,7 +327,12 @@ test("show/hide accelerator conflicts name the shadowed in-app shortcut", () => 
     "toggle terminal/research mode",
   );
   assert.equal(showHideShortcutConflict("Command+T"), "open a new tab");
-  assert.equal(showHideShortcutConflict("Control+4"), "focus tab 4");
+  assert.equal(showHideShortcutConflict("Command+4"), "focus tab 4");
+  assert.equal(showHideShortcutConflict("Control+4"), null);
+  assert.equal(showHideShortcutConflict("Control+,"), null);
+  assert.equal(showHideShortcutConflict("Shift+Control+E"), null);
+  assert.equal(showHideShortcutConflict("Control+W"), null);
+  assert.equal(showHideShortcutConflict("Control+Tab"), "cycle tabs");
   assert.equal(
     showHideShortcutConflict("Option+Command+Up"),
     "move the active tab",
