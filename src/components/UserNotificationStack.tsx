@@ -1,6 +1,8 @@
 import { CheckCircle2, CircleAlert, Info, TriangleAlert, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNativeWebOverlayRegion } from "../hooks/useNativeWebOverlayRegion";
+import { useBlockingDialogOpen } from "./ui";
 
 export type UserNotificationTone = "info" | "success" | "warning" | "error";
 
@@ -28,6 +30,7 @@ export function formatShortRelativeTime(createdAt: number, now = Date.now()): st
 
 interface UserNotificationStackProps {
   notifications: UserNotificationItem[];
+  reduceMotion?: boolean;
   onDismiss: (id: string) => void;
   onOpenPane: (paneId: string) => void;
 }
@@ -154,6 +157,7 @@ function NotificationCard({
 
 export function UserNotificationStack({
   notifications,
+  reduceMotion = false,
   onDismiss,
   onOpenPane,
 }: UserNotificationStackProps) {
@@ -161,9 +165,10 @@ export function UserNotificationStack({
     () => document.visibilityState === "visible" && document.hasFocus(),
   );
   const [now, setNow] = useState(() => Date.now());
+  const blockingDialogOpen = useBlockingDialogOpen();
   const visible = notifications.slice(0, MAX_VISIBLE);
   const regionRef = useNativeWebOverlayRegion<HTMLDivElement>(
-    visible.length > 0,
+    visible.length > 0 && !blockingDialogOpen,
     visible.map((notification) => notification.id).join("\0"),
   );
 
@@ -188,8 +193,11 @@ export function UserNotificationStack({
   }, []);
 
   if (visible.length === 0) return null;
-  return (
-    <div ref={regionRef} className="user-notification-stack" aria-label="Notifications">
+  // Global notices must stay above native-content dialogs, whose transparent
+  // aperture clips the app root and suppresses its underlying pointer regions.
+  return createPortal(
+    <div ref={regionRef} className="user-notification-stack" aria-label="Notifications"
+      inert={blockingDialogOpen} data-reduce-motion={reduceMotion || undefined}>
       {visible.map((notification) => (
         <NotificationCard
           key={notification.id}
@@ -200,6 +208,7 @@ export function UserNotificationStack({
           onOpenPane={onOpenPane}
         />
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }

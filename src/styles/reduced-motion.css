@@ -4,7 +4,11 @@
 .app-shell.reduce-motion,
 .app-shell.reduce-motion *,
 .app-shell.reduce-motion *::before,
-.app-shell.reduce-motion *::after {
+.app-shell.reduce-motion *::after,
+[data-reduce-motion],
+[data-reduce-motion] *,
+[data-reduce-motion] *::before,
+[data-reduce-motion] *::after {
   scroll-behavior: auto !important;
   transition-delay: 0s !important;
   transition-duration: 0.01ms !important;
@@ -28,7 +32,10 @@
 
 .app-shell.reduce-motion .user-notification,
 .app-shell.reduce-motion .user-notification.is-entering,
-.app-shell.reduce-motion .user-notification.is-exiting {
+.app-shell.reduce-motion .user-notification.is-exiting,
+[data-reduce-motion] .user-notification,
+[data-reduce-motion] .user-notification.is-entering,
+[data-reduce-motion] .user-notification.is-exiting {
   transform: none;
 }
 

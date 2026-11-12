@@ -214,6 +214,7 @@ final class NativeTerminalPane: NSObject,
                 "super+shift+h",  // qmux: conversation history
                 "super+shift+g",  // qmux: toggle left sidebar
                 "super+shift+l",  // qmux: toggle right bar
+                "super+shift+enter",  // toggle_split_zoom — qmux: expanded terminal
                 "super+d",  // new_split:right — qmux: split pane below
                 "super+shift+d",  // new_split:down — qmux: split pane left/right
                 "super+comma",  // open_config — qmux: settings

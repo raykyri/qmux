@@ -3,7 +3,7 @@ import {
   remoteConnectionCanRetry,
   remotePaneCloseButtonVisible,
 } from "../lib/remoteConnection";
-import { LoaderCircle } from "lucide-react";
+import { Maximize2, LoaderCircle } from "lucide-react";
 import RemoteConnectionDetailsText from "./RemoteConnectionDetailsText";
 import {
   forwardRef,
@@ -35,11 +35,17 @@ import type { PasteProtectionSettings } from "../lib/paste";
 import type { PaneInfo } from "../types";
 import PaneSearchBar from "./PaneSearchBar";
 import { Button } from "./ui";
+import ExpandedTerminal from "./ExpandedTerminal";
+import { useNativeWebOverlayRegion } from "../hooks/useNativeWebOverlayRegion";
 
 interface TerminalPaneProps {
   pane: PaneInfo;
   visible?: boolean;
   active: boolean;
+  expandable?: boolean;
+  expanded?: boolean;
+  onExpand?: () => void;
+  onRestore?: () => void;
   /** Previewed as the destination of a queue/wait option in another pane. */
   waitTargetPreview?: boolean;
   style?: CSSProperties;
@@ -91,6 +97,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     pane,
     visible: visibleProp,
     active,
+    expandable = false,
+    expanded = false,
+    onExpand,
+    onRestore,
     waitTargetPreview = false,
     style,
     fontSize,
@@ -127,6 +137,10 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const connectionLabel = remoteConnectionLabel(pane.remoteConnection);
   const showRemoteCloseButton = remotePaneCloseButtonVisible(pane);
   const terminalInputBlocked = inputBlocked || remoteUnavailable;
+  const expandButtonRef = useNativeWebOverlayRegion<HTMLDivElement>(
+    visible && expandable && !expanded && !terminalInputBlocked, style,
+  );
+  const [expandedRect, setExpandedRect] = useState<NativeTerminalRect | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const lastVisibleRectRef = useRef<NativeTerminalRect | null>(null);
   const activeRef = useRef(active);
@@ -360,14 +374,27 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     void performNativeTerminalAction(pane.id, action).catch(() => undefined);
   }, [pane.id, searchOpen, searchTerm]);
 
+  const previousExpandedRef = useRef(expanded);
+  useLayoutEffect(() => {
+    if (previousExpandedRef.current === expanded) return;
+    previousExpandedRef.current = expanded;
+    // Portaling replaces the search input DOM node, but keeps its React state.
+    searchFocusPendingRef.current = searchOpenRef.current;
+    terminalFocusPendingRef.current = !searchOpenRef.current;
+    setExpandedRect(null);
+  }, [expanded]);
+
   useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) {
       return;
     }
     let frame: number | null = null;
+    let cancelled = false;
+    let sequence = 0;
     const syncLayout = () => {
       frame = null;
+      const syncSequence = ++sequence;
       const measuredRect = host.getBoundingClientRect();
       const wantSurfaceVisible =
         visible && measuredRect.width > 0 && measuredRect.height > 0;
@@ -448,9 +475,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         // may still claim the keyboard away from a composer, but never into a
         // pane whose input is blocked by policy (read-only research panes).
         acceptsKeyboardClaim: !terminalInputBlocked && !readOnly,
-        deferGeometry: deferGeometryUpdates,
+        deferGeometry: expanded ? false : deferGeometryUpdates,
       }).then(
         () => {
+          if (cancelled || syncSequence !== sequence) return;
+          if (expanded) setExpandedRect({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
           settleSearchFocus();
           settleTerminalFocus();
         },
@@ -465,18 +494,22 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     };
     const observer = new ResizeObserver(scheduleLayout);
     observer.observe(host);
+    window.addEventListener("resize", scheduleLayout);
     // Ownership changes must reach AppKit in the same React layout phase. A
     // second animation-frame delay leaves a window where a newly focused web
     // editor can have its first key stolen by the native surface.
     syncLayout();
     return () => {
+      cancelled = true;
       observer.disconnect();
+      window.removeEventListener("resize", scheduleLayout);
       if (frame !== null) {
         cancelAnimationFrame(frame);
       }
     };
   }, [
     active,
+    expanded,
     confirmOpen,
     coveredByOverlay,
     deferGeometryUpdates,
@@ -498,11 +531,12 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     void performNativeTerminalAction(pane.id, "navigate_search:previous").catch(() => undefined);
   };
 
-  return (
+  const content = (
     <div
       className={[
         TERMINAL_PANE_CLASS,
         "is-native",
+        expanded ? "is-expanded-terminal" : "",
         visible ? "is-visible" : "",
         active ? "is-focused" : "",
         waitTargetPreview ? "is-wait-target-preview" : "",
@@ -510,10 +544,17 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         .filter(Boolean)
         .join(" ")}
       aria-hidden={!visible}
-      style={style}
+      style={expanded ? undefined : style}
       onPointerDown={() => onActivateRef.current?.(pane.id)}
     >
       <div ref={hostRef} className="terminal-host" />
+      {expandable && !expanded && !terminalInputBlocked ? (
+        <div className="terminal-expand-control" ref={expandButtonRef}>
+          <Button variant="icon" size="sm" aria-label="Expand terminal" title="Expand terminal (⌘⇧Enter)" onClick={onExpand}>
+            <Maximize2 size={14} aria-hidden="true" />
+          </Button>
+        </div>
+      ) : null}
       {remoteUnavailable ? (
         <div className="remote-connection-overlay" role="status" aria-live="polite" aria-label={!showRemoteCloseButton ? connectionLabel : undefined}>
           {!showRemoteCloseButton && <LoaderCircle className="remote-connection-spinner" size={24} aria-hidden="true" />}
@@ -553,6 +594,11 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       ) : null}
     </div>
   );
+  return expanded ? (
+    <ExpandedTerminal rect={expandedRect} onRestore={() => onRestore?.()}>
+      {content}
+    </ExpandedTerminal>
+  ) : content;
 });
 
 export default memo(TerminalPane);

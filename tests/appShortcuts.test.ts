@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  expandedTerminalShortcutDisposition,
+  terminalExpansionShortcutAllowed,
   appShortcutAllowsRepeat,
   appShortcutTargetsActivePane,
   contextualizeAppShortcut,
@@ -362,4 +364,41 @@ test("only pane-targeted commands are withheld from an unknown origin pane", () 
     appShortcutTargetsActivePane({ type: "cyclePaneTab", direction: 1 }),
     false,
   );
+});
+
+test("terminal expansion is a pane-scoped, nonrepeating native and web command", () => {
+  const command = { type: "toggleTerminalExpanded" } as const;
+  assert.deepEqual(resolveAppShortcut(shortcut({ key: "Enter", metaKey: true, shiftKey: true, terminalTarget: true })), command);
+  assert.deepEqual(parseAppShortcutCommand(command.type, null), command);
+  assert.equal(appShortcutTargetsActivePane(command), true);
+  assert.equal(appShortcutAllowsRepeat(command), false);
+  assert.equal(resolveAppShortcut(shortcut({ key: "Enter", metaKey: true })), null);
+});
+
+
+test("expanded terminal Close restores and layout-only commands cannot change hidden UI", () => {
+  assert.equal(expandedTerminalShortcutDisposition({ type: "closePane" }, true), "restore");
+  assert.equal(expandedTerminalShortcutDisposition({ type: "closePane" }, false), "run");
+  assert.equal(expandedTerminalShortcutDisposition({ type: "toggleTerminalExpanded" }, true), "restore");
+  for (const type of ["toggleLeftSidebar", "toggleRightBar"] as const) {
+    assert.equal(expandedTerminalShortcutDisposition({ type }, true), "ignore");
+    assert.equal(expandedTerminalShortcutDisposition({ type }, false), "run");
+  }
+  assert.equal(expandedTerminalShortcutDisposition({ type: "moveSidebarItem", direction: 1 }, true), "ignore");
+  for (const type of ["splitPaneBelow", "splitPaneRight"] as const) {
+    assert.equal(expandedTerminalShortcutDisposition({ type }, true), "restore-and-run");
+  }
+  for (const type of ["openSettings", "fontZoomIn", "newPane", "openConversationHistory"] as const) {
+    assert.equal(expandedTerminalShortcutDisposition({ type }, true), "run");
+  }
+  assert.equal(expandedTerminalShortcutDisposition({ type: "cyclePaneTab", direction: 1 }, true), "run");
+});
+
+test("expansion opens only from terminal context but restores from search and web controls", () => {
+  assert.equal(terminalExpansionShortcutAllowed(false, true, false), true);
+  assert.equal(terminalExpansionShortcutAllowed(false, false, true), false);
+  assert.equal(terminalExpansionShortcutAllowed(false, true, true), false);
+  assert.equal(terminalExpansionShortcutAllowed(false, false, false), false);
+  assert.equal(terminalExpansionShortcutAllowed(true, true, true), true);
+  assert.equal(terminalExpansionShortcutAllowed(true, false, false), true);
 });

@@ -227,6 +227,7 @@ enum AppShortcutCommand {
     FocusFollowups,
     OpenFolderMenu,
     ToggleTranscriptOrBrowser,
+    ToggleTerminalExpanded,
     SplitPaneBelow,
     SplitPaneRight,
     RestoreClosedPane,
@@ -258,6 +259,7 @@ impl AppShortcutCommand {
             Self::FocusFollowups => ("focusFollowups", None),
             Self::OpenFolderMenu => ("openFolderMenu", None),
             Self::ToggleTranscriptOrBrowser => ("toggleTranscriptOrBrowser", None),
+            Self::ToggleTerminalExpanded => ("toggleTerminalExpanded", None),
             Self::SplitPaneBelow => ("splitPaneBelow", None),
             Self::SplitPaneRight => ("splitPaneRight", None),
             Self::RestoreClosedPane => ("restoreClosedPane", None),
@@ -337,6 +339,9 @@ fn classify_app_shortcut(
     if one_primary_modifier && !option && !shift && key == "," {
         return Some(AppShortcutCommand::OpenSettings);
     }
+    if command && !control && !option && shift && key == "enter" {
+        return Some(AppShortcutCommand::ToggleTerminalExpanded);
+    }
     // ⌘K is deliberately NOT classified here: with a terminal focused it stays
     // native (clear screen). The command palette binds it only for web targets,
     // in appShortcuts.ts.
@@ -388,7 +393,12 @@ fn classify_web_app_shortcut(
     if command && !control && !option && !shift && key.eq_ignore_ascii_case("k") {
         return Some(AppShortcutCommand::OpenCommandPalette);
     }
-    classify_app_shortcut(key, shift, control, option, command)
+    // Opening terminal expansion requires a terminal target. Healthy app DOM
+    // controls handle restore themselves; browser pages must keep this chord.
+    match classify_app_shortcut(key, shift, control, option, command) {
+        Some(AppShortcutCommand::ToggleTerminalExpanded) => None,
+        command => command,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2433,6 +2443,19 @@ mod tests {
         assert_eq!(
             super::classify_app_shortcut("d", true, false, false, true),
             Some(AppShortcutCommand::SplitPaneRight)
+        );
+        assert_eq!(
+            super::classify_app_shortcut("Enter", true, false, false, true),
+            Some(AppShortcutCommand::ToggleTerminalExpanded)
+        );
+        assert_eq!(
+            super::classify_web_app_shortcut("Enter", true, false, false, true),
+            None,
+            "web pages and text fields must retain the expansion chord"
+        );
+        assert_eq!(
+            AppShortcutCommand::ToggleTerminalExpanded.event_fields(),
+            ("toggleTerminalExpanded", None)
         );
         for key in [";", "k", "a", "z", "Enter"] {
             assert_eq!(

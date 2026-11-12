@@ -1,4 +1,4 @@
-import { createContext, forwardRef, useContext, useEffect, useLayoutEffect, useRef } from "react";
+import { createContext, forwardRef, useContext, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import type {
   FormHTMLAttributes,
   HTMLAttributes,
@@ -19,6 +19,23 @@ interface DialogContextValue {
 const DialogContext = createContext<DialogContextValue | null>(null);
 let inertModalCount = 0;
 let appRootWasInert = false;
+// Body-portaled global controls must honor the same ordinary modal boundary
+// as #root. Native-content dialogs leave those global controls available.
+let blockingDialogCount = 0;
+const blockingDialogListeners = new Set<() => void>();
+const subscribeBlockingDialog = (listener: () => void) => {
+  blockingDialogListeners.add(listener);
+  return () => { blockingDialogListeners.delete(listener); };
+};
+const blockingDialogOpen = () => blockingDialogCount > 0;
+function changeBlockingDialogCount(delta: number) {
+  const wasOpen = blockingDialogOpen();
+  blockingDialogCount = Math.max(0, blockingDialogCount + delta);
+  if (wasOpen !== blockingDialogOpen()) blockingDialogListeners.forEach((listener) => listener());
+}
+export function useBlockingDialogOpen(): boolean {
+  return useSyncExternalStore(subscribeBlockingDialog, blockingDialogOpen, () => false);
+}
 const focusableSelector = [
   "button:not([disabled])",
   "input:not([disabled])",
@@ -45,6 +62,7 @@ function useModalLifecycle(
   onDismiss: (() => void) | undefined,
   dismissDisabled: boolean,
   inertAppRoot: boolean,
+  nativeContent: boolean,
 ) {
   const restoreFocusRef = useRef<Element | null>(
     typeof document === "undefined" ? null : document.activeElement,
@@ -59,10 +77,11 @@ function useModalLifecycle(
     if (!backdrop) return;
     const dialog = backdrop.querySelector<HTMLElement>("[role='dialog']");
     if (dialog && !dialog.contains(document.activeElement)) {
+      // Native content will take first responder once its geometry is ready.
+      // Focusing a web control here would instead claim keyboard ownership.
       const initial =
         dialog.querySelector<HTMLElement>("[data-dialog-initial-focus]") ??
-        focusableElements(dialog)[0] ??
-        dialog;
+        (nativeContent ? dialog : focusableElements(dialog)[0] ?? dialog);
       if (initial === dialog && !dialog.hasAttribute("tabindex")) dialog.tabIndex = -1;
       initial.focus();
     }
@@ -72,9 +91,19 @@ function useModalLifecycle(
       if (inertModalCount === 0) appRootWasInert = appRoot.inert;
       inertModalCount += 1;
       appRoot.inert = true;
+      if (!nativeContent) changeBlockingDialogCount(1);
     }
 
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      // Native terminal keys never enter the DOM. Only manage this dialog's
+      // web controls; a nested dialog or terminal search owns its own Escape.
+      if (nativeContent) {
+        if (!(event.target instanceof Element) ||
+            event.target.closest("[role='dialog']") !== dialog) return;
+        // Search owns Escape from every control, but Tab still belongs to
+        // the modal focus boundary (including the last search button).
+        if (event.key === "Escape" && event.target.closest("[role='search']")) return;
+      }
       if (event.key === "Escape" && !dismissDisabledRef.current) {
         event.preventDefault();
         event.stopPropagation();
@@ -107,28 +136,36 @@ function useModalLifecycle(
       if (appRoot) {
         inertModalCount = Math.max(0, inertModalCount - 1);
         if (inertModalCount === 0) appRoot.inert = appRootWasInert;
+        if (!nativeContent) changeBlockingDialogCount(-1);
       }
       const target = restoreFocusRef.current;
-      if (target instanceof HTMLElement && target.isConnected) target.focus();
+      // WKWebView retains its last DOM activeElement while Ghostty owns the
+      // keyboard. Native-content hosts restore their own native/search focus;
+      // reviving that stale editor here would steal it from the terminal.
+      if (!nativeContent && target instanceof HTMLElement && target.isConnected) target.focus();
     };
-  }, [backdropRef, inertAppRoot]);
+  }, [backdropRef, inertAppRoot, nativeContent]);
 
-  useEffect(() => claimNativeTerminalPointerForWebOverlay(), []);
+  useEffect(() => {
+    if (!nativeContent) return claimNativeTerminalPointerForWebOverlay();
+  }, [nativeContent]);
 }
 
 export interface DialogBackdropProps extends HTMLAttributes<HTMLDivElement> {
   onDismiss?: () => void;
   dismissDisabled?: boolean;
   inertAppRoot?: boolean;
+  /** The dialog contains an interactive native surface beneath WebKit. */
+  nativeContent?: boolean;
 }
 
 export const DialogBackdrop = forwardRef<HTMLDivElement, DialogBackdropProps>(
   function DialogBackdrop(
-    { onDismiss, dismissDisabled = false, inertAppRoot = false, className, onMouseDown, ...props },
+    { onDismiss, dismissDisabled = false, inertAppRoot = false, nativeContent = false, className, onMouseDown, ...props },
     forwardedRef,
   ) {
     const backdropRef = useRef<HTMLDivElement | null>(null);
-    useModalLifecycle(backdropRef, onDismiss, dismissDisabled, inertAppRoot);
+    useModalLifecycle(backdropRef, onDismiss, dismissDisabled, inertAppRoot, nativeContent);
     const handleMouseDown = (event: MouseEvent<HTMLDivElement>) => {
       onMouseDown?.(event);
       if (!event.defaultPrevented && event.target === event.currentTarget && !dismissDisabled) {

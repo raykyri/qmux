@@ -95,6 +95,13 @@ export default function PaneSearchBar({
       className="pane-search"
       role="search"
       onPointerDownCapture={handlePointerDownCapture}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && !event.defaultPrevented) {
+          event.preventDefault();
+          event.stopPropagation();
+          onClose();
+        }
+      }}
       onBlur={(event) => {
         const nextTarget = event.relatedTarget;
         if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {

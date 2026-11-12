@@ -22,6 +22,7 @@ export type AppShortcutCommand =
   | { type: "focusFollowups" }
   | { type: "openFolderMenu" }
   | { type: "toggleTranscriptOrBrowser" }
+  | { type: "toggleTerminalExpanded" }
   | { type: "splitPaneBelow" }
   | { type: "splitPaneRight" }
   | { type: "restoreClosedPane" }
@@ -58,6 +59,10 @@ export function resolveAppShortcut(input: AppShortcutInput): AppShortcutCommand 
   const option = input.altKey;
   const shift = input.shiftKey;
   const onePrimaryModifier = command !== control;
+
+  if (command && !control && !option && shift && key === "enter") {
+    return { type: "toggleTerminalExpanded" };
+  }
 
   if (
     command &&
@@ -199,6 +204,7 @@ export function appShortcutTargetsActivePane(command: AppShortcutCommand): boole
     command.type === "splitPaneBelow" ||
     command.type === "splitPaneRight" ||
     command.type === "toggleTranscriptOrBrowser" ||
+    command.type === "toggleTerminalExpanded" ||
     // Reorders the active sidebar item (pane or research tree). A native chord
     // from an already-removed pane must be dropped, not run against whatever is
     // active now, or it persistently reorders an unrelated item.
@@ -251,6 +257,8 @@ function appShortcutLabel(command: AppShortcutCommand): string {
       return "open the research folder menu";
     case "toggleTranscriptOrBrowser":
       return "toggle the transcript or browser";
+    case "toggleTerminalExpanded":
+      return "expand or restore the terminal";
     case "splitPaneBelow":
       return "split the terminal";
     case "splitPaneRight":
@@ -337,11 +345,44 @@ export function appShortcutAllowsRepeat(command: AppShortcutCommand): boolean {
   );
 }
 
+/** Expanded terminals keep application navigation, but protect the obscured
+ * layout and make Close dismiss the presentation before closing a session. */
+export function expandedTerminalShortcutDisposition(
+  command: AppShortcutCommand,
+  expanded: boolean,
+): "run" | "restore" | "restore-and-run" | "ignore" {
+  if (!expanded) return "run";
+  switch (command.type) {
+    case "closePane":
+    case "toggleTerminalExpanded":
+      return "restore";
+    case "splitPaneBelow":
+    case "splitPaneRight":
+      return "restore-and-run";
+    case "toggleLeftSidebar":
+    case "toggleRightBar":
+    case "moveSidebarItem":
+      return "ignore";
+    default:
+      return "run";
+  }
+}
+
+export function terminalExpansionShortcutAllowed(
+  expanded: boolean,
+  terminalTarget: boolean,
+  editableTarget: boolean,
+): boolean {
+  return expanded || (terminalTarget && !editableTarget);
+}
+
 export function parseAppShortcutCommand(
   command: unknown,
   tabIndex: unknown,
 ): AppShortcutCommand | null {
   switch (command) {
+    case "toggleTerminalExpanded":
+      return { type: "toggleTerminalExpanded" };
     case "fontZoomIn":
     case "fontZoomOut":
     case "fontZoomReset":

@@ -596,6 +596,13 @@ export function isEditableTarget(target: EventTarget | null) {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
+// Native-surface controls need WebKit first responder even when they do not
+// edit text. Keep this separate from editable shortcut policy.
+export function isWebKeyboardTarget(target: EventTarget | null) {
+  return isEditableTarget(target) ||
+    (target instanceof HTMLElement && target.matches("[data-native-web-keyboard]"));
+}
+
 // Container class rendered by TerminalPane and matched by isTerminalTarget.
 // Shared so the renderer and the key-routing guards cannot drift apart the
 // way the old ".terminal-mount" selector did after the web terminal's DOM

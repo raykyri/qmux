@@ -34,6 +34,7 @@ export default function ComponentCatalog() {
   const [remoteMenu, setRemoteMenu] = useState<{x: number; y: number} | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [mediaOpen, setMediaOpen] = useState(false);
+  const [nativeOpen, setNativeOpen] = useState(false);
   const [segment, setSegment] = useState<"ssh" | "sftp" | "rsync">("ssh");
   const [checkboxOn, setCheckboxOn] = useState(true);
   const [launcherModel, setLauncherModel] = useState("fable");
@@ -296,9 +297,16 @@ export default function ComponentCatalog() {
         <section style={sectionStyle}>
           <h2 style={{ margin: 0 }}>Dialog</h2>
           <Button onClick={() => setDialogOpen(true)}>Open dialog</Button>
+          <Button onClick={() => setNativeOpen(true)}>Native-content dialog</Button>
           <Button onClick={() => setMediaOpen(true)}>Open media dialog</Button>
         </section>
       </div>
+      <DialogRoot nativeContent open={nativeOpen} onDismiss={() => setNativeOpen(false)}>
+        <Dialog aria-label="Native-content dialog">
+          <p>Native content owns its own keyboard and pointer events. Escape and Tab work in these web controls.</p>
+          <Button onClick={() => setNativeOpen(false)}>Close</Button>
+        </Dialog>
+      </DialogRoot>
       <DialogRoot open={mediaOpen} onDismiss={() => setMediaOpen(false)}>
         <Dialog variant="media" aria-label="Media preview">
           <Button onClick={() => setMediaOpen(false)}>Close media preview</Button>

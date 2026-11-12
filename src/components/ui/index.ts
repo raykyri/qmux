@@ -7,6 +7,7 @@ export {
   DialogForm,
   DialogRoot,
   DialogTitle,
+  useBlockingDialogOpen,
 } from "./Dialog";
 export type {
   DialogBackdropProps,

@@ -2,6 +2,20 @@ import { useLayoutEffect, useRef } from "react";
 import { setNativeTerminalWebOverlayRegion } from "../lib/api";
 
 let nextRegionSequence = 0;
+const SCOPE_EVENT = "qmux-native-overlay-scope";
+let overlayScope: HTMLElement | null = null;
+
+/** While a native-content modal is open, clipped app controls must not leave
+ * invisible pointer blockers over its terminal. Nested portals remain usable. */
+export function scopeNativeWebOverlayRegions(scope: HTMLElement): () => void {
+  const previous = overlayScope;
+  overlayScope = scope;
+  window.dispatchEvent(new Event(SCOPE_EVENT));
+  return () => {
+    overlayScope = previous;
+    window.dispatchEvent(new Event(SCOPE_EVENT));
+  };
+}
 
 /** Publishes the element's current rect, grown by `padding` on every side. The
  * slop exists so the native hit region matches a control whose DOM hit area is
@@ -14,7 +28,8 @@ function publishRegion(regionId: string, element: HTMLElement, padding: number) 
     y: rect.top - padding,
     width: rect.width + padding * 2,
     height: rect.height + padding * 2,
-    visible: rect.width > 0 && rect.height > 0,
+    visible: rect.width > 0 && rect.height > 0 &&
+      (!overlayScope || !document.getElementById("root")?.contains(element)),
   }).catch(() => undefined);
 }
 
@@ -76,10 +91,12 @@ export function useNativeWebOverlayRegion<T extends HTMLElement>(
       observer.observe(element.offsetParent);
     }
     window.addEventListener("resize", schedule);
+    window.addEventListener(SCOPE_EVENT, sync);
     sync();
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", schedule);
+      window.removeEventListener(SCOPE_EVENT, sync);
       if (frame !== null) {
         cancelAnimationFrame(frame);
       }

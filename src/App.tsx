@@ -1,3 +1,5 @@
+import { canExpandNativeTerminal, nativeTerminalBackstopRect } from "./lib/nativeTerminalLayout";
+import { createPortal, flushSync } from "react-dom";
 import { ComposerDrafts } from "./lib/composerDrafts";
 import { afterStartupPaint, loadInitialWorkspace, reconcileStartupArtifacts, reconcileStartupDrafts, startupResearchPane } from "./lib/startupHydration";
 import RemoteLinkContextMenu from "./components/RemoteLinkContextMenu";
@@ -80,6 +82,7 @@ import {
   Plus,
   RefreshCw,
   Rows2,
+  ScrollText,
   Settings,
   SquareTerminal,
   Sun,
@@ -286,6 +289,7 @@ import {
   firstUserTurnText,
   formatTranscriptCopyJson,
   isEditableTarget,
+  isWebKeyboardTarget,
   latestTurnTimestamp,
   IS_MAC,
   isTerminalTarget,
@@ -320,6 +324,8 @@ import {
   appShortcutAllowsRepeat,
   appShortcutTargetsActivePane,
   contextualizeAppShortcut,
+  expandedTerminalShortcutDisposition,
+  terminalExpansionShortcutAllowed,
   resolveAppShortcut,
   showHideShortcutConflict,
   type AppShortcutCommand,
@@ -3558,6 +3564,16 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           : [],
     [activePane?.id, activePaneSplitMembership],
   );
+  const [expandedTerminalPaneId, setExpandedTerminalPaneId] = useState<string | null>(null);
+  // A tab/surface switch or pane close exits the presentation; split membership
+  // and fractions are never mutated by expansion.
+  const expandedTerminalId = expandedTerminalPaneId === activePane?.id && activeSurface === "pane"
+    && visibleTerminalPaneIds.includes(expandedTerminalPaneId) ? expandedTerminalPaneId : null;
+  const expandedTerminalIdRef = useRef(expandedTerminalId);
+  expandedTerminalIdRef.current = expandedTerminalId;
+  useEffect(() => {
+    if (expandedTerminalPaneId && !expandedTerminalId) setExpandedTerminalPaneId(null);
+  }, [expandedTerminalPaneId, expandedTerminalId]);
   const visibleTerminalPanes = useMemo(
     () =>
       visibleTerminalPaneIds
@@ -4282,7 +4298,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     let frame: number | null = null;
     const syncBackstop = () => {
       frame = null;
-      const rect = stage.getBoundingClientRect();
+      const rect = nativeTerminalBackstopRect(
+        stage.getBoundingClientRect(), Boolean(expandedTerminalId), window.innerWidth, window.innerHeight,
+      );
       void setNativeTerminalStageBackstop({
         x: rect.left,
         y: rect.top,
@@ -4298,14 +4316,16 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     };
     const observer = new ResizeObserver(scheduleBackstop);
     observer.observe(stage);
-    scheduleBackstop();
+    window.addEventListener("resize", scheduleBackstop);
+    syncBackstop();
     return () => {
       observer.disconnect();
+      window.removeEventListener("resize", scheduleBackstop);
       if (frame !== null) {
         cancelAnimationFrame(frame);
       }
     };
-  }, []);
+  }, [expandedTerminalId]);
   // Committed per pane on a trailing debounce rather than per event: programs
   // that stream progress into the terminal title (OSC 0/2 spinners, build
   // percentages) emit a distinct title many times a second, and committing each
@@ -5889,6 +5909,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   );
   const visibleRightBarSurfaces = rightBarCollapsed ? [] : visibleTurnPaneSurfaces;
   const hasVisibleRightBar = visibleRightBarSurfaces.length > 0;
+  const hasVisibleRightBarRef = useRef(hasVisibleRightBar);
+  hasVisibleRightBarRef.current = hasVisibleRightBar;
+  const terminalExpansionAvailable = canExpandNativeTerminal(IS_MAC, visibleTerminalPaneIds.length, hasVisibleRightBar);
   const researchSidebarRestoreInHeader =
     leftSidebarCollapsed &&
     sidebarMode === "research" &&
@@ -5939,7 +5962,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const floatingRestoreAnchorRight = floatingRestoreAnchorRect
     ? splitCalc(
         floatingRestoreRightFraction,
-        12 - floatingRestoreAnchorRect.leftPx - floatingRestoreAnchorRect.widthPx
+        // Leave the rightmost icon slot for the split terminal expand button.
+        12 + (terminalExpansionAvailable ? 28 : 0)
+          - floatingRestoreAnchorRect.leftPx - floatingRestoreAnchorRect.widthPx
           - floatingRestoreRightFraction * effectiveSidebarWidth,
       )
     : "";
@@ -6061,7 +6086,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // screen. Intersecting with the visible set matches how the expanded
   // transcript and browser overlays are already visibility-derived.
   const visiblePaneOverlayBlocking = [...terminalOverlayBlockedPaneIds].some(
-    (paneId) => visibleTerminalPaneIdSet.has(paneId),
+    (paneId) => visibleTerminalPaneIdSet.has(paneId) && (!expandedTerminalId || paneId === expandedTerminalId),
   );
   const nativeModalOccluded = Boolean(
     settingsOpen ||
@@ -6111,6 +6136,17 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       terminalGeometryResizing ||
       visiblePaneOverlayBlocking,
   );
+  useLayoutEffect(() => {
+    if (nativeModalOccluded || activeBrowserOverlay?.open || activeTranscriptVisibleExpanded || assistantTurnReaderOpen) {
+      setExpandedTerminalPaneId(null);
+    }
+  }, [nativeModalOccluded, activeBrowserOverlay?.open, activeTranscriptVisibleExpanded, assistantTurnReaderOpen]);
+  // Failed actions must reveal the existing workspace error banner, which is
+  // behind the expanded aperture. A previously seen error does not prevent
+  // the user from explicitly expanding the terminal again.
+  useLayoutEffect(() => {
+    if (error) setExpandedTerminalPaneId(null);
+  }, [error]);
   const desiredNativeKeyboardOwner = desiredNativeTerminalKeyboardOwner({
     activePaneId: activePane?.id ?? null,
     paneSurfaceActive: activeSurface === "pane",
@@ -13065,8 +13101,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // Keyboard-ownership arbitration between the webview and the native terminal
   // surfaces. Two responsibilities:
   //
-  // 1. Track whether a web editable element really holds DOM focus (composer,
-  //    rename input, search field…). While it does, the native pane must not
+  // 1. Track whether an editor or an explicitly marked native-overlay control
+  //    holds DOM focus. While it does, the native pane must not
   //    claim AppKit first responder — see the `focused` layout flag.
   //
   // 2. Recover from first-responder theft. WKWebView grabs first responder on
@@ -13087,12 +13123,12 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       Boolean(
         target &&
           target.isConnected &&
-          isEditableTarget(target) &&
+          isWebKeyboardTarget(target) &&
           !target.matches(":disabled"),
       );
     const sample = () => {
       frame = null;
-      const editable = document.hasFocus() && isEditableTarget(document.activeElement);
+      const editable = document.hasFocus() && isWebKeyboardTarget(document.activeElement);
       webEditableFocusedRef.current = editable;
       setWebEditableFocused(editable);
     };
@@ -13102,7 +13138,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       }
     };
     const handleFocusIn = (event: FocusEvent) => {
-      const editable = document.hasFocus() && isEditableTarget(event.target);
+      const editable = document.hasFocus() && isWebKeyboardTarget(event.target);
       if (editable && event.target instanceof HTMLElement) {
         lastFocusedWebEditableRef.current = event.target;
       }
@@ -13112,7 +13148,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     const restoreWindowEditable = (returningToApp: boolean) => {
       const active =
         document.activeElement instanceof HTMLElement &&
-        isEditableTarget(document.activeElement)
+        isWebKeyboardTarget(document.activeElement)
           ? document.activeElement
           : null;
       const remembered = appBlurWebEditableRef.current;
@@ -13171,7 +13207,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       }
       requestAnimationFrame(() => {
         if (
-          isEditableTarget(document.activeElement) ||
+          isWebKeyboardTarget(document.activeElement) ||
           (document.activeElement instanceof Element &&
             document.activeElement.closest(".turn-timeline"))
         ) {
@@ -13311,7 +13347,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       selection.removeAllRanges();
     }
     setWebSelectionActive(false);
-    const editable = document.hasFocus() && isEditableTarget(document.activeElement);
+    const editable = document.hasFocus() && isWebKeyboardTarget(document.activeElement);
     webEditableFocusedRef.current = editable;
     setWebEditableFocused(editable);
   }, [activeSurface]);
@@ -13321,16 +13357,16 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // emits no focusout when a focused element is removed, so without this a
   // pane closing under a focused find input leaves webEditableFocused wedged
   // true and every remaining terminal keyboard-dead. Re-sample focus whenever
-  // pane membership changes.
+  // pane membership changes or the expanded portal replaces its controls.
   const paneIdsKey = panes.map((pane) => pane.id).join("\n");
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       setWebEditableFocused(
-        document.hasFocus() && isEditableTarget(document.activeElement),
+        document.hasFocus() && isWebKeyboardTarget(document.activeElement),
       );
     });
     return () => cancelAnimationFrame(frame);
-  }, [paneIdsKey]);
+  }, [paneIdsKey, expandedTerminalId]);
 
   // The same backstop for editables that unmount with a closing modal: the ⌘K
   // palette, rename dialog, settings, and new-research dialogs all hold DOM
@@ -13352,7 +13388,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     }
     const frame = requestAnimationFrame(() => {
       setWebEditableFocused(
-        document.hasFocus() && isEditableTarget(document.activeElement),
+        document.hasFocus() && isWebKeyboardTarget(document.activeElement),
       );
     });
     return () => cancelAnimationFrame(frame);
@@ -13368,7 +13404,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     }
     const frame = requestAnimationFrame(() => {
       setWebEditableFocused(
-        document.hasFocus() && isEditableTarget(document.activeElement),
+        document.hasFocus() && isWebKeyboardTarget(document.activeElement),
       );
     });
     return () => cancelAnimationFrame(frame);
@@ -13432,7 +13468,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         restored.blur();
       }
       setWebEditableFocused(
-        document.hasFocus() && isEditableTarget(document.activeElement),
+        document.hasFocus() && isWebKeyboardTarget(document.activeElement),
       );
       const paneId = activePaneIdRef.current;
       if (paneId) {
@@ -14064,13 +14100,37 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       focusResearchTabById(nextTabId);
     };
 
-    const executeShortcut = (rawCommand: AppShortcutCommand, repeat: boolean) => {
+    const executeShortcut = (rawCommand: AppShortcutCommand, repeat: boolean, terminalContext = false) => {
       const currentSidebarMode = sidebarModeRef.current;
       const command = contextualizeAppShortcut(rawCommand, currentSidebarMode);
       if (repeat && !appShortcutAllowsRepeat(command)) {
         return;
       }
+      const disposition = expandedTerminalShortcutDisposition(command, Boolean(expandedTerminalIdRef.current));
+      if (disposition === "ignore") return;
+      if (disposition === "restore" || disposition === "restore-and-run") {
+        // Commit the restored DOM/geometry before a split starts changing the
+        // layout. Clear the ref too so a second chord cannot use stale state.
+        flushSync(() => {
+          expandedTerminalIdRef.current = null;
+          setExpandedTerminalPaneId(null);
+        });
+        if (disposition === "restore") return;
+      }
       switch (command.type) {
+        case "toggleTerminalExpanded": {
+          // Native click-then-chord activation updates these refs before React
+          // renders. Captured activePane / split membership can still be stale.
+          const pane = activePaneRef.current;
+          const split = pane && paneSplitForPane(paneSplitsRef.current, pane.id);
+          if (terminalContext && pane && activeSurfaceRef.current === "pane"
+              && canExpandNativeTerminal(IS_MAC, split?.paneIds.length ?? 1, hasVisibleRightBarRef.current)
+              && !nativeTerminalInputBlocked) {
+            expandedTerminalIdRef.current = pane.id;
+            setExpandedTerminalPaneId(pane.id);
+          }
+          return;
+        }
         case "fontZoomIn":
         case "fontZoomOut":
         case "fontZoomReset":
@@ -14269,7 +14329,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         }
         setActivePaneId(paneId);
       }
-      executeShortcut(command, repeat);
+      executeShortcut(command, repeat, true);
     };
     nativeAppShortcutHandlerRef.current = executeShortcut;
 
@@ -14314,9 +14374,13 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       if (!command) {
         return;
       }
+      const terminalContext = isTerminalTarget(event.target) && !isEditableTarget(event.target);
+      if (command.type === "toggleTerminalExpanded" && !terminalExpansionShortcutAllowed(
+        Boolean(expandedTerminalIdRef.current), isTerminalTarget(event.target), isEditableTarget(event.target),
+      )) return;
       event.preventDefault();
       event.stopPropagation();
-      executeShortcut(command, event.repeat);
+      executeShortcut(command, event.repeat, terminalContext);
     };
 
     window.addEventListener("keydown", handleKeyDown, true);
@@ -14326,6 +14390,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       nativeAppShortcutHandlerRef.current = () => undefined;
     };
   }, [
+    expandedTerminalId,
+    activeSurface,
+    visibleTerminalPaneIds,
+    nativeTerminalInputBlocked,
     activePaneId,
     panes,
     sidebarPanes,
@@ -15373,7 +15441,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     // has crossed the bridge.
     const style =
       surface && splitRightPaneMode && splitIndex >= 0
-        ? { top: splitTrackPosition(surface.topFraction, splitIndex, 8) }
+        ? { top: splitTrackPosition(surface.topFraction, splitIndex, 8), right: terminalExpansionAvailable ? 40 : 12 }
         : floatingRestoreAnchorTop
           ? { top: floatingRestoreAnchorTop, right: floatingRestoreAnchorRight }
           : undefined;
@@ -15404,15 +15472,15 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           />
         ) : null}
         {floatingStageTranscriptExpandVisible ? (
-          <button
-            type="button"
-            className="icon-button turn-pane-header-button turn-pane-floating-restore-button"
+          <Button
+            variant="icon"
+            size="sm"
             title={`Expand transcripts (${EXPAND_TOGGLE_SHORTCUT_LABEL})`}
             aria-label="Expand transcripts"
             onClick={() => toggleActiveTranscriptExpanded()}
           >
-            <Expand size={14} aria-hidden="true" />
-          </button>
+            <ScrollText size={14} aria-hidden="true" />
+          </Button>
         ) : null}
         {floatingRestoreButtonVisible && surface ? (
           <button
@@ -18867,7 +18935,14 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               key={pane.id}
               ref={terminalPaneRefCallback(pane.id)}
               pane={pane}
-              visible={visibleTerminalPaneIdSet.has(pane.id)}
+              visible={visibleTerminalPaneIdSet.has(pane.id) && (!expandedTerminalId || expandedTerminalId === pane.id)}
+              expandable={terminalExpansionAvailable}
+              expanded={expandedTerminalId === pane.id}
+              onExpand={() => {
+                activateTerminalPane(pane.id);
+                setExpandedTerminalPaneId(pane.id);
+              }}
+              onRestore={() => setExpandedTerminalPaneId(null)}
               active={pane.id === activePane?.id}
               waitTargetPreview={
                 agentByPaneId.get(pane.id)?.id === waitTargetHoverAgentId
@@ -19400,24 +19475,29 @@ function MainApp({ onReady }: { onReady?: () => void }) {
 
       <UserNotificationStack
         notifications={userNotifications}
+        reduceMotion={settings.reduceMotion}
         onDismiss={dismissUserNotification}
         onOpenPane={handleNotificationOpenPane}
       />
 
-      {appToast ? (
+      {appToast ? createPortal(
         <div
           className={`composer-toast app-toast${appToast.tone === "warning" ? " is-warning" : ""}`}
           role="status"
           aria-live="polite"
+          data-reduce-motion={settings.reduceMotion || undefined}
         >
           {appToast.message}
-        </div>
+        </div>,
+        document.body,
       ) : null}
-      {folderPickerStatus ? (
-        <div className="folder-picker-status" role="status" aria-live="polite">
+      {folderPickerStatus ? createPortal(
+        <div className="folder-picker-status" role="status" aria-live="polite"
+          data-reduce-motion={settings.reduceMotion || undefined}>
           <LoaderCircle size={14} aria-hidden="true" />
           <span>{folderPickerStatus}</span>
-        </div>
+        </div>,
+        document.body,
       ) : null}
       <ImageLightbox />
       <DiagramLightbox />
