@@ -71,10 +71,6 @@ interface TurnPaneHeaderProps {
   // scrolls. Active chrome matches the other header toggles.
   stickyUserMessages: boolean;
   onToggleStickyUserMessages: () => void;
-  // The pane's project directory (keys the prompt library's Project scope) and
-  // its home-relative display form (shown beside the Project heading).
-  promptProjectDir?: string | null;
-  promptProjectPath?: string | null;
   notificationLog: NotificationLogEntry[];
   showNotifications: boolean;
   onShowNotificationsChange: (show: boolean) => void;
@@ -118,8 +114,6 @@ export default function TurnPaneHeader({
   onOpenTerminalMap,
   terminalMapOpen = false,
   onInsertPrompt,
-  promptProjectDir,
-  promptProjectPath,
   stickyUserMessages,
   onToggleStickyUserMessages,
   notificationLog,
@@ -386,12 +380,7 @@ export default function TurnPaneHeader({
           : null}
       </div>
       <div className="turn-pane-header-controls">
-        <PromptLibraryMenu
-          agentId={agentId}
-          onInsert={onInsertPrompt}
-          projectDir={promptProjectDir}
-          projectPath={promptProjectPath}
-        />
+        <PromptLibraryMenu agentId={agentId} onInsert={onInsertPrompt} />
         <NotificationJournalMenu
           entries={notificationLog}
           showNotifications={showNotifications}

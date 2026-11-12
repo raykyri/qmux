@@ -3,7 +3,7 @@ import { after, afterEach, test } from "node:test";
 import { JSDOM } from "jsdom";
 import { act, createElement as h, StrictMode, Activity } from "react";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import type { PromptLibrary, PromptScope, SavedPrompt } from "../src/types";
+import type { PromptLibrary, SavedPrompt } from "../src/types";
 
 const dom = new JSDOM('<!doctype html><div id="root"></div>', {
   url: "http://localhost",
@@ -47,10 +47,9 @@ function deferred<T = unknown>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-const prompt = (name: string, scope: PromptScope = "project"): SavedPrompt =>
-  ({ name, content: `${name} text`, scope, modifiedMs: 7 });
-const library = (name: string, hasProjectScope = true): PromptLibrary =>
-  ({ prompts: [prompt(name)], hasProjectScope });
+const prompt = (name: string): SavedPrompt =>
+  ({ name, content: `${name} text`, modifiedMs: 7 });
+const library = (name: string): PromptLibrary => ({ prompts: [prompt(name)] });
 const listedNames = () => [...document.querySelectorAll(".prompt-library-item-name")]
   .map((item) => item.textContent);
 const editor = () => document.querySelector('[role="dialog"][aria-label$="prompt"]')!;
@@ -64,13 +63,15 @@ const button = (label: string, within: ParentNode = document) => {
 const click = async (element: Element) => act(() => {
   element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 });
-const render = async (projectDir: string | null, agentId = "agent", strict = false) => act(() => {
+let currentAgent = "agent";
+const render = async (composerId: string, agentId = composerId, strict = false) => act(() => {
+  currentAgent = agentId;
   const pane = h("div", { className: "turn-pane" },
-    h(PromptLibraryMenu, { agentId, projectDir, onInsert: () => {} }));
+    h(PromptLibraryMenu, { agentId, onInsert: () => {} }));
   root.render(strict ? h(StrictMode, null, pane) : pane);
 });
 const open = () => click(document.querySelector('[aria-label="Prompt library"]')!);
-const action = (kind: "edit" | "delete", value: SavedPrompt, agentId = "agent") => act(() => {
+const action = (kind: "edit" | "delete", value: SavedPrompt, agentId = currentAgent) => act(() => {
   requestPromptAction({ agentId, action: kind, prompt: value,
     returnFocusTo: document.querySelector<HTMLButtonElement>('[aria-label="Prompt library"]')! });
 });
@@ -83,25 +84,16 @@ async function inputName(value: string) {
   });
   assert.equal(input.value, value);
 }
-async function drop(value: SavedPrompt, target: "Global" | "Project") {
-  await act(() => {
-    const event = new Event("drop", { bubbles: true, cancelable: true });
-    Object.defineProperty(event, "dataTransfer", { value: {
-      getData: () => JSON.stringify({ scope: value.scope, name: value.name }),
-    } });
-    document.querySelector(`[role="group"][aria-label="${target}"]`)!.dispatchEvent(event);
-  });
-}
 function ipc() {
   const calls: Array<{ command: string; args: any }> = [];
   const mutations: ReturnType<typeof deferred>[] = [];
   const config = {
-    list: (projectDir: string | null): unknown => library(projectDir === "/a" ? "a" : "b"),
+    list: (): unknown => library(currentAgent === "/a" ? "a" : "b"),
   };
   mockIPC((command, args) => {
     if (!command.startsWith("prompt_library_")) return undefined;
     calls.push({ command, args });
-    if (command === "prompt_library_list") return config.list((args as any).projectDir);
+    if (command === "prompt_library_list") return config.list();
     const pending = deferred();
     mutations.push(pending);
     return pending.promise;
@@ -109,11 +101,34 @@ function ipc() {
   const listCalls = () => calls.filter((call) => call.command === "prompt_library_list");
   return { calls, mutations, config, listCalls };
 }
-type Mutation = "create" | "edit" | "rename" | "delete" | "move";
+
+test("composers share one prompt library and new prompts have no scope selector", async () => {
+  const { config, calls, listCalls } = ipc();
+  config.list = () => library("shared");
+  for (const composer of ["first-agent", "second-agent"]) {
+    await render(composer);
+    await open();
+    assert.deepEqual(listedNames(), ["/shared"]);
+    assert.equal(document.querySelector('[aria-label="Project"]'), null);
+    assert.equal(document.querySelector("[draggable]"), null);
+  }
+  assert.ok(listCalls().every((call) => !call.args || Object.keys(call.args).length === 0));
+  await click(document.querySelector('[aria-label="New prompt"]')!);
+  assert.equal(editor().getAttribute("aria-label"), "New prompt");
+  assert.equal(editor().querySelector('[role="radiogroup"]'), null);
+  await click(button("Cancel", editor()));
+  await action("edit", prompt("shared"));
+  assert.equal(editor().querySelector('[role="radiogroup"]'), null);
+  await click(button("Save", editor()));
+  assert.deepEqual(calls.find((call) => call.command === "prompt_library_save")?.args, {
+    name: "shared", content: "shared text", previousName: "shared", expectedModifiedMs: 7,
+  });
+});
+
+type Mutation = "create" | "edit" | "rename" | "delete";
 async function startMutation(kind: Mutation, value = prompt("a")) {
-  if (kind === "move") return drop(value, "Global");
   if (kind === "create") {
-    await act(() => requestSaveDraftAsPrompt("agent", "New reusable content"));
+    await act(() => requestSaveDraftAsPrompt(currentAgent, "New reusable content"));
     await inputName("created");
   } else {
     await action(kind === "delete" ? "delete" : "edit", value);
@@ -122,25 +137,25 @@ async function startMutation(kind: Mutation, value = prompt("a")) {
   await click(button(kind === "delete" ? "Delete" : "Save", editor()));
 }
 
-for (const finalProject of ["/b", "/a"]) {
-  test(`late load cannot cross project lifetime /a → /b${finalProject === "/a" ? " → /a" : ""}`, async () => {
+for (const finalComposer of ["/b", "/a"]) {
+  test(`late load cannot cross composer lifetime /a → /b${finalComposer === "/a" ? " → /a" : ""}`, async () => {
     const { config } = ipc();
     const old = deferred<PromptLibrary>();
     config.list = () => old.promise;
     await render("/a");
     await open();
     await render("/b");
-    if (finalProject === "/a") await render("/a");
+    if (finalComposer === "/a") await render("/a");
     config.list = () => library("current");
     await open();
-    await act(() => old.resolve(library("obsolete", false)));
+    await act(() => old.resolve(library("obsolete")));
     assert.deepEqual(listedNames(), ["/current"]);
-    assert.ok(document.querySelector('[role="group"][aria-label="Project"]'));
+    assert.equal(document.querySelector('[role="group"][aria-label="Project"]'), null);
   });
 }
 
 for (const staleResult of ["success", "failure"]) {
-  test(`same-project newer refresh wins over old ${staleResult}`, async () => {
+  test(`same-composer newer refresh wins over old ${staleResult}`, async () => {
     const { config } = ipc();
     const old = deferred<PromptLibrary>();
     config.list = () => old.promise;
@@ -149,13 +164,13 @@ for (const staleResult of ["success", "failure"]) {
     config.list = () => library("current");
     await action("edit", prompt("current"));
     await act(() => staleResult === "success"
-      ? old.resolve(library("obsolete", false)) : old.reject(Error("obsolete load error")));
+      ? old.resolve(library("obsolete")) : old.reject(Error("obsolete load error")));
     assert.deepEqual(listedNames(), ["/current"]);
     assert.doesNotMatch(document.body.textContent!, /obsolete/);
   });
 }
 
-test("a project switch clears previous validation data before its first load succeeds", async () => {
+test("a composer switch clears previous validation data before its first load succeeds", async () => {
   const { config } = ipc();
   await render("/a");
   await open();
@@ -168,9 +183,9 @@ test("a project switch clears previous validation data before its first load suc
   assert.equal(button("Save", editor()).disabled, false);
 });
 
-for (const kind of ["create", "edit", "rename", "delete", "move"] as const) {
+for (const kind of ["create", "edit", "rename", "delete"] as const) {
   for (const outcome of ["success", "failure"] as const) {
-    test(`${kind} ${outcome} from old project cannot refresh, close, or poison current editor`, async () => {
+    test(`${kind} ${outcome} from old composer cannot refresh, close, or poison current editor`, async () => {
       const { mutations, calls, listCalls } = ipc();
       let notifications = 0;
       unsubscribe = listenToPromptLibraryChanged(() => notifications++);
@@ -179,11 +194,11 @@ for (const kind of ["create", "edit", "rename", "delete", "move"] as const) {
       await startMutation(kind);
       assert.equal(mutations.length, 1);
       const write = calls.find((call) => call.command !== "prompt_library_list")!;
-      assert.equal(write.args.projectDir, "/a");
+      assert.equal("projectDir" in write.args, false);
+      assert.equal("scope" in write.args, false);
       assert.equal(write.args.name, kind === "rename" ? "renamed" : kind === "create" ? "created" : "a");
       assert.equal(write.args.expectedModifiedMs, kind === "create" ? null : 7);
       if (kind !== "delete") {
-        assert.equal(write.args.scope, kind === "create" || kind === "move" ? "global" : "project");
         assert.equal(write.args.previousName, kind === "create" ? null : "a");
       }
       await render("/b");
@@ -212,7 +227,7 @@ test("A → B → A does not revive an earlier save or its busy ownership", asyn
   await render("/a");
   await action("edit", prompt("a"));
   await click(button("Save", editor()));
-  assert.equal(mutations.length, 2, "returning project can save while its old lifetime is pending");
+  assert.equal(mutations.length, 2, "returning composer can save while its old lifetime is pending");
   const reads = listCalls().length;
   await act(() => mutations[0].resolve(prompt("a")));
   assert.equal(listCalls().length, reads);
@@ -221,7 +236,7 @@ test("A → B → A does not revive an earlier save or its busy ownership", asyn
   assert.equal(editor(), null);
 });
 
-test("stale mutation error cannot mask first-load retry in the new project", async () => {
+test("stale mutation error cannot mask first-load retry in the new composer", async () => {
   const { mutations, config } = ipc();
   await render("/a");
   await open();
@@ -250,7 +265,7 @@ test("failed first load retries in the editor and a failed retry remains recover
   assert.equal(button("Save", editor()).disabled, false);
 });
 
-test("same-project replacement dialog can save concurrently and old finally cannot clear busy", async () => {
+test("same-composer replacement dialog can save concurrently and old finally cannot clear busy", async () => {
   const { mutations } = ipc();
   await render("/a");
   await open();
@@ -269,7 +284,7 @@ test("same-project replacement dialog can save concurrently and old finally cann
   assert.equal(editor(), null);
 });
 
-test("older same-project save failure cannot overwrite the newer editor error", async () => {
+test("older same-composer save failure cannot overwrite the newer editor error", async () => {
   const { mutations } = ipc();
   await render("/a");
   await open();
@@ -283,7 +298,7 @@ test("older same-project save failure cannot overwrite the newer editor error", 
   assert.doesNotMatch(editor().textContent!, /old conflict/);
 });
 
-test("save response followed by project change during refresh cannot close the new editor", async () => {
+test("save response followed by composer change during refresh cannot close the new editor", async () => {
   const { mutations, config } = ipc();
   await render("/a");
   await open();
@@ -299,7 +314,7 @@ test("save response followed by project change during refresh cannot close the n
   assert.equal(button("Save", editor()).disabled, false);
 });
 
-test("same project with a different composer invalidates old operation ownership", async () => {
+test("same view with a different composer invalidates old operation ownership", async () => {
   const { mutations, listCalls } = ipc();
   await render("/a");
   await open();
@@ -332,7 +347,7 @@ for (const outcome of ["success", "failure"] as const) {
   });
 }
 
-test("initial refresh survives StrictMode setup/cleanup and ordinary same-project rerender", async () => {
+test("initial refresh survives StrictMode setup/cleanup and ordinary same-composer rerender", async () => {
   const { config, mutations } = ipc();
   const first = deferred<PromptLibrary>();
   config.list = () => first.promise;
@@ -345,7 +360,7 @@ test("initial refresh survives StrictMode setup/cleanup and ordinary same-projec
   await startMutation("edit");
   assert.equal(document.querySelector<HTMLInputElement>(".prompt-library-name-input")!.disabled, true);
   assert.equal(document.querySelector<HTMLTextAreaElement>(".prompt-library-editor")!.disabled, true);
-  assert.ok([...document.querySelectorAll<HTMLButtonElement>('[role="radio"]')].every((el) => el.disabled));
+  assert.equal(document.querySelector('[aria-label="Prompt scope"]'), null);
   await act(() => mutations[0].resolve(prompt("a")));
   assert.equal(editor(), null);
 });
@@ -396,20 +411,20 @@ test("a current save that persisted still closes after refresh failure, leaving 
   assert.doesNotMatch(document.body.textContent!, /refresh unavailable/);
 });
 
-test("same-project mutation completion refreshes data without closing its replacement editor", async () => {
+test("same-composer mutation completion refreshes data without closing its replacement editor", async () => {
   const { config, mutations } = ipc();
   await render("/a");
   await open();
   await startMutation("edit");
   await action("edit", prompt("second"));
-  config.list = () => ({ prompts: [prompt("a"), prompt("second")], hasProjectScope: true });
+  config.list = () => ({ prompts: [prompt("a"), prompt("second")] });
   await act(() => mutations[0].resolve(prompt("a")));
   assert.deepEqual(listedNames(), ["/a", "/second"]);
   assert.equal(document.querySelector<HTMLInputElement>(".prompt-library-name-input")!.value, "second");
   assert.equal(button("Save", editor()).disabled, false);
 });
 
-for (const kind of ["delete", "move"] as const) {
+for (const kind of ["delete"] as const) {
   test(`current ${kind} failure releases busy, keeps the error, and permits retry`, async () => {
     const { mutations, config } = ipc();
     await render("/a");
@@ -418,9 +433,8 @@ for (const kind of ["delete", "move"] as const) {
     await act(() => mutations[0].reject(Error("current mutation conflict")));
     assert.match(document.body.textContent!, /current mutation conflict/);
     if (kind === "delete") await click(button("Delete", editor()));
-    else await drop(prompt("a"), "Global");
     assert.equal(mutations.length, 2);
-    config.list = () => ({ prompts: [], hasProjectScope: true });
+    config.list = () => ({ prompts: [] });
     await act(() => mutations[1].resolve(undefined));
     assert.equal(editor(), null);
     assert.deepEqual(listedNames(), []);
@@ -461,7 +475,7 @@ test("effect disposal and reactivation cannot revive an earlier mutation's refre
   const { mutations, listCalls } = ipc();
   const activity = (mode: "visible" | "hidden") => act(() => root.render(
     h(Activity, { mode }, h("div", { className: "turn-pane" },
-      h(PromptLibraryMenu, { agentId: "agent", projectDir: "/a", onInsert: () => {} }))),
+      h(PromptLibraryMenu, { agentId: currentAgent, onInsert: () => {} }))),
   ));
   await activity("visible");
   await open();

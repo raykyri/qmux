@@ -20,10 +20,10 @@ import {
   slugifyPromptName,
   slugifyPromptNameInput,
 } from "../src/lib/promptLibrary";
-import type { PromptScope, SavedPrompt } from "../src/types";
+import type { SavedPrompt } from "../src/types";
 
-function savedPrompt(name: string, content: string, scope: PromptScope = "global"): SavedPrompt {
-  return { name, content, scope, modifiedMs: 1 };
+function savedPrompt(name: string, content: string): SavedPrompt {
+  return { name, content, modifiedMs: 1 };
 }
 
 test("reselecting a prompt recognizes only its entire text at the draft's end", () => {
@@ -140,7 +140,7 @@ test("slugifies prompt names while preserving a trailing typing separator", () =
 test("rejects empty, reserved, and duplicate prompt names", () => {
   const prompts = [
     savedPrompt("review", "global"),
-    savedPrompt("deploy", "project", "project"),
+    savedPrompt("deploy", "project"),
   ];
   assert.equal(promptNameError("", prompts), "Enter a prompt name");
   assert.equal(promptNameError("fork", prompts), "/fork is reserved by qMux");

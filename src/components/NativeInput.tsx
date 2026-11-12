@@ -127,7 +127,6 @@ type QueuePointerDrag = {
 interface NativeInputProps {
   pane: PaneInfo;
   agent: AgentInfo;
-  projectDir?: string | null;
   agentMayBeBackgrounded: boolean;
   // The app's copy of the composer text, keyed by agent so it survives tab
   // switches. This seeds the shared revision store on first use. App writes
@@ -204,7 +203,6 @@ function readFileAsDataUrl(file: Blob): Promise<string> {
 export default function NativeInput({
   pane,
   agent,
-  projectDir,
   agentMayBeBackgrounded,
   draft,
   queuedTurns,
@@ -491,7 +489,7 @@ export default function NativeInput({
     const sequence = ++promptLoadSequenceRef.current;
     setSavedPromptsLoading(true);
     setSavedPromptsError(null);
-    void listSavedPrompts(projectDir)
+    void listSavedPrompts()
       .then((library) => {
         if (promptLoadSequenceRef.current === sequence) {
           setSavedPrompts(library.prompts);
@@ -508,7 +506,7 @@ export default function NativeInput({
           setSavedPromptsLoading(false);
         }
       });
-  }, [projectDir]);
+  }, []);
 
   useEffect(() => {
     setSavedPrompts([]);
@@ -1572,7 +1570,7 @@ export default function NativeInput({
                     const token = command?.token ?? `/${prompt?.name ?? ""}`;
                     return (
                       <button
-                        key={command ? `command:${command.name}` : `prompt:${prompt?.scope}:${prompt?.name}`}
+                        key={command ? `command:${command.name}` : `prompt:${prompt?.name}`}
                         id={`${slashListId}-option-${index}`}
                         type="button"
                         role="option"

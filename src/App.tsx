@@ -6444,23 +6444,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     }
   }
 
-  // Normalizes an absolute path for display by anchoring home-relative paths
-  // with ~. Unlike formatPaneDir, the rest of the path is kept intact — used
-  // where the full location matters (e.g. the prompt library's Project hint).
-  function homeRelativePath(rawPath: string | null): string | null {
-    if (!rawPath) {
-      return null;
-    }
-    const homeDir = config?.homeDir;
-    if (homeDir && rawPath === homeDir) {
-      return "~";
-    }
-    if (homeDir && rawPath.startsWith(`${homeDir}/`)) {
-      return `~/${rawPath.slice(homeDir.length + 1)}`;
-    }
-    return rawPath;
-  }
-
   // Compact directory label for a pane tab. Worktrees under the workspace root
   // are shown relative to it (e.g. "group-1/agent-1"); home paths use ~/ and
   // other paths fall back to their last two segments so the meaningful tail stays
@@ -11315,21 +11298,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     [],
   );
 
-  // The prompt library's project scope follows the pane's group directory; a
-  // worktree group resolves to its base repo so prompts don't fork with the
-  // tree. Null (no pane, or group without a dir) hides the Project section.
-  function promptProjectDirForPane(pane: PaneInfo | undefined): string | null {
-    if (!pane) {
-      return null;
-    }
-    const group = groupById.get(pane.groupId);
-    if (!group) {
-      return null;
-    }
-    const baseRepo = group.baseRepo?.trim();
-    return baseRepo ? baseRepo : group.dir || null;
-  }
-
   // The ⌘K palette's command list, rebuilt on each open from live state: tab
   // navigation, pane/session actions gated on what the active pane supports,
   // and saved prompts that insert into the active agent's composer.
@@ -11486,10 +11454,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     if (visibleAgent) {
       for (const prompt of paletteSavedPrompts) {
         commands.push({
-          id: `prompt:${prompt.scope}:${prompt.name}`,
+          id: `prompt:${prompt.name}`,
           section: "Insert prompt",
           title: `/${prompt.name}`,
-          hint: prompt.scope === "global" ? "Global" : "Project",
+          hint: "Saved prompt",
           action: () => requestComposerInsert(visibleAgent.id, prompt.content),
         });
       }
@@ -14421,7 +14389,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     if (!commandPaletteOpen) {
       return;
     }
-    void listSavedPrompts(promptProjectDirForPane(activePane))
+    void listSavedPrompts()
       .then((library) => setPaletteSavedPrompts(library.prompts))
       .catch(() => setPaletteSavedPrompts([]));
   }, [commandPaletteOpen, activePane, groupById]);
@@ -15591,7 +15559,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         // cells, split right-pane mode) mount no listener, so offering the
         // menu item there would dispatch into the void — hide it instead.
         savePromptAgentId={showHeader ? (agent?.id ?? null) : null}
-        promptProjectDir={promptProjectDirForPane(surface.pane)}
         onInsertPrompt={agent && !researchBound
           ? (text) => requestComposerInsert(agent.id, text)
           : undefined}
@@ -15678,8 +15645,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               onInsertPrompt={
                 agent ? (text) => requestComposerInsert(agent.id, text) : undefined
               }
-              promptProjectDir={promptProjectDirForPane(surface.pane)}
-              promptProjectPath={homeRelativePath(promptProjectDirForPane(surface.pane))}
               stickyUserMessages={settings.stickyUserMessages}
               onToggleStickyUserMessages={() =>
                 setSettings((current) => ({
@@ -15723,7 +15688,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               <NativeInput
                 pane={surface.pane}
                 agent={agent}
-                projectDir={promptProjectDirForPane(surface.pane)}
                 agentMayBeBackgrounded={
                   shellJobByAgent[agent.id]?.paneId === surface.pane.id &&
                   (shellJobByAgent[agent.id]?.state === "backgrounded" ||

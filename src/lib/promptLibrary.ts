@@ -29,7 +29,7 @@ export function slugifyPromptName(value: string): string {
 export function promptNameError(
   name: string,
   prompts: readonly SavedPrompt[],
-  original?: Pick<SavedPrompt, "name" | "scope"> | null,
+  original?: Pick<SavedPrompt, "name"> | null,
 ): string | null {
   const slug = slugifyPromptName(name);
   if (!slug) {
@@ -42,7 +42,7 @@ export function promptNameError(
     prompts.some(
       (prompt) =>
         prompt.name.toLowerCase() === slug &&
-        !(original && prompt.name === original.name && prompt.scope === original.scope),
+        !(original && prompt.name === original.name),
     )
   ) {
     return `/${slug} is already used by another prompt`;
@@ -211,18 +211,13 @@ export function listenToComposerInsert(
 interface SaveDraftAsPromptDetail {
   agentId: string;
   text: string;
-  lockToGlobal: boolean;
 }
 
 /** Opens the prompt-library editor for `agentId`, prefilled with reusable text. */
-export function requestSaveDraftAsPrompt(
-  agentId: string,
-  text: string,
-  { lockToGlobal = true }: { lockToGlobal?: boolean } = {},
-) {
+export function requestSaveDraftAsPrompt(agentId: string, text: string) {
   window.dispatchEvent(
     new CustomEvent<SaveDraftAsPromptDetail>(SAVE_DRAFT_AS_PROMPT_EVENT, {
-      detail: { agentId, text, lockToGlobal },
+      detail: { agentId, text },
     }),
   );
 }
@@ -230,12 +225,12 @@ export function requestSaveDraftAsPrompt(
 /** Subscribes one pane's prompt library to prefilled save requests for its agent. */
 export function listenToSaveDraftAsPrompt(
   agentId: string,
-  onSaveDraft: (text: string, lockToGlobal: boolean) => void,
+  onSaveDraft: (text: string) => void,
 ): () => void {
   const handler = (event: Event) => {
     const { detail } = event as CustomEvent<SaveDraftAsPromptDetail>;
     if (detail?.agentId === agentId && typeof detail.text === "string") {
-      onSaveDraft(detail.text, detail.lockToGlobal !== false);
+      onSaveDraft(detail.text);
     }
   };
   window.addEventListener(SAVE_DRAFT_AS_PROMPT_EVENT, handler);

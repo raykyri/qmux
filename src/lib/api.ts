@@ -42,7 +42,6 @@ import type {
   PaneSplitInfo,
   QmuxEvent,
   PromptLibrary,
-  PromptScope,
   QueuedTurn,
   QueuedTurnDelivery,
   SavedPrompt,
@@ -212,51 +211,30 @@ export function resolvePublicationProposal(request: {
   });
 }
 
-// The prompt library: reusable composer messages stored as markdown files, one
-// file per prompt, in a global (~/.qmux/prompts/) or per-project
-// (~/.qmux/projects/<basename>-<hash>/prompts/) scope. `projectDir` is the
-// active pane's project directory (group dir, or base repo for worktrees);
-// omit it when no project context exists and only the global scope is served.
-export function listSavedPrompts(projectDir?: string | null) {
-  return invoke<PromptLibrary>("prompt_library_list", { projectDir: projectDir ?? null });
+// Saved prompts share one global library at ~/.qmux/prompts/.
+export function listSavedPrompts() {
+  return invoke<PromptLibrary>("prompt_library_list");
 }
 
-// Creates or overwrites a saved prompt in `scope`. Passing a different
-// previousScope/previousName renames or moves that prompt instead of leaving
-// both files behind.
-// `expectedModifiedMs` is the modifiedMs the caller last loaded for the prompt
-// being updated/moved/deleted; the backend refuses the write if the file changed
-// since (optimistic concurrency). Omit it for a brand-new prompt, whose write is
-// create-only and has nothing to compare against.
+// Passing previousName renames or updates an existing prompt. Its loaded mtime
+// protects against overwriting newer edits; new prompts are create-only.
 export function saveSavedPrompt(
-  scope: PromptScope,
   name: string,
   content: string,
-  projectDir?: string | null,
-  previous?: { scope: PromptScope; name: string } | null,
+  previousName?: string | null,
   expectedModifiedMs?: number | null,
 ) {
   return invoke<SavedPrompt>("prompt_library_save", {
-    scope,
     name,
     content,
-    projectDir: projectDir ?? null,
-    previousScope: previous?.scope ?? null,
-    previousName: previous?.name ?? null,
+    previousName: previousName ?? null,
     expectedModifiedMs: expectedModifiedMs ?? null,
   });
 }
 
-export function deleteSavedPrompt(
-  scope: PromptScope,
-  name: string,
-  projectDir?: string | null,
-  expectedModifiedMs?: number | null,
-) {
+export function deleteSavedPrompt(name: string, expectedModifiedMs?: number | null) {
   return invoke<void>("prompt_library_delete", {
-    scope,
     name,
-    projectDir: projectDir ?? null,
     expectedModifiedMs: expectedModifiedMs ?? null,
   });
 }

@@ -7,13 +7,11 @@ import PromptLibraryMenu from "./PromptLibraryMenu";
 import { PromptOptionsMenu } from "./PromptOptionsMenu";
 
 interface EmptyPromptCardsProps {
-  projectDir: string | null;
   onInsert: (text: string) => void;
   promptLibraryAgentId?: string | null;
 }
 
 export default function EmptyPromptCards({
-  projectDir,
   onInsert,
   promptLibraryAgentId,
 }: EmptyPromptCardsProps) {
@@ -31,7 +29,7 @@ export default function EmptyPromptCards({
     let loadId = 0;
     const refresh = () => {
       const currentLoad = ++loadId;
-      void listSavedPrompts(projectDir)
+      void listSavedPrompts()
         .then((library) => {
           if (active && currentLoad === loadId) setPrompts(library.prompts);
         })
@@ -46,7 +44,7 @@ export default function EmptyPromptCards({
       active = false;
       stopListening();
     };
-  }, [projectDir]);
+  }, []);
 
   const runPromptAction = (action: "edit" | "delete") => {
     const returnFocusTo = contextTriggerRef.current;
@@ -57,14 +55,14 @@ export default function EmptyPromptCards({
   return (
     <>
       {!promptLibraryAgentId ? (
-        <PromptLibraryMenu agentId={localLibraryId} projectDir={projectDir} hideTrigger />
+        <PromptLibraryMenu agentId={localLibraryId} hideTrigger />
       ) : null}
       {prompts.length > 0 ? (
         <section className="turn-empty-prompts" aria-label="Saved prompts">
           <div className="turn-empty-prompts-grid">
             {prompts.map((prompt) => (
               <Button
-                key={`${prompt.scope}:${prompt.name}`}
+                key={prompt.name}
                 variant="unstyled"
                 className="turn-empty-prompt-card"
                 aria-label={`Insert /${prompt.name} into composer`}

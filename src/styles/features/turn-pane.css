@@ -581,22 +581,12 @@
   color: var(--text-primary);
 }
 
-/* A scope section (Global / Project) doubles as the drag-and-drop target for
-   moving prompts between scopes; the dashed accent border signals a live drop. */
 .prompt-library-section {
   display: flex;
   flex-direction: column;
   gap: 1px;
   padding: 3px;
-  border: 1px dashed transparent;
   border-radius: var(--radius-md);
-}
-
-.prompt-library-section.is-drop-target {
-  border-color: var(--accent-color);
-  /* A light wash, not the full accent-shadow flood: the dashed border already
-     marks the target, the tint just confirms the whole section is live. */
-  background: var(--accent-subtle);
 }
 
 .prompt-library-section-header {
@@ -606,15 +596,8 @@
   padding: 2px 5px 1px;
 }
 
-.prompt-library-section-heading {
-  display: flex;
-  align-items: baseline;
-  flex: 1 1 auto;
-  min-width: 0;
-  gap: 5px;
-}
-
 .prompt-library-section-label {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
@@ -622,26 +605,6 @@
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* The project's home-relative path, shown beside the Project heading. */
-.prompt-library-section-path {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-faint);
-  font-size: calc(10px + var(--font-ui-size-offset));
-  font-weight: 400;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Separates the Global and Project sections. */
-.prompt-library-divider {
-  height: 1px;
-  flex: none;
-  margin: 7px 5px;
-  background: var(--surface-divider);
 }
 
 /* Names the fill-in step above the prompt's first-line heading. */
@@ -650,38 +613,6 @@
   color: var(--text-muted);
   font-size: var(--fs-xs);
   font-weight: 600;
-}
-
-.prompt-library-scope-picker {
-  display: flex;
-  gap: 4px;
-}
-
-.prompt-library-scope-option {
-  flex: 1 1 0;
-  min-width: 0;
-  min-height: var(--control-h-md);
-  overflow: hidden;
-  padding: 0 10px;
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-md);
-  background: var(--chrome-control-bg);
-  color: var(--text-secondary);
-  font-size: var(--fs-base);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.prompt-library-scope-option:hover {
-  background: var(--chrome-control-bg-hover);
-  color: var(--text-strong);
-}
-
-.prompt-library-scope-option.is-active {
-  border-color: var(--accent-color);
-  background: var(--accent-shadow);
-  color: var(--text-strong);
 }
 
 .prompt-library-heading {
@@ -723,10 +654,6 @@
   font-size: var(--fs-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.prompt-library-name-input {
-  font-family: var(--font-mono);
 }
 
 .prompt-library-editor {

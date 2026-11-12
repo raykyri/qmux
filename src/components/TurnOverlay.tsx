@@ -120,7 +120,6 @@ interface TurnOverlayProps {
   // Identifies the prompt-library listener that can handle "save message as
   // prompt" requests. Unlike agentId, this is absent for detached transcripts.
   savePromptAgentId?: string | null;
-  promptProjectDir?: string | null;
   onInsertPrompt?: (text: string) => void;
   // Short diagnostic shown under the empty-state placeholder when the transcript
   // tail is in an unexpected state (stalled/unreadable file, adapter failure).
@@ -250,7 +249,6 @@ export default function TurnOverlay({
   saveTranscriptScroll,
   registerScrollCapture,
   savePromptAgentId,
-  promptProjectDir = null,
   onInsertPrompt,
   notice,
   transcriptOptions = [],
@@ -1419,8 +1417,6 @@ export default function TurnOverlay({
             )}
             {!notice && !readerMode && onInsertPrompt ? (
               <EmptyPromptCards
-                key={promptProjectDir ?? "global"}
-                projectDir={promptProjectDir}
                 onInsert={onInsertPrompt}
                 promptLibraryAgentId={savePromptAgentId}
               />
@@ -2103,11 +2099,7 @@ function MessageActionsMenu({
                   onClick={(event) => {
                     event.stopPropagation();
                     setOpen(false);
-                    requestSaveDraftAsPrompt(
-                      savePromptAgentId,
-                      copyText,
-                      { lockToGlobal: false },
-                    );
+                    requestSaveDraftAsPrompt(savePromptAgentId, copyText);
                   }}
                 >
                   Save to prompt library

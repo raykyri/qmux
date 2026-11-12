@@ -1,6 +1,5 @@
 import { BookMarked, Plus } from "lucide-react";
 import {
-  type DragEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -27,7 +26,7 @@ import {
   slugifyPromptName,
   slugifyPromptNameInput,
 } from "../lib/promptLibrary";
-import type { PromptScope, SavedPrompt } from "../types";
+import type { SavedPrompt } from "../types";
 import {
   ComposerSubmitShortcutGlyph,
   isComposerSubmitShortcut,
@@ -45,9 +44,6 @@ import {
 } from "./ui";
 
 const MENU_PREFERRED_WIDTH = 300;
-// Custom MIME type so prompt rows only accept drops that started as prompt rows,
-// never stray text/file drags from elsewhere.
-const PROMPT_DRAG_TYPE = "application/x-qmux-prompt";
 // What the popover is currently showing: the searchable prompt list or the
 // placeholder fill-in form for one prompt. Editing happens in a pane-local dialog.
 type View =
@@ -58,7 +54,7 @@ type View =
 // delete confirmation remains an app-level modal. The popover stays open underneath
 // so the list is fresh when either dialog closes.
 type Dialog =
-  | { kind: "editor"; original: SavedPrompt | null; lockedScope?: PromptScope }
+  | { kind: "editor"; original: SavedPrompt | null }
   | { kind: "delete"; prompt: SavedPrompt };
 
 interface PromptLibraryMenuProps {
@@ -68,11 +64,6 @@ interface PromptLibraryMenuProps {
   // Inserts the chosen prompt text into the active composer at its caret.
   // Absent (e.g. a terminal pane with no agent) the trigger is disabled.
   onInsert?: (text: string) => void;
-  // The active pane's project directory (group dir, or base repo for
-  // worktrees). Keys the Project scope; absent hides that section.
-  projectDir?: string | null;
-  // Display form of projectDir (home-relative), shown beside the Project heading.
-  projectPath?: string | null;
 }
 
 /** First non-empty line of a prompt, for previews and dialog snippets. */
@@ -81,12 +72,8 @@ export function promptFirstLine(content: string): string {
 }
 
 // The pane header's saved-prompt library: a bookmark button opening a portaled
-// popover with a searchable list of reusable messages, split into a Global
-// section (~/.qmux/prompts/, visible everywhere) and a Project section keyed
-// by the active pane's project directory (stored centrally under
-// ~/.qmux/projects/, so repos stay clean). Each row shows its explicit slug name
-// above the prompt text. Rows drag-and-drop between sections to move a prompt's
-// home.
+// popover with a searchable list of reusable messages from ~/.qmux/prompts/.
+// Each row shows its explicit slug name above the prompt text.
 // Editing and creating happen at the top of the owning right pane; deleting uses
 // a centered confirmation dialog.
 // `{placeholder}` slots discovered in a prompt's text get a fill-in step
@@ -95,8 +82,6 @@ export default function PromptLibraryMenu({
   agentId,
   hideTrigger = false,
   onInsert,
-  projectDir,
-  projectPath,
 }: PromptLibraryMenuProps) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
@@ -104,29 +89,24 @@ export default function PromptLibraryMenu({
   // Null while the first load is in flight, so "No saved prompts" can't flash
   // before the list arrives.
   const [prompts, setPrompts] = useState<SavedPrompt[] | null>(null);
-  const [hasProjectScope, setHasProjectScope] = useState(Boolean(projectDir));
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
-  // The scope section a prompt row is currently dragged over, for drop highlighting.
-  const [dropScope, setDropScope] = useState<PromptScope | null>(null);
   const [fillValues, setFillValues] = useState<Record<string, string>>({});
   const [editName, setEditName] = useState("");
   const [editContent, setEditContent] = useState("");
-  const [editScope, setEditScope] = useState<PromptScope>("global");
   const [busy, setBusy] = useState(false);
-  // Each committed project/composer lifetime owns its reads and mutation UI.
-  // A → B → A gets a new owner even though the directory is equal again.
+  // Each committed composer lifetime owns its reads and mutation UI.
+  // A → B → A gets a new owner even though the composer is equal again.
   const owner = useMemo(
     () => ({ active: false, generation: 0, load: 0, mutation: null as object | null }),
-    [projectDir, agentId],
+    [agentId],
   );
   const dialogRef = useRef<Dialog | null>(null);
   useLayoutEffect(() => {
     owner.active = true;
     owner.generation += 1;
     setPrompts(null);
-    setHasProjectScope(Boolean(projectDir));
     setError(null);
     setDialogError(null);
     setBusy(false);
@@ -138,7 +118,7 @@ export default function PromptLibraryMenu({
       owner.load += 1;
       owner.mutation = null;
     };
-  }, [owner, projectDir]);
+  }, [owner]);
 
   // External prompt actions can replace a dialog while its IPC is pending.
   // The backend operation still completes, but no longer owns this dialog.
@@ -183,31 +163,28 @@ export default function PromptLibraryMenu({
     if (!owner.active || owner.generation !== generation) return;
     const request = ++owner.load;
     try {
-      const library = await listSavedPrompts(projectDir);
+      const library = await listSavedPrompts();
       if (!owner.active || owner.load !== request) return;
       setPrompts(library.prompts);
-      setHasProjectScope(library.hasProjectScope);
       setError(null);
     } catch (err) {
       if (!owner.active || owner.load !== request) return;
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [owner, projectDir]);
+  }, [owner]);
 
   const openMenu = () => {
     setView({ kind: "list" });
     setSearch("");
     setError(null);
-    setDropScope(null);
     setOpen(true);
     void refresh();
   };
 
-  const openEditor = (original: SavedPrompt | null, scope?: PromptScope) => {
+  const openEditor = (original: SavedPrompt | null) => {
     if (!owner.active) return;
     setEditName(original?.name ?? "");
     setEditContent(original?.content ?? "");
-    setEditScope(original?.scope ?? scope ?? "global");
     setDialogError(null);
     replaceDialog({ kind: "editor", original });
   };
@@ -229,26 +206,23 @@ export default function PromptLibraryMenu({
   }, [agentId, owner, refresh, replaceDialog]);
 
   // Composer and sent-message menus can open the editor dialog with reusable
-  // text. Composer drafts lock to Global; sent messages merely default there.
+  // text from either drafts or sent messages.
   useEffect(() => {
     if (!agentId) {
       return;
     }
-    return listenToSaveDraftAsPrompt(agentId, (text, lockToGlobal) => {
+    return listenToSaveDraftAsPrompt(agentId, (text) => {
       if (!owner.active) return;
       setOpen(true);
       setView({ kind: "list" });
       setSearch("");
       setError(null);
-      setDropScope(null);
       setEditName("");
       setEditContent(text.trim());
-      setEditScope("global");
       setDialogError(null);
       replaceDialog({
         kind: "editor",
         original: null,
-        ...(lockToGlobal ? { lockedScope: "global" as const } : {}),
       });
       void refresh();
     });
@@ -299,20 +273,20 @@ export default function PromptLibraryMenu({
   // wedged true and the active terminal keyboard-dead — App's modal re-sample
   // backstop cannot see this component-local dialog. Hand focus somewhere
   // real so a focusin re-samples: the popover's search field when it is
-  // still up, else the trigger that owns the whole flow. A project change is
+  // still up, else the trigger that owns the whole flow. A composer change is
   // different: the ownership reset closes stale UI while a pane switch is moving
   // focus to the new terminal, so never steal focus back in that case.
   const dialogWasOpenRef = useRef(false);
-  const dialogProjectDirRef = useRef(projectDir);
+  const dialogOwnerRef = useRef(owner);
   useEffect(() => {
     const wasOpen = dialogWasOpenRef.current;
     const isOpen = dialog !== null;
     dialogWasOpenRef.current = isOpen;
     if (!wasOpen && isOpen) {
-      dialogProjectDirRef.current = projectDir;
+      dialogOwnerRef.current = owner;
       return;
     }
-    if (!wasOpen || isOpen || dialogProjectDirRef.current !== projectDir) {
+    if (!wasOpen || isOpen || dialogOwnerRef.current !== owner) {
       return;
     }
     const returnFocusTo = dialogReturnFocusRef.current;
@@ -322,7 +296,7 @@ export default function PromptLibraryMenu({
     (returnFocusTo?.isConnected
       ? returnFocusTo
       : searchInputRef.current ?? (hideTrigger ? fallback : triggerRef.current))?.focus();
-  }, [dialog, projectDir, hideTrigger]);
+  }, [dialog, owner, hideTrigger]);
 
   const position = useCallback(() => {
     const trigger = triggerRef.current;
@@ -415,12 +389,10 @@ export default function PromptLibraryMenu({
     try {
       const original = dialog.original;
       await saveSavedPrompt(
-        editScope,
         name,
         content,
-        projectDir,
-        original ? { scope: original.scope, name: original.name } : null,
-        // A new prompt is create-only; an edit/move must match the mtime this
+        original?.name,
+        // A new prompt is create-only; an edit must match the mtime this
         // dialog loaded, so a stale save can't clobber a newer version.
         original ? original.modifiedMs : null,
       );
@@ -453,9 +425,7 @@ export default function PromptLibraryMenu({
     setBusy(true);
     try {
       await deleteSavedPrompt(
-        dialog.prompt.scope,
         dialog.prompt.name,
-        projectDir,
         // Refuse the delete if another surface updated this prompt since load.
         dialog.prompt.modifiedMs,
       );
@@ -472,99 +442,14 @@ export default function PromptLibraryMenu({
     }
   };
 
-  const movePrompt = async (source: { scope: PromptScope; name: string }, target: PromptScope) => {
-    if (!owner.active || owner.mutation || source.scope === target) {
-      return;
-    }
-    const prompt = (prompts ?? []).find(
-      (candidate) => candidate.scope === source.scope && candidate.name === source.name,
-    );
-    if (!prompt) {
-      return;
-    }
-    const operation = { generation: owner.generation };
-    owner.mutation = operation;
-    const ownsOperation = () => owner.active && owner.mutation === operation;
-    setBusy(true);
-    try {
-      const collision = (prompts ?? []).some(
-        (candidate) => candidate.scope === target && candidate.name === prompt.name,
-      );
-      if (collision) {
-        throw new Error(`/${prompt.name} is already used by another prompt`);
-      }
-      await saveSavedPrompt(
-        target,
-        prompt.name,
-        prompt.content,
-        projectDir,
-        { scope: prompt.scope, name: prompt.name },
-        // The move must find its source unchanged since this menu loaded it.
-        prompt.modifiedMs,
-      );
-      notifyPromptLibraryChanged();
-      await refresh(operation.generation);
-    } catch (err) {
-      if (ownsOperation()) setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (ownsOperation()) {
-        owner.mutation = null;
-        setBusy(false);
-      }
-    }
-  };
-
   const query = search.trim().toLowerCase();
   const matchesQuery = (prompt: SavedPrompt) =>
     query.length === 0 ||
     prompt.name.toLowerCase().includes(query) ||
     prompt.content.toLowerCase().includes(query);
-  const hasProjectPrompts = (prompts ?? []).some((prompt) => prompt.scope === "project");
-
-  const sectionDropHandlers = (scope: PromptScope) => ({
-    onDragOver: (event: DragEvent) => {
-      if (event.dataTransfer.types.includes(PROMPT_DRAG_TYPE)) {
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-        setDropScope(scope);
-      }
-    },
-    onDragLeave: (event: DragEvent) => {
-      // Only clear when leaving the section itself, not moving between its rows.
-      if (!event.currentTarget.contains(event.relatedTarget as Node)) {
-        setDropScope((current) => (current === scope ? null : current));
-      }
-    },
-    onDrop: (event: DragEvent) => {
-      const raw = event.dataTransfer.getData(PROMPT_DRAG_TYPE);
-      setDropScope(null);
-      if (!raw) {
-        return;
-      }
-      event.preventDefault();
-      try {
-        const source = JSON.parse(raw) as { scope: PromptScope; name: string };
-        void movePrompt(source, scope);
-      } catch {
-        // Malformed drag payloads are ignored.
-      }
-    },
-  });
-
+  const visiblePrompts = (prompts ?? []).filter(matchesQuery);
   const promptRow = (prompt: SavedPrompt) => (
-    <div
-      key={`${prompt.scope}:${prompt.name}`}
-      className="prompt-library-item"
-      draggable
-      onDragStart={(event) => {
-        event.dataTransfer.setData(
-          PROMPT_DRAG_TYPE,
-          JSON.stringify({ scope: prompt.scope, name: prompt.name }),
-        );
-        event.dataTransfer.effectAllowed = "move";
-      }}
-      onDragEnd={() => setDropScope(null)}
-    >
+    <div key={prompt.name} className="prompt-library-item">
       <button
         type="button"
         role="menuitem"
@@ -586,56 +471,6 @@ export default function PromptLibraryMenu({
     </div>
   );
 
-  const section = (scope: PromptScope, label: string, pathHint?: string | null) => {
-    const visible = (prompts ?? []).filter(
-      (prompt) => prompt.scope === scope && matchesQuery(prompt),
-    );
-    // Mention drag-and-drop only when the other scope actually has something to
-    // drag; an entirely empty library gets plain copy instead of a dead hint.
-    const otherScopeHasPrompts = (prompts ?? []).some((prompt) => prompt.scope !== scope);
-    return (
-      <div
-        className={`prompt-library-section${dropScope === scope ? " is-drop-target" : ""}`}
-        role="group"
-        aria-label={label}
-        {...sectionDropHandlers(scope)}
-      >
-        <div className="prompt-library-section-header">
-          <div className="prompt-library-section-heading">
-            <span className="prompt-library-section-label">{label}</span>
-            {pathHint ? (
-              <span className="prompt-library-section-path" title={pathHint}>
-                {pathHint}
-              </span>
-            ) : null}
-          </div>
-          <button
-            type="button"
-            className="icon-button prompt-library-icon-button"
-            title={`New ${label.toLowerCase()} prompt`}
-            aria-label={`New ${label} prompt`}
-            onClick={() => openEditor(null, scope)}
-          >
-            <Plus size={12} aria-hidden="true" />
-          </button>
-        </div>
-        {prompts === null ? (
-          <div className="prompt-library-empty">Loading…</div>
-        ) : visible.length === 0 ? (
-          <div className="prompt-library-empty">
-            {query.length > 0
-              ? "No matches"
-              : otherScopeHasPrompts
-                ? "No prompts — drop one here"
-                : "No prompts yet"}
-          </div>
-        ) : (
-          visible.map(promptRow)
-        )}
-      </div>
-    );
-  };
-
   const listView = (
     <>
       <Input
@@ -648,13 +483,27 @@ export default function PromptLibraryMenu({
         onChange={(event) => setSearch(event.target.value)}
       />
       <div className="prompt-library-list">
-        {section("global", "Global")}
-        {hasProjectScope && hasProjectPrompts ? (
-          <>
-            <div className="prompt-library-divider" role="separator" />
-            {section("project", "Project", projectPath ?? projectDir)}
-          </>
-        ) : null}
+        <div className="prompt-library-section" role="group" aria-label="Saved prompts">
+          <div className="prompt-library-section-header">
+            <span className="prompt-library-section-label">Saved prompts</span>
+            <Button
+              variant="icon"
+              className="prompt-library-icon-button"
+              title="New prompt"
+              aria-label="New prompt"
+              onClick={() => openEditor(null)}
+            >
+              <Plus size={12} aria-hidden="true" />
+            </Button>
+          </div>
+          {prompts === null ? (
+            <div className="prompt-library-empty">Loading…</div>
+          ) : visiblePrompts.length === 0 ? (
+            <div className="prompt-library-empty">{query ? "No matches" : "No prompts yet"}</div>
+          ) : (
+            visiblePrompts.map(promptRow)
+          )}
+        </div>
       </div>
     </>
   );
@@ -762,31 +611,6 @@ export default function PromptLibraryMenu({
             <span className="prompt-library-field-error">{editorNameError}</span>
           ) : null}
         </label>
-        {hasProjectScope && !dialog.lockedScope ? (
-          <div className="prompt-library-scope-picker" role="radiogroup" aria-label="Prompt scope">
-            {(
-              [
-                ["global", "Global"],
-                ["project", "Project"],
-              ] as const
-            ).map(([scope, label]) => (
-              <button
-                key={scope}
-                type="button"
-                role="radio"
-                disabled={busy}
-                aria-checked={editScope === scope}
-                className={`control-button prompt-library-scope-option${
-                  editScope === scope ? " is-active" : ""
-                }`}
-                title={scope === "project" ? (projectPath ?? projectDir ?? undefined) : undefined}
-                onClick={() => setEditScope(scope)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        ) : null}
         <div className="prompt-library-field">
           <Textarea
             ref={editorTextareaRef}

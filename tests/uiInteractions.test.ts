@@ -263,22 +263,21 @@ test("remote link menu skips unavailable cache, copies, and restores focus on Ta
 
 for (const headerless of [false, true]) {
   test(`prompt cards open their Edit/Delete menu and restore focus (${headerless ? "headerless" : "header"})`, async () => {
-    const prompt = { name: "review", content: "Review changes", scope: "project", modifiedMs: 7 };
+    const prompt = { name: "review", content: "Review changes", modifiedMs: 7 };
     let prompts = [prompt];
     const inserted: string[] = [];
     let deletion: unknown;
     mockIPC((command, args) => {
-      if (command === "prompt_library_list") return { prompts, hasProjectScope: true };
+      if (command === "prompt_library_list") return { prompts };
       if (command === "prompt_library_delete") {
         deletion = args;
         prompts = [];
       }
     });
     await act(() => root.render(h("div", { className: "turn-pane" },
-      !headerless ? h(PromptLibraryMenu, { agentId: "agent", projectDir: "/project" }) : null,
+      !headerless ? h(PromptLibraryMenu, { agentId: "agent" }) : null,
       h("div", { className: "turn-timeline", tabIndex: 0 },
         h(EmptyPromptCards, {
-          projectDir: "/project",
           promptLibraryAgentId: headerless ? null : "agent",
           onInsert: (text: string) => inserted.push(text),
         }),
@@ -316,7 +315,7 @@ for (const headerless of [false, true]) {
     assert.equal(document.querySelector('[role="dialog"]')?.getAttribute("aria-label"), "Delete prompt");
     await click(document.querySelector(".confirm-dialog-actions button:last-child")!);
     assert.deepEqual(deletion, {
-      scope: "project", name: "review", projectDir: "/project", expectedModifiedMs: 7,
+      name: "review", expectedModifiedMs: 7,
     });
     assert.equal(document.querySelector(".turn-empty-prompt-card"), null);
     assert.equal(document.querySelector('[role="dialog"]'), null);
@@ -327,8 +326,8 @@ for (const headerless of [false, true]) {
 
 
 test("reselecting a placeholder prompt already in the composer skips the fill form", async () => {
-  const prompt = { name: "review", content: "Review {target}", scope: "global", modifiedMs: 1 };
-  mockIPC((command) => command === "prompt_library_list" ? { prompts: [prompt], hasProjectScope: false } : undefined);
+  const prompt = { name: "review", content: "Review {target}", modifiedMs: 1 };
+  mockIPC((command) => command === "prompt_library_list" ? { prompts: [prompt] } : undefined);
   const selections: string[] = [];
   const stop = listenToComposerInsert("agent", (text, onlyIfPresent) => {
     assert.equal(onlyIfPresent, true);
