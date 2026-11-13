@@ -1505,7 +1505,8 @@ html.wrap-code-blocks .turn-markdown-code-block pre code {
    base wrap sizing, update the bleed caps. */
 .turn-markdown-table-wrap {
   max-width: 100%;
-  margin: 0 0 12px;
+  /* List paragraphs have no bottom margin, so tables supply their own gap. */
+  margin: 0.72em 0 12px;
   border: 1px solid var(--markdown-table-frame-border);
   border-radius: var(--radius-md);
   overflow-x: auto;
