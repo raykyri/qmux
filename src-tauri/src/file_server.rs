@@ -926,9 +926,11 @@ fn html_preview_scroll_bridge() -> String {
 /// that exact origin. Pane-wide tokens let inert documents load sibling resources;
 /// executable reports use exact-file tokens that admit only correctly typed browser
 /// subresources within the pane's roots. `connect-src 'none'` blocks all scripted
-/// network egress, and `object-src`/`base-uri`/`form-action` are locked down for good
-/// measure. Inline scripts/styles are permitted because a served report legitimately
-/// carries its own, while the sandbox keeps its opaque origin isolated from qmux.
+/// network egress. Base URLs may point only to this file-server origin, so reports
+/// can resolve relative assets (including in srcdoc frames) without redirecting them
+/// to external hosts. Inline scripts/styles are permitted because a served report
+/// legitimately carries its own, while the sandbox keeps its opaque origin isolated
+/// from qmux.
 fn file_content_csp(port: u16) -> String {
     let origin = format!("http://127.0.0.1:{port}");
     format!(
@@ -940,16 +942,17 @@ fn file_content_csp(port: u16) -> String {
          media-src blob: {origin}; \
          connect-src 'none'; \
          object-src 'none'; \
-         base-uri 'none'; \
+         base-uri {origin}; \
          form-action 'none'"
     )
 }
 
 /// CSP for *rendered Markdown* pages. Identical to [`file_content_csp`] except that
-/// only qmux's exact scroll-restoration script hash is allowed to execute. Raw HTML
-/// embedded in the source passes through the renderer verbatim, so excluding
-/// `unsafe-inline` keeps any embedded `<script>` inert as a second line of defense
-/// alongside the overlay's opaque-origin sandbox rather than the sole one.
+/// only qmux's exact scroll-restoration script hash is allowed to execute and base
+/// URLs remain disabled. Raw HTML embedded in the source passes through the renderer
+/// verbatim, so excluding `unsafe-inline` keeps any embedded `<script>` inert as a
+/// second line of defense alongside the overlay's opaque-origin sandbox rather than
+/// the sole one.
 fn markdown_page_csp(port: u16) -> String {
     let origin = format!("http://127.0.0.1:{port}");
     let script_hash = STANDARD.encode(Sha256::digest(HTML_PREVIEW_SCROLL_SCRIPT.as_bytes()));
@@ -1428,6 +1431,22 @@ mod tests {
         fn process_id(&self) -> Option<u32> {
             None
         }
+    }
+
+    #[test]
+    fn file_content_csp_allows_base_urls_only_on_the_file_server_origin() {
+        let csp = file_content_csp(12345);
+        let base_uri = csp
+            .split(';')
+            .map(str::trim)
+            .find(|directive| directive.starts_with("base-uri "))
+            .unwrap();
+        // Sandboxed reports have opaque origins, so 'self' would not allow their
+        // HTTP base URLs. Pin the explicit loopback origin, including its port.
+        assert_eq!(base_uri, "base-uri http://127.0.0.1:12345");
+        assert!(csp.contains("connect-src 'none'"), "{csp}");
+        assert!(csp.contains("form-action 'none'"), "{csp}");
+        assert!(markdown_page_csp(12345).contains("base-uri 'none'"));
     }
 
     #[test]
