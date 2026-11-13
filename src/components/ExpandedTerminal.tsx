@@ -36,7 +36,7 @@ export default function ExpandedTerminal({ children, rect, onRestore }: {
       <Dialog ref={dialogRef} className={`terminal-expanded-frame${rect ? " is-ready" : ""}`}
         aria-label="Expanded terminal">
         <div className="terminal-expand-control" ref={restoreControlRef}>
-          <Button variant="icon" size="sm" data-native-web-keyboard aria-label="Restore terminal" title="Restore terminal (⌘⇧Enter)" onClick={onRestore}>
+          <Button variant="icon" className="turn-pane-header-button" data-native-web-keyboard aria-label="Restore terminal" title="Restore terminal (⌘⇧Enter)" onClick={onRestore}>
             <Minimize2 size={14} aria-hidden="true" />
           </Button>
         </div>

@@ -56,7 +56,6 @@ import {
   Columns2,
   Eye,
   EyeOff,
-  Expand,
   FileText,
   FileUp,
   Folder,
@@ -67,7 +66,6 @@ import {
   Layers,
   LoaderCircle,
   MessageSquareText,
-  Minimize2,
   Minus,
   Moon,
   MoreHorizontal,
@@ -5941,10 +5939,23 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       activePaneSplit &&
       paneSplitFlagIsEnabled(splitTranscriptExpandedByPane, activePaneSplit.paneIds)
     );
-  const floatingPaneRestoreControlsVisible =
+  const paneRestoreControlsVisible =
     floatingLeftSidebarRestoreVisible ||
     floatingRestoreButtonVisible ||
     floatingStageTranscriptExpandVisible;
+  // The active terminal shows these buttons in its own corner toolbar, next to
+  // its expand button. They only float on their own when no terminal is on
+  // screen to hold them (research surface, expanded terminal or transcript).
+  const paneToolbarHostId =
+    activeSurface === "pane" &&
+    activePane &&
+    visibleTerminalPaneIdSet.has(activePane.id) &&
+    !expandedTerminalId &&
+    !activeTranscriptVisibleExpanded
+      ? activePane.id
+      : null;
+  const floatingPaneRestoreControlsVisible =
+    paneRestoreControlsVisible && paneToolbarHostId === null;
   // Anchor both axes to the active split. Stage-wide right/top offsets put
   // controls over a sibling terminal, which can also capture their clicks.
   const floatingRestoreAnchorRect =
@@ -5962,8 +5973,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const floatingRestoreAnchorRight = floatingRestoreAnchorRect
     ? splitCalc(
         floatingRestoreRightFraction,
-        // Leave the rightmost icon slot for the split terminal expand button.
-        12 + (terminalExpansionAvailable ? 28 : 0)
+        12
           - floatingRestoreAnchorRect.leftPx - floatingRestoreAnchorRect.widthPx
           - floatingRestoreRightFraction * effectiveSidebarWidth,
       )
@@ -15338,11 +15348,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             setTranscriptExpandedForPane(surface.pane.id, !expanded, true);
           }}
         >
-          {expanded ? (
-            <Minimize2 size={14} aria-hidden="true" />
-          ) : (
-            <Expand size={14} aria-hidden="true" />
-          )}
+          <ScrollText size={14} aria-hidden="true" />
         </button>
         <div
           className={`turn-pane-sidebar-controls${
@@ -15394,6 +15400,61 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     );
   }
 
+  // Window-level buttons for the active pane: show the left sidebar, open the
+  // terminal map, expand the transcripts, show the right bar. The active
+  // terminal hosts them in its corner toolbar; the floating group below is
+  // only the fallback when no terminal is on screen.
+  function renderPaneRestoreButtons(buttonClassName: string) {
+    const surface = floatingRestoreButtonVisible ? activeTurnPaneSurface : null;
+    return (
+      <>
+        {floatingLeftSidebarRestoreVisible ? (
+          <Button
+            variant="icon"
+            className={buttonClassName}
+            title={`Show left sidebar (${LEFT_SIDEBAR_TOGGLE_SHORTCUT_LABEL})`}
+            aria-label="Show left sidebar"
+            onClick={() => setLeftSidebarCollapsedForActivePane(false)}
+          >
+            <PanelLeftOpen size={14} aria-hidden="true" />
+          </Button>
+        ) : null}
+        {floatingLeftSidebarRestoreVisible ? (
+          <TerminalMapButton
+            className={`icon-button ${buttonClassName}`}
+            pressed={terminalMapOpen}
+            onClick={toggleTerminalMap}
+          />
+        ) : null}
+        {floatingStageTranscriptExpandVisible ? (
+          <Button
+            variant="icon"
+            className={buttonClassName}
+            title={`Expand transcripts (${EXPAND_TOGGLE_SHORTCUT_LABEL})`}
+            aria-label="Expand transcripts"
+            onClick={() => toggleActiveTranscriptExpanded()}
+          >
+            <ScrollText size={14} aria-hidden="true" />
+          </Button>
+        ) : null}
+        {surface ? (
+          <Button
+            variant="icon"
+            className={buttonClassName}
+            title={`Show right bar (${RIGHT_BAR_TOGGLE_SHORTCUT_LABEL})`}
+            aria-label="Show right bar"
+            onClick={() => {
+              activateTerminalPane(surface.pane.id);
+              setRightBarCollapsedForPane(false, surface.pane.id);
+            }}
+          >
+            <PanelRightOpen size={14} aria-hidden="true" />
+          </Button>
+        ) : null}
+      </>
+    );
+  }
+
   function renderFloatingPaneRestoreControls() {
     if (!floatingPaneRestoreControlsVisible) {
       return null;
@@ -15409,61 +15470,18 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     // has crossed the bridge.
     const style =
       surface && splitRightPaneMode && splitIndex >= 0
-        ? { top: splitTrackPosition(surface.topFraction, splitIndex, 8), right: terminalExpansionAvailable ? 40 : 12 }
+        ? { top: splitTrackPosition(surface.topFraction, splitIndex, 8), right: 12 }
         : floatingRestoreAnchorTop
           ? { top: floatingRestoreAnchorTop, right: floatingRestoreAnchorRight }
           : undefined;
-    const grouped = floatingLeftSidebarRestoreVisible;
 
     return (
       <div
         ref={floatingPaneRestoreControlsRef}
-        className={`turn-pane-floating-restore-controls${grouped ? " is-grouped" : ""}`}
+        className="turn-pane-floating-restore-controls is-grouped"
         style={style}
       >
-        {floatingLeftSidebarRestoreVisible ? (
-          <button
-            type="button"
-            className="icon-button turn-pane-header-button turn-pane-floating-restore-button"
-            title={`Show left sidebar (${LEFT_SIDEBAR_TOGGLE_SHORTCUT_LABEL})`}
-            aria-label="Show left sidebar"
-            onClick={() => setLeftSidebarCollapsedForActivePane(false)}
-          >
-            <PanelLeftOpen size={14} aria-hidden="true" />
-          </button>
-        ) : null}
-        {floatingLeftSidebarRestoreVisible ? (
-          <TerminalMapButton
-            className="icon-button turn-pane-header-button turn-pane-floating-restore-button"
-            pressed={terminalMapOpen}
-            onClick={toggleTerminalMap}
-          />
-        ) : null}
-        {floatingStageTranscriptExpandVisible ? (
-          <Button
-            variant="icon"
-            size="sm"
-            title={`Expand transcripts (${EXPAND_TOGGLE_SHORTCUT_LABEL})`}
-            aria-label="Expand transcripts"
-            onClick={() => toggleActiveTranscriptExpanded()}
-          >
-            <ScrollText size={14} aria-hidden="true" />
-          </Button>
-        ) : null}
-        {floatingRestoreButtonVisible && surface ? (
-          <button
-            type="button"
-            className="icon-button turn-pane-header-button turn-pane-floating-restore-button"
-            title={`Show right bar (${RIGHT_BAR_TOGGLE_SHORTCUT_LABEL})`}
-            aria-label="Show right bar"
-            onClick={() => {
-              activateTerminalPane(surface.pane.id);
-              setRightBarCollapsedForPane(false, surface.pane.id);
-            }}
-          >
-            <PanelRightOpen size={14} aria-hidden="true" />
-          </button>
-        ) : null}
+        {renderPaneRestoreButtons("turn-pane-header-button turn-pane-floating-restore-button")}
       </div>
     );
   }
@@ -18902,6 +18920,11 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               visible={visibleTerminalPaneIdSet.has(pane.id) && (!expandedTerminalId || expandedTerminalId === pane.id)}
               expandable={terminalExpansionAvailable}
               expanded={expandedTerminalId === pane.id}
+              toolbarControls={
+                pane.id === paneToolbarHostId && paneRestoreControlsVisible
+                  ? renderPaneRestoreButtons("turn-pane-header-button")
+                  : undefined
+              }
               onExpand={() => {
                 activateTerminalPane(pane.id);
                 setExpandedTerminalPaneId(pane.id);
