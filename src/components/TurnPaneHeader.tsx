@@ -1,12 +1,11 @@
 import {
-  Expand,
   Globe,
-  Minimize2,
   PanelLeftOpen,
   PanelRightClose,
   Paperclip,
   PictureInPicture2,
   Pin,
+  ScrollText,
   SquareCenterlineDashedVertical,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -475,11 +474,7 @@ export default function TurnPaneHeader({
           aria-pressed={transcriptExpanded}
           onClick={onToggleTranscriptExpanded}
         >
-          {transcriptExpanded ? (
-            <Minimize2 size={14} aria-hidden="true" />
-          ) : (
-            <Expand size={14} aria-hidden="true" />
-          )}
+          <ScrollText size={14} aria-hidden="true" />
         </button>
         <div
           className={`turn-pane-sidebar-controls${

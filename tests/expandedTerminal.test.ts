@@ -64,7 +64,7 @@ test("expansion retains one session, scopes pointer regions, and restores native
     assert.equal(document.querySelector(".terminal-expanded-toolbar"), null);
     const restore = document.querySelector<HTMLButtonElement>('.terminal-expanded-frame .terminal-expand-control button')!;
     assert.equal(restore.getAttribute("aria-label"), "Restore terminal");
-    assert.ok(restore.classList.contains("icon-button--sm"));
+    assert.ok(restore.classList.contains("turn-pane-header-button"));
     assert.equal(latestLayout().width, 964);
     assert.match(rootElement.style.clipPath, /path\(evenodd/);
     assert.equal(rootElement.inert, true);
@@ -209,5 +209,55 @@ test("expanded controls retain web keyboard ownership and restore native focus w
   } finally {
     await act(async () => root.unmount());
     staleComposer.remove();
+  }
+});
+
+test("the corner toolbar groups window controls with expand and yields the corner to search", async () => {
+  const calls: { cmd: string; args: any }[] = [];
+  mockIPC((cmd, args) => { calls.push({ cmd, args }); });
+  const root = createRoot(document.getElementById("root")!);
+  const handle = createRef<TerminalPaneHandle>();
+  const props: ComponentProps<typeof TerminalPane> = {
+    pane: { id: "toolbar-pane" } as ComponentProps<typeof TerminalPane>["pane"],
+    active: true, visible: true, expandable: true,
+    fontSize: 13, fontFamily: "monospace", letterSpacing: 0, lineHeight: 1,
+    cursorBlink: false, cursorStyle: "block", scrollbackRows: 1000,
+    scrollOnUserInput: true, scrollSensitivity: 1, copyOnSelect: false,
+    selectionClearOnCopy: false, themeName: "qmux", pasteProtection: {} as any,
+    deferGeometryUpdates: false, coveredByOverlay: false, inputBlocked: false,
+    webEditableFocused: false, requestAttach: () => {},
+    onCloseRemote: () => {}, onRetryRemote: async () => {},
+    toolbarControls: h("button", { type: "button", "aria-label": "Show left sidebar" }),
+    ref: handle,
+  };
+  const toolbar = () => document.querySelector(".terminal-pane-toolbar");
+  const regionUpdates = () => calls.filter(c => c.cmd === "native_terminal_set_web_overlay_region");
+  try {
+    await act(async () => { root.render(h(TerminalPane, props)); });
+    assert.deepEqual(
+      [...toolbar()!.querySelectorAll("button")].map(button => button.getAttribute("aria-label")),
+      ["Show left sidebar", "Expand terminal"],
+      "window controls and expand share one group, expand last",
+    );
+    const region = regionUpdates().at(-1)!.args.region;
+    assert.equal(region.visible, true);
+
+    await act(async () => { handle.current!.openSearch(); });
+    assert.equal(toolbar(), null, "the find bar takes the corner while open");
+    assert.equal(
+      regionUpdates().filter(c => c.args.region.regionId === region.regionId).at(-1)!.args.region.visible,
+      false,
+      "a hidden toolbar must not keep a pointer region over the terminal",
+    );
+
+    await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="Close search"]')!.click(); });
+    assert.ok(toolbar(), "the toolbar returns when search closes");
+
+    await act(async () => {
+      root.render(h(TerminalPane, { ...props, toolbarControls: undefined, inputBlocked: true }));
+    });
+    assert.equal(toolbar(), null, "nothing to show without controls or an available expand");
+  } finally {
+    await act(async () => root.unmount());
   }
 });

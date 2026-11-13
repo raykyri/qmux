@@ -374,11 +374,32 @@
   white-space: pre-line;
 }
 
+/* Restore control in the expanded terminal. */
 .terminal-expand-control {
   position: absolute;
   top: 8px;
   right: 12px;
   z-index: 5;
+}
+
+/* Corner toolbar on a split pane: expand, plus the window-level buttons on the
+   active pane. It sits over terminal output, so it rests slightly faded and
+   comes up to full strength while the pointer is over the pane. Pointer moves
+   over a native terminal still reach WebKit, so :hover tracks them. Stacked
+   above the remote-connection overlay so the window buttons stay usable while
+   a remote pane reconnects. */
+.terminal-pane-toolbar {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 8;
+  opacity: 0.85;
+  transition: opacity 120ms ease;
+}
+
+.terminal-pane:hover .terminal-pane-toolbar,
+.terminal-pane-toolbar:focus-within {
+  opacity: 1;
 }
 
 .terminal-expanded-backdrop {

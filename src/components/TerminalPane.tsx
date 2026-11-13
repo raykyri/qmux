@@ -15,7 +15,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { useConfirm } from "../hooks/useConfirm";
 import {
   focusNativeTerminal,
@@ -46,6 +46,9 @@ interface TerminalPaneProps {
   expanded?: boolean;
   onExpand?: () => void;
   onRestore?: () => void;
+  /** Window-level buttons (sidebar, map, transcripts) that the active pane
+   * shows in its corner toolbar, ahead of its own expand button. */
+  toolbarControls?: ReactNode;
   /** Previewed as the destination of a queue/wait option in another pane. */
   waitTargetPreview?: boolean;
   style?: CSSProperties;
@@ -101,6 +104,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     expanded = false,
     onExpand,
     onRestore,
+    toolbarControls,
     waitTargetPreview = false,
     style,
     fontSize,
@@ -137,9 +141,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const connectionLabel = remoteConnectionLabel(pane.remoteConnection);
   const showRemoteCloseButton = remotePaneCloseButtonVisible(pane);
   const terminalInputBlocked = inputBlocked || remoteUnavailable;
-  const expandButtonRef = useNativeWebOverlayRegion<HTMLDivElement>(
-    visible && expandable && !expanded && !terminalInputBlocked, style,
-  );
   const [expandedRect, setExpandedRect] = useState<NativeTerminalRect | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const lastVisibleRectRef = useRef<NativeTerminalRect | null>(null);
@@ -215,6 +216,16 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const coveredRevealHeldRef = useRef(false);
   const confirmOpenRef = useRef(confirmOpen);
   searchOpenRef.current = searchOpen;
+  const expandButtonVisible = expandable && !expanded && !terminalInputBlocked;
+  // The find bar takes the corner while it is open; the toolbar returns when
+  // it closes.
+  const toolbarVisible =
+    !expanded && !searchOpen && (expandButtonVisible || Boolean(toolbarControls));
+  // One region for the whole joined group, seams included, so Ghostty cannot
+  // capture any part of it.
+  const toolbarRef = useNativeWebOverlayRegion<HTMLDivElement>(
+    visible && toolbarVisible, style,
+  );
   confirmOpenRef.current = confirmOpen;
 
   const focus = useCallback(() => {
@@ -548,11 +559,23 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       onPointerDown={() => onActivateRef.current?.(pane.id)}
     >
       <div ref={hostRef} className="terminal-host" />
-      {expandable && !expanded && !terminalInputBlocked ? (
-        <div className="terminal-expand-control" ref={expandButtonRef}>
-          <Button variant="icon" size="sm" aria-label="Expand terminal" title="Expand terminal (⌘⇧Enter)" onClick={onExpand}>
-            <Maximize2 size={14} aria-hidden="true" />
-          </Button>
+      {toolbarVisible ? (
+        <div
+          className="terminal-pane-toolbar turn-pane-sidebar-controls is-grouped"
+          ref={toolbarRef}
+        >
+          {toolbarControls}
+          {expandButtonVisible ? (
+            <Button
+              variant="icon"
+              className="turn-pane-header-button"
+              aria-label="Expand terminal"
+              title="Expand terminal (⌘⇧Enter)"
+              onClick={onExpand}
+            >
+              <Maximize2 size={14} aria-hidden="true" />
+            </Button>
+          ) : null}
         </div>
       ) : null}
       {remoteUnavailable ? (
