@@ -1217,6 +1217,9 @@ fn build_codex_args(
         args.push(model.to_string());
     }
     push_codex_hook_integration(&mut args, remote_hook_cli);
+    // Managed launches and restores must reach the session without an update prompt.
+    args.push("--config".to_string());
+    args.push("check_for_update_on_startup=false".to_string());
     if let Some(developer_instructions) = developer_instructions {
         args.push("--config".to_string());
         args.push(format!(
@@ -3293,6 +3296,8 @@ mod tests {
                 "--profile",
                 "qmux-codex",
                 "--config",
+                "check_for_update_on_startup=false",
+                "--config",
                 "developer_instructions=\"Use QMUX_WORKTREE_ROOT.\\nTreat it as an opaque path.\"",
                 "--sandbox",
                 "workspace-write",
@@ -3332,6 +3337,8 @@ mod tests {
                 "--no-daemon",
                 "--profile",
                 "qmux-codex",
+                "--config",
+                "check_for_update_on_startup=false",
                 "--sandbox",
                 "workspace-write",
                 "--config",
@@ -3395,6 +3402,8 @@ mod tests {
                 "--no-daemon",
                 "--profile",
                 "qmux-codex",
+                "--config",
+                "check_for_update_on_startup=false",
                 "--sandbox",
                 "workspace-write",
                 "--config",
@@ -3417,6 +3426,10 @@ mod tests {
         );
 
         assert!(!args.iter().any(|arg| arg == "--profile"));
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["--config", "check_for_update_on_startup=false"] })
+        );
         assert!(
             args.windows(2)
                 .any(|pair| { pair == ["--config", "features.hooks=true"] })
@@ -3654,6 +3667,8 @@ mod tests {
                 "--no-daemon",
                 "--profile",
                 "qmux-codex",
+                "--config",
+                "check_for_update_on_startup=false",
                 "--sandbox",
                 "workspace-write",
                 "--ask-for-approval",
@@ -3696,6 +3711,8 @@ mod tests {
                 "--no-daemon",
                 "--profile",
                 "qmux-codex",
+                "--config",
+                "check_for_update_on_startup=false",
                 "--sandbox",
                 "workspace-write",
                 "--ask-for-approval",
@@ -3732,6 +3749,8 @@ mod tests {
                 "--no-daemon",
                 "--profile",
                 "qmux-codex",
+                "--config",
+                "check_for_update_on_startup=false",
                 "--sandbox",
                 "workspace-write",
                 "--search",
@@ -3764,6 +3783,8 @@ mod tests {
                 "--no-daemon",
                 "--profile",
                 "qmux-codex",
+                "--config",
+                "check_for_update_on_startup=false",
                 "--sandbox",
                 "workspace-write",
                 "--search"
