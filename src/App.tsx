@@ -742,7 +742,7 @@ const LEFT_SIDEBAR_DEFAULT_WIDTH = 268;
 
 // How long the artifact tray's undo footer holds the last removal.
 const ARTIFACT_UNDO_MS = 10_000;
-const LEFT_SIDEBAR_MIN_WIDTH = 208;
+const LEFT_SIDEBAR_MIN_WIDTH = 160;
 const LEFT_SIDEBAR_MAX_WIDTH = 420;
 // Below this width the New shell/New agent buttons drop their icons to keep the
 // labels readable. (The icon-only Settings cog always keeps its icon.)
