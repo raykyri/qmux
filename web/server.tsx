@@ -2160,6 +2160,9 @@ const PAGE_CSS = `
    [hidden] rule; script-revealed elements rely on hidden actually hiding. */
 [hidden] { display:none !important; }
 html, body { height:100%; }
+/* Literal color on the root, not only a custom property on body. WebKit uses
+   the root background for the rubber-band canvas and otherwise leaves it white. */
+html { background-color:#151719; }
 body { margin:0; background:var(--workspace-bg); color:#dfe3df; font:14px/1.5 var(--font-ui); font-synthesis:none; text-rendering:optimizeLegibility; -webkit-font-smoothing:antialiased; }
 a { color:inherit; text-decoration:none; }
 
@@ -2377,7 +2380,7 @@ a:focus-visible, button:focus-visible, .textarea:focus-visible, summary:focus-vi
    interactive (chrome, rail, composers, forms) drops away. */
 @media print {
   :root { color-scheme:light; }
-  body { background:#ffffff; color:#1a1a1a; }
+  html, body { background:#ffffff; color:#1a1a1a; }
   .doc-header, .research-followups, .research-anchor-connector,
   .proposal-composer, .github-sign-in,
   .sign-out-form, .page-footer, .research-answer-copy,

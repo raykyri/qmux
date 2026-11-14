@@ -29,6 +29,7 @@ import {
 } from "../lib/api";
 import type { HumanBrowserSnapshot } from "../lib/api";
 import { isHumanBrowserLifecycleBusy } from "../lib/humanBrowserLifecycleQueue";
+import { previewCanvasColor } from "../lib/browserOverlay";
 import type { HumanBrowserNavigationState } from "../lib/humanBrowserState";
 
 const MIN_BROWSER_OVERLAY_WIDTH = 360;
@@ -190,7 +191,20 @@ export default function BrowserOverlay({
       if (event.source !== frameRef.current?.contentWindow) {
         return;
       }
-      const message = event.data as { type?: unknown; x?: unknown; y?: unknown } | null;
+      const message = event.data as {
+        type?: unknown;
+        x?: unknown;
+        y?: unknown;
+        color?: unknown;
+      } | null;
+      if (message?.type === "qmux-preview-canvas") {
+        const color = previewCanvasColor(message.color);
+        if (color && frameRef.current) {
+          // The iframe background is the layer behind the bouncing document.
+          frameRef.current.style.backgroundColor = color;
+        }
+        return;
+      }
       if (
         message?.type !== "qmux-preview-scroll" ||
         typeof message.x !== "number" ||

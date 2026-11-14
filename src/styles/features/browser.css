@@ -110,15 +110,19 @@
   width: 100%;
   height: 100%;
   border: 0;
-  /* Most pages assume a white canvas; avoid a flash of the dark app behind them. */
-  background: #ffffff; /* appearance-invariant */
+  /* This iframe is only used for file previews. Its background is the stationary
+     layer WebKit reveals when the framed document rubber-bands, so it has to be
+     the document canvas rather than the webview's default white. Themed
+     renderers share --preview-canvas-bg; the preview script replaces it with
+     the page's computed canvas color once that is known. */
+  background-color: var(--preview-canvas-bg);
 }
 
 .browser-overlay-frame.is-file-content {
-  /* Bare text/plain files have no authored CSS. In a dark Tauri/WebKit appearance,
-     the UA plaintext renderer can choose light text; keep file previews matched to
-     the white iframe canvas without touching localhost dev-server pages. */
-  color-scheme: light;
+  /* Follow the window theme, which the app sets from the appearance choice, so
+     rendered markdown, source, and visualization previews are not pinned to a
+     light canvas. A page that does not opt into dark keeps a light canvas. */
+  color-scheme: light dark;
 }
 
 .browser-overlay-empty {

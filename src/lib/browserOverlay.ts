@@ -4,6 +4,40 @@ import { pathFromFileServerUrl } from "./links";
 
 export type BrowserPreviewScrollCache = Map<string, BrowserPreviewScrollPosition>;
 
+const CANVAS_COLOR_BODY =
+  /^(?:(\d{1,3})\s+(\d{1,3})\s+(\d{1,3})(?:\s*\/\s*((?:0|1)(?:\.0+)?|0?\.\d+))?|(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*((?:0|1)(?:\.0+)?|0?\.\d+))?)$/;
+
+/** Accepts the opaque color a preview document reports as its canvas.
+ * WebKit and Chromium serialize `getComputedStyle` colors differently, so both
+ * `rgb(30, 34, 39)` and `rgb(30 34 39 / 1)` are allowed. Anything else is
+ * ignored so a framed page cannot restyle the iframe with an arbitrary value. */
+export function previewCanvasColor(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const color = value.trim();
+  const body = /^rgba?\((.*)\)$/i.exec(color)?.[1];
+  if (!body || color.length > 48) {
+    return null;
+  }
+  const match = CANVAS_COLOR_BODY.exec(body);
+  if (!match) {
+    return null;
+  }
+  const channels = [1, 2, 3, 5, 6, 7]
+    .map((index) => match[index])
+    .filter((channel) => channel !== undefined)
+    .map(Number);
+  if (channels.slice(0, 3).some((channel) => channel > 255)) {
+    return null;
+  }
+  const alpha = match[4] ?? match[8];
+  if (alpha !== undefined && Number(alpha) < 1) {
+    return null;
+  }
+  return color;
+}
+
 export function rememberBrowserPreviewScroll(
   cache: BrowserPreviewScrollCache,
   ownerId: string,

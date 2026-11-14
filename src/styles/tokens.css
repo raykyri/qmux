@@ -363,6 +363,9 @@
      may diverge in a future theme. */
   --workspace-bg: #17191b;
   --research-workspace-bg: #151719;
+  /* File-preview canvas. Keep equal to the markdown and source renderers in
+     file_server.rs so rubber-band overscroll matches the document. */
+  --preview-canvas-bg: #1e2227;
   --field-bg: #111315;
   --field-bg-hover: #16191b;
   --panel-bg: #1b2022;
@@ -655,6 +658,7 @@
 
   --workspace-bg: #f4f6f5;
   --research-workspace-bg: #f6f7f6;
+  --preview-canvas-bg: #ffffff;
   --field-bg: #ffffff;
   --field-bg-hover: #f7f9f8;
   --panel-bg: #f0f2f1;

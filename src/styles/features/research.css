@@ -876,6 +876,9 @@
      between questions, follow-ups, and freshly posted replies. */
   overflow: hidden auto;
   overscroll-behavior: contain;
+  /* The webview under-page color is white. Paint the scrollport so the
+     rubber-band reveals the document surface. */
+  background-color: var(--research-workspace-bg);
 }
 
 .research-document-content {

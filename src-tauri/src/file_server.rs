@@ -39,7 +39,7 @@ const MAX_INLINE_BYTES: u64 = 64 * 1024 * 1024;
 /// here prevents a malformed directive from turning the wrapper render into an
 /// unbounded allocation.
 const MAX_CODEX_INLINE_VIS_BYTES: u64 = 2 * 1024 * 1024;
-const HTML_PREVIEW_SCROLL_SCRIPT: &str = r#"(()=>{let f=0;addEventListener('scroll',()=>{cancelAnimationFrame(f);f=requestAnimationFrame(()=>parent.postMessage({type:'qmux-preview-scroll',x:scrollX,y:scrollY},'*'))},{passive:true});addEventListener('message',e=>{const d=e.data;if(d?.type!=='qmux-preview-scroll-restore'||!Number.isFinite(d.x)||!Number.isFinite(d.y))return;requestAnimationFrame(()=>requestAnimationFrame(()=>scrollTo(d.x,d.y)))})})();"#;
+const HTML_PREVIEW_SCROLL_SCRIPT: &str = r#"(()=>{const opaque=c=>{if(!c||c==='transparent')return false;const slash=c.match(/\/\s*([0-9.]+)\s*\)$/);if(slash)return Number(slash[1])>0;const parts=c.match(/[\d.]+/g);return !!parts&&(parts.length<4||Number(parts[3])>0)};const postCanvas=()=>{const html=getComputedStyle(document.documentElement).backgroundColor;const body=document.body?getComputedStyle(document.body).backgroundColor:'';const color=opaque(html)?html:opaque(body)?body:'rgb(255, 255, 255)';parent.postMessage({type:'qmux-preview-canvas',color},'*')};const publish=()=>requestAnimationFrame(postCanvas);addEventListener('load',publish);matchMedia('(prefers-color-scheme: dark)').addEventListener('change',publish);publish();let f=0;addEventListener('scroll',()=>{cancelAnimationFrame(f);f=requestAnimationFrame(()=>parent.postMessage({type:'qmux-preview-scroll',x:scrollX,y:scrollY},'*'))},{passive:true});addEventListener('message',e=>{const d=e.data;if(d?.type!=='qmux-preview-scroll-restore'||!Number.isFinite(d.x)||!Number.isFinite(d.y))return;requestAnimationFrame(()=>requestAnimationFrame(()=>scrollTo(d.x,d.y)))})})();"#;
 /// Cap on concurrent connection-handler threads. Each connection serves one
 /// request then closes, so this bounds in-flight requests; 64 comfortably covers
 /// a browser overlay fetching a page full of assets in parallel while keeping a
@@ -1052,7 +1052,8 @@ fn is_markdown(path: &Path) -> bool {
 const CODEX_INLINE_VIS_CSS: &str = "\
 __QMUX_FONT_FACE__\
 :root { color-scheme: light dark; --font-size-base: 14px; --background: #f7f8f7; --foreground: #1d2421; --card: #ffffff; --card-foreground: #1d2421; --popover: #ffffff; --popover-foreground: #1d2421; --primary: #26322d; --primary-foreground: #ffffff; --secondary: #e8eeeb; --secondary-foreground: #1d2421; --muted: #edf1ef; --muted-foreground: #5e6d66; --accent: #e1e9e5; --accent-foreground: #1d2421; --destructive: #a63d40; --border: #ccd6d1; --input: #aebcb5; --ring: #42554c; --viz-series-1: #187a54; --viz-series-2: #8a5d15; --viz-series-3: #496aa0; --viz-series-4: #8a4e86; --viz-series-5: #ad4e35; --viz-series-6: #4f7777; }\
-@media (prefers-color-scheme: dark) { :root { --background: #111514; --foreground: #e5e9e7; --card: #181d1b; --card-foreground: #e5e9e7; --popover: #202624; --popover-foreground: #e5e9e7; --primary: #d7dfdb; --primary-foreground: #111514; --secondary: #29302d; --secondary-foreground: #e5e9e7; --muted: #242b28; --muted-foreground: #99a49f; --accent: #303936; --accent-foreground: #eef2f0; --destructive: #d06b6b; --border: #36403c; --input: #46514c; --ring: #a9b8b1; --viz-series-1: #8fd5b6; --viz-series-2: #d8b77a; --viz-series-3: #8eacd8; --viz-series-4: #c595c2; --viz-series-5: #df927d; --viz-series-6: #8eb8b8; } }\
+html { background-color: #f7f8f7; }\
+@media (prefers-color-scheme: dark) { :root { --background: #111514; --foreground: #e5e9e7; --card: #181d1b; --card-foreground: #e5e9e7; --popover: #202624; --popover-foreground: #e5e9e7; --primary: #d7dfdb; --primary-foreground: #111514; --secondary: #29302d; --secondary-foreground: #e5e9e7; --muted: #242b28; --muted-foreground: #99a49f; --accent: #303936; --accent-foreground: #eef2f0; --destructive: #d06b6b; --border: #36403c; --input: #46514c; --ring: #a9b8b1; --viz-series-1: #8fd5b6; --viz-series-2: #d8b77a; --viz-series-3: #8eacd8; --viz-series-4: #c595c2; --viz-series-5: #df927d; --viz-series-6: #8eb8b8; } html { background-color: #111514; } }\
 * { box-sizing: border-box; }\
 html, body { min-height: 100%; }\
 body { margin: 0; padding: 16px; color: var(--foreground); background: var(--background); font-family: __QMUX_BODY_FONT__; font-size: var(--font-size-base); font-variant-ligatures: no-common-ligatures; }\
@@ -1147,7 +1148,9 @@ fn render_codex_inline_visualization_page(
 /// float over whatever backdrop the app has — white-on-white in practice. Translucent
 /// grays handle the accents in both themes, and the file CSP already allows inline
 /// styles. Paint the root as well as the body so WebKit uses the page background
-/// for the canvas exposed during rubber-band scrolling.
+/// for the canvas exposed during rubber-band scrolling. These two colors are
+/// `--preview-canvas-bg` in the app: the iframe's own background is what stays
+/// put while the framed document bounces, and it is kept in sync with them.
 const MARKDOWN_PAGE_CSS: &str = "\
 __QMUX_FONT_FACE__\
 :root { color-scheme: light dark; }\
@@ -1931,6 +1934,7 @@ mod tests {
         assert!(head.starts_with("HTTP/1.1 200"), "head: {head}");
         assert!(body.contains("<p>hello</p>"));
         assert!(body.contains("qmux-preview-scroll"));
+        assert!(body.contains("qmux-preview-canvas"));
 
         let _ = std::fs::remove_dir_all(&base);
     }
