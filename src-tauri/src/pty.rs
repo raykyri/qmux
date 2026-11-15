@@ -2223,8 +2223,8 @@ fn spawn_remote_tmux_inner(
     let state = state.clone();
     let result_pane = pane.clone();
     let launch = move || -> Result<PaneInfo, String> {
-        // Close waits for this guard before its final compensating kill. This
-        // prevents a slow bootstrap from creating a session after close succeeds.
+        // Close cleanup waits for this guard before its final compensating kill.
+        // The local pane can close while a slow bootstrap is still unwinding.
         struct LaunchGuard(Arc<RemoteAttachmentController>);
         impl Drop for LaunchGuard {
             fn drop(&mut self) {
@@ -2415,7 +2415,9 @@ fn spawn_remote_tmux_inner(
             },
         ))
         .unwrap_or_else(|_| {
-            if let Ok(Some((_, _, commands))) = state.pane_remote_control(&pane_id) {
+            if let Ok(Some((current, _, commands))) = state.pane_remote_control(&pane_id)
+                && Arc::ptr_eq(&current, &controller)
+            {
                 cleanup_remote_launch(&commands);
             }
             Err("remote terminal launch panicked".into())
@@ -2454,7 +2456,13 @@ fn spawn_remote_tmux_inner(
                         connection.message = Some(err.clone());
                     });
                 }
-                if !prepare_shell {
+                if !prepare_shell
+                    && state
+                        .pane_remote_control(&pane_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|(current, _, _)| Arc::ptr_eq(&current, &controller))
+                {
                     let _ = state.remove_pane(&pane_id);
                     if native_surface {
                         let _ = crate::native_terminal::remove(&pane_id);
@@ -2617,9 +2625,21 @@ fn finish_remote_bootstrap(
 }
 
 fn cleanup_remote_launch(commands: &crate::host::RemoteTmuxCommands) {
+    // Closing the local pane must succeed even when SSH cannot reach the host.
+    // Keep support files if termination is uncertain: the remote process may
+    // still need them. Transport leases have their own cleanup retry owner.
+    if let Err(err) = run_remote_argv(&commands.kill_argv, "kill remote tmux session")
+        && remote_health_output(&commands.probe_argv, "check closed remote session")
+            .and_then(remote_session_probe_result)
+            != Ok(false)
+    {
+        eprintln!(
+            "qmux: remote cleanup could not confirm termination; session may still be running: {err}"
+        );
+    } else {
+        cleanup_remote_support(commands);
+    }
     crate::remote_transport::release_forward(commands);
-    let _ = run_remote_argv(&commands.kill_argv, "clean up remote tmux session");
-    cleanup_remote_support(commands);
 }
 
 fn cleanup_remote_support(commands: &crate::host::RemoteTmuxCommands) {
@@ -4300,17 +4320,22 @@ fn start_native_input_writer(
 pub fn pane_activity(state: &AppState, pane_id: String) -> Result<PaneActivity, String> {
     // Validate the pane id against the model before inspecting the child handle. Process
     // inspection below is best-effort, but a genuinely missing pane is still a caller error.
-    if !state.list_panes()?.iter().any(|pane| pane.id == pane_id) {
-        return Err(format!("pane {pane_id} was not found"));
-    }
+    let pane = state
+        .list_panes()?
+        .into_iter()
+        .find(|pane| pane.id == pane_id)
+        .ok_or_else(|| format!("pane {pane_id} was not found"))?;
     if let Some((_, _, commands)) = state.pane_remote_control(&pane_id)? {
-        let (program, args) = commands
-            .activity_argv
-            .split_first()
-            .ok_or_else(|| "remote pane activity command is empty".to_string())?;
-        let mut command = Command::new(program);
-        command.args(args);
-        let output = remote_command_output(command, None, "inspect remote pane activity")?;
+        if pane
+            .remote_connection
+            .as_ref()
+            .is_none_or(|connection| connection.state != RemoteConnectionState::Connected)
+        {
+            return Err("remote pane activity is unavailable while disconnected".into());
+        }
+        // Close preflight is best-effort, including when a previously connected
+        // host has just become unreachable. Do not spend the batch deadline here.
+        let output = remote_health_output(&commands.activity_argv, "inspect remote pane activity")?;
         if !output.status.success() {
             let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
             return Err(if detail.is_empty() {
@@ -4377,53 +4402,24 @@ pub fn kill_pane(state: &AppState, pane_id: String) -> Result<(), String> {
         eprintln!("qmux: failed to capture closed pane {pane_id}: {err}");
     }
     if let Some((controller, _, commands)) = state.pane_remote_control(&pane_id)? {
-        // Fence the launch reversibly: if the kill below cannot confirm the
-        // session gone, the pane survives and must keep its recovery path.
-        // `cancel_recovery` (permanent) only runs once the close is certain.
-        let cancelled_launch = controller.initial_launch_in_progress();
-        if cancelled_launch {
-            controller.begin_close();
-            controller.wait_for_initial_launch();
-        }
-        // Preparation may have filled in the support directory while close
-        // waited. Always clean up the final plan, not the reservation's plan.
+        // Local close is unconditional. Fence installs/recovery before taking
+        // the cleanup plan; a later launch plan cannot bootstrap once stopped.
+        controller.cancel_recovery();
         let commands = state
             .pane_remote_control(&pane_id)?
             .map(|(_, _, commands)| commands)
             .unwrap_or(commands);
-        if let Err(err) = run_remote_argv(&commands.kill_argv, "kill remote tmux session")
-            && probe_remote_session(&commands.probe_argv) != Ok(false)
-        {
-            state.clear_last_closed_pane_for_pane(&pane_id);
-            let _ = state.update_remote_connection(
-                &pane_id,
-                RemoteConnectionState::Failed,
-                Some(err.clone()),
-            );
-            if cancelled_launch {
-                // The fence made the launch abort before installing its
-                // attachment, so there is no live generation to keep using.
-                // Lift the fence and let the shared worker probe: it
-                // reattaches if the session exists or reports it ended
-                // (after which a retried close succeeds).
-                controller.abort_close();
-                if let Err(recover_err) = check_remote_pane(state, &pane_id, "closeFailed") {
-                    eprintln!("qmux: failed to resume recovery for {pane_id}: {recover_err}");
-                }
-            }
-            return Err(err);
-        }
-        // Fence and tear down the disposable attachment only after the remote
-        // session is confirmed gone. If the kill/probe transport failed, leave
-        // the live generation installed so the user can keep working or retry
-        // close instead of stranding a Failed pane with no reconnect path.
-        controller.cancel_recovery();
         let (_, attachment) = controller.begin_generation();
         if let Some(attachment) = attachment {
             retire_remote_attachment(&pane_id, attachment);
         }
-        crate::remote_transport::release_forward(&commands);
-        cleanup_remote_support(&commands);
+        thread::spawn(move || {
+            // A bootstrap already in flight may still create its nonce-named
+            // session. Wait off the close path before the final compensating
+            // kill so it cannot create a session after our cleanup attempt.
+            controller.wait_for_initial_launch();
+            cleanup_remote_launch(&commands);
+        });
         if let Some(agent_id) = pane_agent_id.as_deref()
             && let Err(err) = abort_fork_barrier_for_child(
                 state,
@@ -4762,8 +4758,8 @@ fn start_reader_thread(
             // dropped connection: close the pane outright — the same teardown
             // Cmd-W performs, including the remote session kill and undo
             // snapshot — instead of parking it on the reconnect banner. If the
-            // remote kill fails (the transport died with the pane), fall
-            // through so the reconnect flow keeps the recovery path.
+            // local close fails, fall through to the reconnect flow. Remote
+            // termination itself is best-effort and cannot block this close.
             if crate::native_terminal::take_recent_remote_ctrl_d(&pane_id) {
                 if let Err(err) = kill_pane(&state, pane_id.clone()) {
                     eprintln!(
@@ -7835,7 +7831,7 @@ exit "$__qmux_test_status"
     }
 
     fn state_with_disconnected_remote() -> AppState {
-        let state = test_state();
+        let state = test_state_with_workspace(temp_workspace());
         let controller = RemoteAttachmentController::new();
         let history = RemoteHistoryCheckpoint::new(Vec::new());
         let backlog: SharedBacklog = Arc::new(Mutex::new(Default::default()));
@@ -7890,6 +7886,150 @@ exit "$__qmux_test_status"
             .unwrap();
 
         state
+    }
+
+    fn remote_test_argv(script: &str, path: &Path) -> Vec<String> {
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            script.into(),
+            "qmux-test".into(),
+            path.display().to_string(),
+        ]
+    }
+
+    #[test]
+    fn remote_close_does_not_wait_for_launch_or_remote_termination() {
+        let state = state_with_disconnected_remote();
+        let pane_id = "pane-offline-resize";
+        let pane = state.list_panes().unwrap().remove(0);
+        let (controller, _, mut commands) = state.pane_remote_control(pane_id).unwrap().unwrap();
+        let workspace = temp_workspace();
+        let marker = workspace.join("cleanup");
+        commands.kill_argv = remote_test_argv("printf killed > \"$1\"", &marker);
+        commands.support_cleanup_argv = remote_test_argv("printf cleaned >> \"$1\"", &marker);
+        state
+            .set_remote_launch_plan(pane_id, pane.remote_session.unwrap(), commands)
+            .unwrap();
+        controller.begin_initial_launch();
+        let closing = state.clone();
+        let (done, received) = std::sync::mpsc::channel();
+        let closer = thread::spawn(move || {
+            done.send(kill_pane(&closing, pane_id.into())).unwrap();
+        });
+        let result = received.recv_timeout(Duration::from_secs(1));
+        // Always release the worker, including if a regression blocks close.
+        let cleanup_started_early = marker.exists();
+        controller.finish_initial_launch();
+        result
+            .expect("local close must not wait for remote launch")
+            .unwrap();
+        closer.join().unwrap();
+        assert!(
+            !cleanup_started_early,
+            "final kill must follow launch completion"
+        );
+        assert!(!state.pane_exists(pane_id).unwrap());
+        assert!(controller.stopped());
+        assert!(!controller.request_recovery("systemWake"));
+        assert_eq!(
+            state.take_last_closed_pane().unwrap().unwrap().pane.id,
+            pane_id
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while fs::read_to_string(&marker).unwrap_or_default() != "killedcleaned" {
+            assert!(Instant::now() < deadline, "remote cleanup did not finish");
+            thread::sleep(Duration::from_millis(5));
+        }
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn remote_close_succeeds_when_ssh_fails_and_preserves_support_files() {
+        let state = state_with_disconnected_remote();
+        let pane_id = "pane-offline-resize";
+        let (_, _, mut commands) = state.pane_remote_control(pane_id).unwrap().unwrap();
+        let workspace = temp_workspace();
+        let support = workspace.join("support");
+        fs::write(&support, "needed by a possibly live remote process").unwrap();
+        commands.kill_argv = remote_test_argv(
+            "printf 'ssh: connect to host example port 22: Network is unreachable' >&2; exit 255",
+            &support,
+        );
+        commands.support_cleanup_argv = remote_test_argv("rm -- \"$1\"", &support);
+        let identity = state
+            .list_panes()
+            .unwrap()
+            .remove(0)
+            .remote_session
+            .unwrap();
+        state
+            .set_remote_launch_plan(pane_id, identity, commands.clone())
+            .unwrap();
+        kill_pane(&state, pane_id.into()).unwrap();
+        assert!(!state.pane_exists(pane_id).unwrap());
+        assert!(state.take_last_closed_pane().unwrap().is_some());
+        // Exercise cleanup synchronously too so the preservation assertion
+        // cannot race an asynchronous cleanup that has not run yet.
+        cleanup_remote_launch(&commands);
+        assert!(support.exists());
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn disconnected_remote_activity_does_not_attempt_ssh() {
+        let state = state_with_disconnected_remote();
+        // The fixture has no activity argv: inspecting it would otherwise fail
+        // with an empty-command error, rather than this immediate offline result.
+        assert_eq!(
+            pane_activity(&state, "pane-offline-resize".into()).unwrap_err(),
+            "remote pane activity is unavailable while disconnected"
+        );
+    }
+
+    #[test]
+    fn remote_close_cleans_support_when_the_session_already_ended() {
+        let state = state_with_disconnected_remote();
+        let (_, _, mut commands) = state
+            .pane_remote_control("pane-offline-resize")
+            .unwrap()
+            .unwrap();
+        let workspace = temp_workspace();
+        let support = workspace.join("support");
+        fs::write(&support, "support").unwrap();
+        commands.kill_argv = remote_test_argv("exit 1", &support);
+        commands.probe_argv = remote_test_argv(
+            "printf 'no server running on /tmp/qmux-test' >&2; exit 1",
+            &support,
+        );
+        commands.support_cleanup_argv = remote_test_argv("rm -- \"$1\"", &support);
+        cleanup_remote_launch(&commands);
+        assert!(!support.exists());
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn connected_remote_activity_still_detects_running_work() {
+        let state = state_with_disconnected_remote();
+        let pane_id = "pane-offline-resize";
+        let (_, _, mut commands) = state.pane_remote_control(pane_id).unwrap().unwrap();
+        commands.activity_argv =
+            remote_test_argv("printf 'claude\\t123\\t0'", Path::new("/unused"));
+        let identity = state
+            .list_panes()
+            .unwrap()
+            .remove(0)
+            .remote_session
+            .unwrap();
+        state
+            .set_remote_launch_plan(pane_id, identity, commands)
+            .unwrap();
+        state
+            .update_remote_connection(pane_id, RemoteConnectionState::Connected, None)
+            .unwrap();
+        let activity = pane_activity(&state, pane_id.into()).unwrap();
+        assert_eq!(activity.process_count, 1);
+        assert_eq!(activity.process_summary.as_deref(), Some("claude"));
     }
 
     #[test]

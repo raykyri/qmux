@@ -179,7 +179,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   };
   const endRemoteSession = async () => {
     if (await confirm({
-      message: "End this remote session? This stops the shell and any agents running in it. The remote host must be reachable to confirm termination.",
+      message: "End this remote session? This closes the tab and attempts to stop its shell and agents. If the remote host is unreachable, they may keep running there.",
       confirmLabel: "End session",
     })) onCloseRemote();
   };

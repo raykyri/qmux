@@ -18523,6 +18523,12 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                 of {closeDialog.groupClose.totalCount}: {closeDialog.pane.title}
               </p>
             ) : null}
+            {closeDialog.kind !== "researchFolderRemove" && closeDialog.pane.remoteSession ? (
+              <p>
+                qmux will attempt to stop the remote session. If the host is unreachable,
+                its shell and agents may keep running there.
+              </p>
+            ) : null}
             {closeDialog.kind === "researchFolderRemove" ? (
               <>
                 <p>Remove this folder from qmux?</p>
@@ -18631,7 +18637,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               </>
             ) : closeDialog.kind === "stop" ? (
               <>
-                <p>This agent {closeDialog.reason}. Close the tab and stop it?</p>
+                <p>This agent {closeDialog.reason}. {closeDialog.pane.remoteSession
+                  ? "Close the tab?" : "Close the tab and stop it?"}</p>
                 <DialogActions>
                   <Button onClick={() => setCloseDialog(null)}>Cancel</Button>
                   <Button
@@ -18653,7 +18660,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                       : "This tab has a running process."
                     : `This tab has ${closeDialog.processCount} running processes.`}
                 </p>
-                <p>Closing this tab will terminate running processes in it.</p>
+                {!closeDialog.pane.remoteSession ? (
+                  <p>Closing this tab will terminate running processes in it.</p>
+                ) : null}
                 <DialogActions>
                   <Button onClick={() => setCloseDialog(null)}>Cancel</Button>
                   <Button
@@ -18668,7 +18677,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               </>
             ) : (
               <>
-                <p>Close this split pane?</p>
+                <p>{closeDialog.pane.remoteSession ? "Close this remote tab?" : "Close this split pane?"}</p>
                 <DialogActions>
                   <Button onClick={() => setCloseDialog(null)}>Cancel</Button>
                   <Button
