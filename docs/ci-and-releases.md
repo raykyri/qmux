@@ -8,10 +8,13 @@ artifacts and never receive signing secrets. CI verifies the app and the app
 inside the mounted DMG, including their ARM-only architecture and both Linux
 remote helpers.
 
-The separate **Signed release** workflow runs manually, only from `main` in
-`raykyri/qmux`. It tests, builds, signs, notarizes, verifies, and creates a
-**draft** release. Publishing remains a manual step after installation testing.
-Nothing is published merely by merging or pushing these workflows.
+The separate **Signed release** workflow checks every push to `main` in
+`raykyri/qmux`. When `package.json`'s version increases compared with the start
+of that push, it automatically tests, builds, signs, notarizes, verifies, and
+creates a **draft** release. Dependency edits, unchanged versions, and version
+decreases skip the signed build before entering the `release` environment.
+Manual runs from `main` remain available. Publishing the draft remains a manual
+step after installation testing; pushing a version bump never publishes it.
 
 ## 1. Enable Actions and protect main
 
@@ -140,14 +143,17 @@ The release workflow requires it so publishing is not silently disabled.
    be present on the default branch to appear in the Actions UI.
 2. Let **CI** pass. Its downloadable DMG is a development artifact, not the
    signed release.
-3. Ensure the release version agrees in `package.json`, `src-tauri/Cargo.toml`,
+3. Increase the release version in `package.json`, `src-tauri/Cargo.toml`,
    and `src-tauri/tauri.conf.json`; keep the npm and Cargo lockfiles in sync
-   when bumping versions. Commit and push the version bump. The version's
+   when bumping versions. Commit and push/merge the version bump to `main` to
+   start **Signed release** automatically. The version's
    `vX.Y.Z` tag must not already exist. Do **not** create the tag yourself.
    The first Apple Silicon-only release must use a new version after v0.4.0;
    do not replace the existing universal release or any of its assets.
-4. Open **Actions → Signed release → Run workflow**, selecting `main`.
-   Approve the environment deployment if you configured a reviewer.
+4. Open **Actions → Signed release** to follow the automatic run. The existing
+   environment timer and any required review still apply. To retry manually,
+   use **Run workflow**, selecting `main`. An initial branch push without a
+   previous commit requires a manual run because there is no version to compare.
 5. The script requires the selected commit to still match `origin/main`.
    If main moved while the run was queued, start a fresh run.
 6. On success, open Releases and inspect the draft. Expect:

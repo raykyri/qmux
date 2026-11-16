@@ -8,6 +8,9 @@ src-tauri/gen/
 .env
 .DS_Store
 
+# Apple Developer ID certificate downloaded for local signing.
+/developerID_application.cer
+
 .codex/
 .claude/
 

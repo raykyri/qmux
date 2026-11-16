@@ -1,19 +1,40 @@
 name: Signed release
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: qmux-signed-release
-  cancel-in-progress: false
-
 jobs:
+  check-version:
+    name: Check release version bump
+    if: github.repository == 'raykyri/qmux' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compare versions across the push
+        id: version
+        run: node scripts/check-release-trigger.mjs
+
   release:
     name: Build signed draft release
-    if: github.repository == 'raykyri/qmux' && github.ref == 'refs/heads/main'
+    needs: check-version
+    if: needs.check-version.outputs.release == 'true'
+    # No-op pushes must finish their version check without replacing a pending
+    # release in GitHub's single concurrency queue slot.
+    concurrency:
+      group: qmux-signed-release
+      cancel-in-progress: false
     runs-on: macos-15
     timeout-minutes: 120
     environment: release
