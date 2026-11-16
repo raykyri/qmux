@@ -1017,15 +1017,16 @@
 /* Saved highlights the current selection landed on. Painted above the saved
    gold wash (via Highlight.priority) in the same tone as ::selection, so a
    selected annotation reads like ordinary selected text; matches
-   --status-info-fg, spelled literally because highlight pseudos resolve
-   custom properties unreliably. */
+   --selection-bg and --selection-fg, spelled literally because highlight
+   pseudos resolve custom properties unreliably. */
 ::highlight(qmux-research-selected-highlights) {
-  color: inherit;
-  background: #6da7ec; /* highlight-pseudo-literal */
+  color: #f4f4ef; /* highlight-pseudo-literal */
+  background: #3d4a52; /* highlight-pseudo-literal */
 }
 
 :root[data-appearance="light"] *::highlight(qmux-research-selected-highlights) {
-  background: #2a6fc0; /* highlight-pseudo-literal */
+  color: #15191a; /* highlight-pseudo-literal */
+  background: #cfe0ea; /* highlight-pseudo-literal */
 }
 
 .research-highlight-actions {

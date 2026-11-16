@@ -197,6 +197,10 @@
   --text-ghost: #4b524e;
   --text-on-accent: #0f1413;
 
+  /* Text selection matches the built-in terminal palette. */
+  --selection-bg: #3d4a52;
+  --selection-fg: #f4f4ef;
+
   /* Per-adapter identity colors in history and activity rows. */
   --agent-claude-fg: #d9a07d;
   --agent-codex-fg: #8fc7a6;
@@ -541,6 +545,9 @@
   --text-dim: #9aa19d;
   --text-ghost: #adb3af;
   --text-on-accent: #ffffff;
+
+  --selection-bg: #cfe0ea;
+  --selection-fg: #15191a;
 
   --agent-claude-fg: #a85f2f;
   --agent-codex-fg: #2f7f4f;
