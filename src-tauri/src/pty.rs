@@ -2747,13 +2747,7 @@ fn terminalize_tmux_history(capture: &[u8]) -> Vec<u8> {
 }
 
 fn probe_remote_session(argv: &[String]) -> Result<bool, String> {
-    let (program, args) = argv
-        .split_first()
-        .ok_or_else(|| "remote session probe command is empty".to_string())?;
-    let mut command = Command::new(program);
-    command.args(args);
-    let output = remote_command_output(command, None, "check remote session")?;
-    remote_session_probe_result(output)
+    remote_health_output(argv, "check remote session").and_then(remote_session_probe_result)
 }
 
 fn remote_session_probe_result(output: Output) -> Result<bool, String> {
@@ -3102,8 +3096,7 @@ fn schedule_remote_reconnect(
             };
             let cancellation = RemoteRecoveryScope::enter(&controller, revision);
             let result = (|| -> Result<bool, String> {
-                let output = remote_health_output(&commands.probe_argv, "check remote session")?;
-                if !remote_session_probe_result(output)? {
+                if !probe_remote_session(&commands.probe_argv)? {
                     return Ok(false);
                 }
                 if !report_remote_recovery(&state, &pane_id, &controller, revision, |connection| {
@@ -8025,7 +8018,9 @@ exit "$__qmux_test_status"
             .set_remote_launch_plan(pane_id, identity, commands)
             .unwrap();
         state
-            .update_remote_connection(pane_id, RemoteConnectionState::Connected, None)
+            .mutate_remote_connection(pane_id, |connection| {
+                connection.state = RemoteConnectionState::Connected;
+            })
             .unwrap();
         let activity = pane_activity(&state, pane_id.into()).unwrap();
         assert_eq!(activity.process_count, 1);

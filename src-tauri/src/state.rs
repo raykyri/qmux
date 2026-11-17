@@ -7650,24 +7650,6 @@ impl AppState {
             .and_then(|pane| pane.backend.remote_control()))
     }
 
-    pub fn update_remote_connection(
-        &self,
-        pane_id: &str,
-        state: RemoteConnectionState,
-        message: Option<String>,
-    ) -> Result<(), String> {
-        self.mutate_remote_connection(pane_id, |connection| {
-            connection.state = state;
-            connection.message = message;
-            connection.stage = None;
-            connection.session_exists = None;
-            connection.next_retry_at = None;
-            if state != RemoteConnectionState::Connected {
-                connection.disconnected_at.get_or_insert(now_millis());
-            }
-        })
-    }
-
     pub fn mutate_remote_connection(
         &self,
         pane_id: &str,
