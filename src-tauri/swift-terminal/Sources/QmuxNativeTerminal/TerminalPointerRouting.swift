@@ -1,10 +1,9 @@
 /// The native terminal and transparent WebKit host both observe the first left
 /// mouse-down so React can activate the pane that Ghostty received the click in.
-/// WebKit must not see the third and later clicks in the same sequence: it treats
-/// a triple-click over the transparent terminal host as a web paragraph selection,
-/// which makes qmux hand keyboard ownership away from the terminal.
+/// Later clicks select a word or line in Ghostty. Forwarding them to WebKit
+/// can also create a DOM selection and release the terminal's keyboard focus.
 func shouldForwardTerminalLeftMouseDownToWeb(clickCount: Int) -> Bool {
-    clickCount < 3
+    clickCount == 1
 }
 
 /// C-ABI probe used by the Rust suite because Command Line Tools installations

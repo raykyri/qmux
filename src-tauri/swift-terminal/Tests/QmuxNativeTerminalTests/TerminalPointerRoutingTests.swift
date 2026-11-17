@@ -2,12 +2,12 @@ import XCTest
 @testable import QmuxNativeTerminal
 
 final class TerminalPointerRoutingTests: XCTestCase {
-    func testInitialClicksStillReachWebActivation() {
+    func testFirstClickReachesWebActivation() {
         XCTAssertTrue(shouldForwardTerminalLeftMouseDownToWeb(clickCount: 1))
-        XCTAssertTrue(shouldForwardTerminalLeftMouseDownToWeb(clickCount: 2))
     }
 
-    func testTripleAndLaterClicksStayNative() {
+    func testSecondAndLaterClicksStayNative() {
+        XCTAssertFalse(shouldForwardTerminalLeftMouseDownToWeb(clickCount: 2))
         XCTAssertFalse(shouldForwardTerminalLeftMouseDownToWeb(clickCount: 3))
         XCTAssertFalse(shouldForwardTerminalLeftMouseDownToWeb(clickCount: 4))
     }

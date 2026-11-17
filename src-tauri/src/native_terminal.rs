@@ -2321,9 +2321,9 @@ mod tests {
     }
 
     #[test]
-    fn swift_terminal_pointer_routing_keeps_triple_clicks_native() {
+    fn swift_terminal_pointer_routing_keeps_second_and_later_clicks_native() {
         assert!(super::imp::should_forward_left_mouse_down_to_web(1));
-        assert!(super::imp::should_forward_left_mouse_down_to_web(2));
+        assert!(!super::imp::should_forward_left_mouse_down_to_web(2));
         assert!(!super::imp::should_forward_left_mouse_down_to_web(3));
         assert!(!super::imp::should_forward_left_mouse_down_to_web(4));
     }
