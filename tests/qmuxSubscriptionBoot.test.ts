@@ -37,7 +37,7 @@ await build({
       const last = main.body!.statements.at(-1)!;
       assert.ok(ts.isReturnStatement(last));
       return { contents: source.slice(0, last.pos) + `
-        globalThis.__workspaceObserve({ activePaneId });
+        globalThis.__workspaceObserve({ activePaneId, desiredNativeKeyboardOwner });
         return null;
       ` + source.slice(last.end), loader: "tsx" };
     });
@@ -108,6 +108,38 @@ test("App: snapshots wait until the global event subscription is registered", as
   await act(async () => registration.resolve());
   assert.equal(readyCount, 1);
   assert.equal(state.activePaneId, "b");
+});
+
+test("App: Ctrl+Tab restores terminal input after a selection in the outgoing pane", async () => {
+  install(command => command === "pane_splits_get" ? [] : undefined);
+  await mount();
+  assert.equal(state.desiredNativeKeyboardOwner, "b");
+
+  const outgoing = document.createElement("section");
+  outgoing.dataset.paneContentId = "b";
+  container.append(outgoing);
+  const selection = document.getSelection()!;
+  const range = document.createRange();
+  range.selectNode(outgoing);
+  const callbacks: FrameRequestCallback[] = [];
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = callback => callbacks.push(callback);
+  try {
+    selection.addRange(range);
+    document.dispatchEvent(new dom.window.Event("selectionchange"));
+    await act(() => callbacks.splice(0).forEach(callback => callback(0)));
+    assert.equal(state.desiredNativeKeyboardOwner, null);
+
+    await act(() => window.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+      key: "Tab", ctrlKey: true, bubbles: true, cancelable: true,
+    })));
+    assert.equal(state.activePaneId, "c");
+    assert.equal(state.desiredNativeKeyboardOwner, "c");
+    assert.equal(selection.rangeCount, 0);
+  } finally {
+    globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+    outgoing.remove();
+  }
 });
 
 test("App: pending listener registration is cleaned up after disposal without booting", async () => {

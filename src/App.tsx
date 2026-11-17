@@ -310,6 +310,7 @@ import {
 } from "./lib/composerActions";
 import {
   desiredNativeTerminalKeyboardOwner,
+  reconcileWebSelectionForTabSwitch,
   windowFocusKeyboardOwner,
 } from "./lib/nativeTerminalKeyboard";
 import {
@@ -11071,6 +11072,12 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   }
 
   function focusPaneTab(paneId: string) {
+    const outgoingPaneId = activePaneRef.current?.id;
+    if (activeSurfaceRef.current === "pane" && outgoingPaneId && outgoingPaneId !== paneId) {
+      // Sample before the switch hides the terminal or replaces its transcript.
+      // WebKit can drop the range during that change without a selectionchange.
+      setWebSelectionActive(reconcileWebSelectionForTabSwitch(document, outgoingPaneId));
+    }
     if (document.activeElement instanceof HTMLElement &&
         document.activeElement.closest(".turn-timeline")) {
       document.activeElement.blur();
@@ -15275,6 +15282,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         }${
           surface.agent?.id === waitTargetHoverAgentId ? " is-wait-target-preview" : ""
         }`}
+        data-pane-content-id={surface.pane.id}
         data-queue-drop-agent-id={surface.agent?.id}
         style={style}
         onPointerDownCapture={() => activateTerminalPane(surface.pane.id)}
@@ -19134,6 +19142,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                   ? " is-wait-target-preview"
                   : ""
               }`}
+              data-pane-content-id={surface.pane.id}
               data-queue-drop-agent-id={surface.agent?.id}
               onPointerDownCapture={() => activateTerminalPane(surface.pane.id)}
               onFocusCapture={() => {
@@ -19164,6 +19173,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               ? `turn-pane is-expanded${focusedAssistantTurn ? " is-reader-mode" : ""}`
               : "turn-pane"
           }
+          data-pane-content-id={activeTurnPaneSurface.pane.id}
           onPointerDownCapture={() => activateTerminalPane(activeTurnPaneSurface.pane.id)}
           onFocusCapture={() => activateTerminalPane(activeTurnPaneSurface.pane.id)}
         >

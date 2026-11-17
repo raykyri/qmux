@@ -34,6 +34,35 @@ export function windowFocusKeyboardOwner({
   return "native-terminal";
 }
 
+/** Clears the outgoing tab's DOM selection and returns the current web blocker. */
+export function reconcileWebSelectionForTabSwitch(
+  document: Document,
+  outgoingPaneId: string,
+): boolean {
+  const selection = document.getSelection();
+  if (!selection || selection.isCollapsed) {
+    return false;
+  }
+
+  const range = selection.getRangeAt(0);
+  const surfaceRange = document.createRange();
+  for (const surface of document.querySelectorAll<HTMLElement>("[data-pane-content-id]")) {
+    if (surface.dataset.paneContentId !== outgoingPaneId) {
+      continue;
+    }
+    // An empty terminal host can be selected via offsets on its parent node.
+    surfaceRange.selectNode(surface);
+    if (
+      range.compareBoundaryPoints(range.START_TO_START, surfaceRange) >= 0 &&
+      range.compareBoundaryPoints(range.END_TO_END, surfaceRange) <= 0
+    ) {
+      selection.removeAllRanges();
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Computes the one pane that should logically own native terminal keyboard
  * input. Geometry and transcript membership are deliberately absent: resizing

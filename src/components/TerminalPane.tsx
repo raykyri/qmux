@@ -555,6 +555,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         .filter(Boolean)
         .join(" ")}
       aria-hidden={!visible}
+      data-pane-content-id={pane.id}
       style={expanded ? undefined : style}
       onPointerDown={() => onActivateRef.current?.(pane.id)}
     >
