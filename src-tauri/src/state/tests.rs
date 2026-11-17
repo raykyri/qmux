@@ -3601,8 +3601,16 @@ fn complete_run_without_checkpoint_still_retires_and_snapshots_live_turns() {
 
 #[test]
 fn research_document_edits_replace_content_clear_highlights_and_preserve_children() {
+    use std::os::unix::fs::PermissionsExt;
+
     let workspace = temp_workspace();
-    let state = AppState::new(test_config(workspace.clone()));
+    // Creating a document follow-up checks adapter availability without launching it.
+    let claude = workspace.join("claude-fixture");
+    std::fs::write(&claude, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut config = test_config(workspace.clone());
+    config.adapters.claude.binary = Some(claude.to_str().unwrap().to_owned());
+    let state = AppState::new(config);
     state.restore_session();
     let mut group = sample_group();
     group.dir = workspace.display().to_string();
