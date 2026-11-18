@@ -49,7 +49,9 @@ process.stdout.write(path.resolve(root, 'src-tauri', entry[0]));
 JS
 )"
 cp -R "$task_bundle_source" "$task_app/Contents/Resources/GhosttyKit_GhosttyTerminal.bundle"
+# swiftc links the probe directly, so include the bridge's Ghostty dependencies.
 xcrun swiftc -sdk "$task_sdk" -I "$task_products/Modules" -I "$task_headers" \
   "$task_probe_root/main.swift" "$task_products/libQmuxNativeTerminal.a" \
+  "$task_products/libghostty.a" -lc++ -framework Carbon \
   -o "$task_app/Contents/MacOS/GhosttyResourceProbe"
 "$task_app/Contents/MacOS/GhosttyResourceProbe" "$task_app/Contents/Resources"
