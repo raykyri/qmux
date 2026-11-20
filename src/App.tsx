@@ -422,7 +422,6 @@ import {
 import type { SplitDivider, SplitRect } from "./lib/paneSplits";
 import {
   activeSidebarScrollRegion,
-  leftSidebarRestorePlacement,
   sidebarScrollRegionsForMode,
   type SidebarScrollRegion,
 } from "./lib/sidebarControls";
@@ -2397,9 +2396,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const leftSidebarCollapsedRef = useRef(leftSidebarCollapsed);
   leftSidebarCollapsedRef.current = leftSidebarCollapsed;
   const effectiveSidebarWidth = leftSidebarCollapsed ? 0 : sidebarWidth;
-  const showLeftSidebarInResearch = useCallback(() => {
-    setLeftSidebarCollapsed(false);
-  }, []);
   // Application-level settings, loaded from localStorage once on mount and
   // persisted on every change. Shared by every pane. Font size is also adjustable
   // in-session with Cmd-=/Cmd--.
@@ -5631,23 +5627,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const hasVisibleRightBarRef = useRef(hasVisibleRightBar);
   hasVisibleRightBarRef.current = hasVisibleRightBar;
   const terminalExpansionAvailable = canExpandNativeTerminal(IS_MAC, visibleTerminalPaneIds.length, hasVisibleRightBar);
-  const researchSidebarRestoreInHeader =
-    leftSidebarCollapsed &&
-    sidebarMode === "research" &&
-    (researchStageView === "document" || researchStageView === "composer");
-  const leftSidebarRestore = leftSidebarRestorePlacement({
-    leftSidebarCollapsed,
-    researchHeaderOwnsRestore: researchSidebarRestoreInHeader,
-    splitRightPaneMode,
-    dockedTranscriptCells: mountedDockedTurnPaneSurfaces.length > 0,
-    activePaneId: activePane?.id,
-    visibleRightBarPaneIds: (splitRightPaneMode
-      ? visibleRightBarSurfaces
-      : mountedDockedTurnPaneSurfaces
-    ).map((surface) => surface.pane.id),
-  });
-  const floatingLeftSidebarRestoreVisible =
-    leftSidebarRestore.kind === "floating";
   const floatingRestoreButtonVisible = rightBarCollapsed && activePaneCanToggleTurnSidebar;
   const floatingStageTranscriptExpandVisible =
     splitOverlayTranscriptMode &&
@@ -5661,9 +5640,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       paneSplitFlagIsEnabled(splitTranscriptExpandedByPane, activePaneSplit.paneIds)
     );
   const paneRestoreControlsVisible =
-    floatingLeftSidebarRestoreVisible ||
-    floatingRestoreButtonVisible ||
-    floatingStageTranscriptExpandVisible;
+    floatingRestoreButtonVisible || floatingStageTranscriptExpandVisible;
+  const paneRestoreControlsGrouped =
+    floatingRestoreButtonVisible && floatingStageTranscriptExpandVisible;
   // The active terminal shows these buttons in its own corner toolbar, next to
   // its expand button. They only float on their own when no terminal is on
   // screen to hold them (research surface, expanded terminal or transcript).
@@ -5700,7 +5679,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       )
     : "";
   const floatingPaneRestoreControlsLayoutKey = [
-    floatingLeftSidebarRestoreVisible ? "left" : "",
     floatingRestoreButtonVisible ? "right" : "",
     floatingStageTranscriptExpandVisible ? "expand" : "",
     splitRightPaneMode ? activePane?.id : "",
@@ -5714,6 +5692,13 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const floatingPaneRestoreControlsRef = useNativeWebOverlayRegion<HTMLDivElement>(
     floatingPaneRestoreControlsVisible,
     floatingPaneRestoreControlsLayoutKey,
+  );
+  // The collapsed sidebar's reopen control floats over the stage, which is a
+  // native terminal once the sidebar is gone. Register it so Ghostty does not
+  // swallow the click.
+  const sidebarRestoreControlsRef = useNativeWebOverlayRegion<HTMLDivElement>(
+    IS_MAC && leftSidebarCollapsed,
+    leftSidebarCollapsed,
   );
   const hasGlobalTurnSidebar = hasVisibleRightBar && !splitRightPaneMode;
   const overlayTurnPaneSurfaces = splitLayoutActive
@@ -14751,9 +14736,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
 
   function renderFloatingTurnPaneControls(surface: TurnPaneSurface, expanded: boolean) {
     const label = expanded ? "Restore transcript" : "Expand transcript";
-    const restoresLeftSidebar =
-      leftSidebarRestore.kind === "split-turn-pane" &&
-      leftSidebarRestore.paneId === surface.pane.id;
     return (
       <div className="turn-pane-floating-controls">
         {terminalPipToggleVisible ? (
@@ -14800,26 +14782,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         >
           <ScrollText size={14} aria-hidden="true" />
         </button>
-        <div
-          className={`turn-pane-sidebar-controls${
-            restoresLeftSidebar ? " is-grouped" : ""
-          }`}
-        >
-          {restoresLeftSidebar ? (
-            <button
-              type="button"
-              className="icon-button turn-pane-header-button turn-pane-floating-restore-button"
-              title={`Show left sidebar (${LEFT_SIDEBAR_TOGGLE_SHORTCUT_LABEL})`}
-              aria-label="Show left sidebar"
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                setLeftSidebarCollapsedForActivePane(false);
-              }}
-            >
-              <PanelLeftOpen size={14} aria-hidden="true" />
-            </button>
-          ) : null}
+        <div className="turn-pane-sidebar-controls">
           <button
             type="button"
             className="icon-button turn-pane-header-button turn-pane-floating-collapse-button"
@@ -14839,25 +14802,15 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     );
   }
 
-  // Window-level buttons for the active pane: show the left sidebar, expand
-  // the transcripts, show the right bar. The active terminal hosts them in its
-  // corner toolbar; the floating group below is only the fallback when no
-  // terminal is on screen.
+  // Window-level buttons for the active pane: expand the transcripts, show
+  // the right bar. The collapsed left sidebar reopens from its own group
+  // beside the traffic lights. The active terminal hosts these in its corner
+  // toolbar; the floating group below is the fallback when no terminal is on
+  // screen.
   function renderPaneRestoreButtons(buttonClassName: string) {
     const surface = floatingRestoreButtonVisible ? activeTurnPaneSurface : null;
     return (
       <>
-        {floatingLeftSidebarRestoreVisible ? (
-          <Button
-            variant="icon"
-            className={buttonClassName}
-            title={`Show left sidebar (${LEFT_SIDEBAR_TOGGLE_SHORTCUT_LABEL})`}
-            aria-label="Show left sidebar"
-            onClick={() => setLeftSidebarCollapsedForActivePane(false)}
-          >
-            <PanelLeftOpen size={14} aria-hidden="true" />
-          </Button>
-        ) : null}
         {floatingStageTranscriptExpandVisible ? (
           <Button
             variant="icon"
@@ -14910,7 +14863,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     return (
       <div
         ref={floatingPaneRestoreControlsRef}
-        className="turn-pane-floating-restore-controls is-grouped"
+        className={`turn-pane-floating-restore-controls${
+          paneRestoreControlsGrouped ? " is-grouped" : ""
+        }`}
         style={style}
       >
         {renderPaneRestoreButtons("turn-pane-header-button turn-pane-floating-restore-button")}
@@ -15078,11 +15033,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               onToggleTranscriptExpanded={toggleActiveTranscriptExpanded}
               onCollapseRightBar={() =>
                 setRightBarCollapsedForPane(true, surface.pane.id)
-              }
-              onRestoreLeftSidebar={
-                leftSidebarRestore.kind === "turn-pane-header"
-                  ? () => setLeftSidebarCollapsedForActivePane(false)
-                  : undefined
               }
               onInsertPrompt={
                 agent ? (text) => requestComposerInsert(agent.id, text) : undefined
@@ -15427,6 +15377,23 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       }`}
       style={appStyle}
     >
+      {leftSidebarCollapsed ? (
+        <div
+          ref={sidebarRestoreControlsRef}
+          className="turn-pane-sidebar-controls is-grouped sidebar-restore-controls"
+        >
+          <Button
+            variant="icon"
+            className="turn-pane-header-button"
+            title={`Show left sidebar (${LEFT_SIDEBAR_TOGGLE_SHORTCUT_LABEL})`}
+            aria-label="Show left sidebar"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => setLeftSidebarCollapsedForActivePane(false)}
+          >
+            <PanelLeftOpen size={14} aria-hidden="true" />
+          </Button>
+        </div>
+      ) : null}
       {!leftSidebarCollapsed ? (
         <NativeResizeHandle
           className="sidebar-resizer"
@@ -18251,9 +18218,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               onCreate={submitNewDocument}
               onDirtyChange={handleNewDocumentDirtyChange}
               sessionDraftKey={SESSION_DRAFT_KEYS.newDocumentFields}
-              onShowSidebar={
-                researchSidebarRestoreInHeader ? showLeftSidebarInResearch : undefined
-              }
             />
           ) : null}
           {researchStageView === "multi-select" ? (
@@ -18322,9 +18286,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                 ) ?? null
               }
               onPublicationBindingChange={handlePublicationBindingChange}
-              onShowSidebar={
-                researchSidebarRestoreInHeader ? showLeftSidebarInResearch : undefined
-              }
               workspaceCanGoBack={canGoWorkspaceBack(researchWorkspaceHistory)}
               workspaceCanGoForward={canGoWorkspaceForward(researchWorkspaceHistory)}
               onWorkspaceBack={goResearchWorkspaceBack}

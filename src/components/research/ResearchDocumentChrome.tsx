@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ArrowLeft, ArrowRight, PanelLeftOpen } from "lucide-react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 
 interface ResearchHistoryNavProps {
   canGoBack?: boolean;
@@ -59,22 +59,6 @@ interface ResearchDocumentFrameProps {
   forwardTitle?: string;
   onBack?: () => void;
   onForward?: () => void;
-}
-
-/** Reopens the app sidebar from research chrome, alongside the document's
- * transcript and run controls rather than floating over the research body. */
-export function ResearchSidebarRestoreButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      className="control-button research-sidebar-restore"
-      title="Show left sidebar (⇧⌘G)"
-      aria-label="Show left sidebar"
-      onClick={onClick}
-    >
-      <PanelLeftOpen size={15} aria-hidden="true" />
-    </button>
-  );
 }
 
 /** The research-surface page chrome shared by states that are not a live

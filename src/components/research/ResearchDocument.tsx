@@ -115,7 +115,6 @@ import DocumentComposer from "./DocumentComposer";
 import {
   ResearchDocumentFrame,
   ResearchHistoryNav,
-  ResearchSidebarRestoreButton,
 } from "./ResearchDocumentChrome";
 
 interface ResearchDocumentProps {
@@ -160,8 +159,6 @@ interface ResearchDocumentProps {
   onPublish: (target: PublishDialogTarget) => void;
   publicationBinding?: PublicationBinding | null;
   onPublicationBindingChange: (binding: PublicationBinding) => void;
-  /** Reopens the application sidebar when research is using the full width. */
-  onShowSidebar?: () => void;
   /** Show held-⌘ shortcut badges (the ⌘J follow-ups hint). */
   shortcutHintsShown: boolean;
   /** Workspace-level back/forward (Recent Activity ↔ documents). Used when
@@ -1667,7 +1664,6 @@ function ResearchDocument({
   onPublish,
   publicationBinding,
   onPublicationBindingChange,
-  onShowSidebar,
   shortcutHintsShown,
   workspaceCanGoBack = false,
   workspaceCanGoForward = false,
@@ -4842,14 +4838,7 @@ function ResearchDocument({
       : onRetryDetail;
     const headerTitle = detail?.tree.title ?? treeTitle ?? "Loading research…";
     return (
-      <ResearchDocumentFrame
-        title={headerTitle}
-        headerActions={
-          onShowSidebar ? (
-            <ResearchSidebarRestoreButton onClick={onShowSidebar} />
-          ) : undefined
-        }
-      >
+      <ResearchDocumentFrame title={headerTitle}>
         <div className="research-placeholder">
           {placeholderError ? null : (
             <LoaderCircle className="research-spinner" size={24} aria-hidden="true" />
@@ -5398,9 +5387,6 @@ function ResearchDocument({
                     }`
                   : `${legacyFollowupCount} ${legacyFollowupCount === 1 ? "follow-up" : "follow-ups"}`}
               </span>
-            ) : null}
-            {onShowSidebar ? (
-              <ResearchSidebarRestoreButton onClick={onShowSidebar} />
             ) : null}
             {selectedView?.hasTranscriptActivity && selectedNodeId ? (
               <button

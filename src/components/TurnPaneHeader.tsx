@@ -1,6 +1,5 @@
 import {
   Globe,
-  PanelLeftOpen,
   PanelRightClose,
   Paperclip,
   PictureInPicture2,
@@ -59,7 +58,6 @@ interface TurnPaneHeaderProps {
   transcriptShortcutLabel: string;
   onToggleTranscriptExpanded: () => void;
   onCollapseRightBar: () => void;
-  onRestoreLeftSidebar?: () => void;
   // Inserts saved-prompt text into this pane's composer; absent when the pane
   // has no agent composer, which disables the prompt-library trigger.
   onInsertPrompt?: (text: string) => void;
@@ -106,7 +104,6 @@ export default function TurnPaneHeader({
   transcriptShortcutLabel,
   onToggleTranscriptExpanded,
   onCollapseRightBar,
-  onRestoreLeftSidebar,
   onInsertPrompt,
   stickyUserMessages,
   onToggleStickyUserMessages,
@@ -471,22 +468,7 @@ export default function TurnPaneHeader({
         >
           <ScrollText size={14} aria-hidden="true" />
         </button>
-        <div
-          className={`turn-pane-sidebar-controls${
-            onRestoreLeftSidebar ? " is-grouped" : ""
-          }`}
-        >
-          {onRestoreLeftSidebar ? (
-            <button
-              type="button"
-              className="icon-button turn-pane-header-button"
-              title="Show left sidebar (⇧⌘G)"
-              aria-label="Show left sidebar"
-              onClick={onRestoreLeftSidebar}
-            >
-              <PanelLeftOpen size={14} aria-hidden="true" />
-            </button>
-          ) : null}
+        <div className="turn-pane-sidebar-controls">
           <button
             type="button"
             className="icon-button turn-pane-header-button"

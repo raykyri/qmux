@@ -1122,11 +1122,9 @@ function TerminalPane({
   );
 }
 
-// A collapsed pane's way back sits where that pane was: the sidebar's restore
-// at the window's top-left, just past the traffic lights, and the transcript's
-// at the top-right where its header button was. The app groups both into the
-// turn pane's header instead, which is learnable in a window you use every day
-// and invisible in a demo you have thirty seconds with.
+// The collapsed sidebar reopens from a control just past the traffic lights,
+// the same place the app puts it. The transcript's restore stays at the
+// top-right, where its header button was.
 //
 // They hang off the window rather than a pane so they survive the terminal
 // dropping out at narrow widths.

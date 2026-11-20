@@ -199,6 +199,20 @@
   border-bottom-left-radius: 0;
 }
 
+/* Reopens the collapsed left sidebar. Sits just right of the macOS traffic
+   lights (they end at 57px) and uses the same grouped header-button chrome
+   as the other window controls. */
+.sidebar-restore-controls {
+  position: absolute;
+  top: 6px;
+  left: 74px;
+  z-index: 9;
+}
+
+.sidebar-restore-controls .turn-pane-header-button {
+  backdrop-filter: blur(6px);
+}
+
 .sidebar-mode-toggle {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
