@@ -15,6 +15,7 @@ import { createPortal } from "react-dom";
 import {
   BookMarked,
   ChevronDown,
+  Copy,
   EllipsisVertical,
   FolderGit2,
   GitFork,
@@ -49,7 +50,11 @@ import { inspectPaste } from "../lib/paste";
 import type { PasteProtectionSettings } from "../lib/paste";
 import {
   FORK_REQUIREMENT_TITLE,
+  NO_TRANSCRIPT_MESSAGE_TO_COPY,
   QUEUE_DELIVERY_OPTIONS,
+  composerCopyCommandText,
+  composerSlashCommandBlockedReason,
+  composerSlashCommandCanQueue,
   composerSlashCommandSubmitLabels,
   deriveComposerGating,
   planComposerSubmission,
@@ -106,6 +111,7 @@ const SLASH_COMMAND_PRESENTATION: Record<
 > = {
   fork: { Icon: GitFork, summary: "Fork this session" },
   worktree: { Icon: FolderGit2, summary: "Fork into a new worktree" },
+  copy: { Icon: Copy, summary: "Copy the last message" },
 };
 
 type ComposerSlashMatch =
@@ -147,6 +153,9 @@ interface NativeInputProps {
   // Briefing for a *different* coding agent, anchored on the newest turn.
   // Returns null when the transcript has nothing worth handing over.
   transcriptCopyHandoffText: () => string | null;
+  // Copy text of the latest visible transcript message, or null when the
+  // transcript has nothing a message action could copy.
+  transcriptCopyLastMessage: () => string | null;
   onPublishTranscript: () => void;
   composerPolicy: ComposerPolicy;
   shortcutLabelForPane: (paneId?: string | null) => string | null;
@@ -214,6 +223,7 @@ export default function NativeInput({
   transcriptCopyPlainText,
   transcriptCopyJsonText,
   transcriptCopyHandoffText,
+  transcriptCopyLastMessage,
   onPublishTranscript,
   composerPolicy,
   shortcutLabelForPane,
@@ -463,8 +473,8 @@ export default function NativeInput({
   const permissionActions = awaitingPermission ? composerPolicy.permissionActions : [];
   const recentMessages = recentByAgent[agent.id] ?? [];
 
-  function slashCommandBlockedReason(_command: ComposerSlashCommand): string | null {
-    return canQueueFork ? null : FORK_REQUIREMENT_TITLE;
+  function slashCommandBlockedReason(command: ComposerSlashCommand): string | null {
+    return composerSlashCommandBlockedReason(command, canQueueFork);
   }
 
   // Derived presentation for the inline slash-command submit button (shown when the
@@ -474,7 +484,9 @@ export default function NativeInput({
   const slashSubmitLabels = slashCommand
     ? composerSlashCommandSubmitLabels(slashCommand)
     : null;
-  const slashCanQueue = parsedSlashCommand.kind === "ready" && canAppendQueue;
+  const slashCanQueue =
+    parsedSlashCommand.kind === "ready" &&
+    composerSlashCommandCanQueue(parsedSlashCommand.command, canAppendQueue);
   const slashSubmitTitle = slashCommandBlocked ?? undefined;
 
   useEffect(() => {
@@ -786,6 +798,28 @@ export default function NativeInput({
     const plan = planComposerSubmission(parseComposerSlashCommand(text), canQueueFork);
     if (plan.kind === "reject") {
       onError(plan.message);
+      return;
+    }
+    // /copy never sends, queues, or forks. It copies, then clears the draft.
+    if (plan.kind === "copy") {
+      setMenuOpen(false);
+      setWaitOpen(false);
+      if (!beginSubmission()) return;
+      try {
+        const message = transcriptCopyLastMessage();
+        if (!message) {
+          onError(NO_TRANSCRIPT_MESSAGE_TO_COPY);
+          return;
+        }
+        await writeClipboardText(composerCopyCommandText(plan.prefix, message));
+        clearSubmittedDraft(agent.id, submittedDraft);
+        showToast("Copied to clipboard");
+        focusComposer(agent.id);
+      } catch (err) {
+        onError(err instanceof Error ? err.message : String(err));
+      } finally {
+        endSubmission();
+      }
       return;
     }
     if (plan.kind === "fork" && mode !== "queue") {

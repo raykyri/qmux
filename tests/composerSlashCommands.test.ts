@@ -7,6 +7,11 @@ import {
   parseComposerSlashCommand,
 } from "../src/lib/composerSlashCommands";
 import {
+  FORK_REQUIREMENT_TITLE,
+  NO_TRANSCRIPT_MESSAGE_TO_COPY,
+  composerCopyCommandText,
+  composerSlashCommandBlockedReason,
+  composerSlashCommandCanQueue,
   composerSlashCommandSubmitLabels,
   planComposerSubmission,
 } from "../src/lib/composerActions";
@@ -40,7 +45,11 @@ test("reselecting a prompt recognizes only its entire text at the draft's end", 
 test("matches command prefixes only in the first unfinished token", () => {
   assert.deepEqual(
     matchingComposerSlashCommands("/").map((command) => command.name),
-    ["fork", "worktree"],
+    ["fork", "worktree", "copy"],
+  );
+  assert.deepEqual(
+    matchingComposerSlashCommands("/c").map((command) => command.name),
+    ["copy"],
   );
   assert.deepEqual(
     matchingComposerSlashCommands("/f").map((command) => command.name),
@@ -117,6 +126,69 @@ test("recognizes known commands without a message as incomplete", () => {
   assert.equal(parseComposerSlashCommand("/worktree\t").kind, "incomplete");
 });
 
+test("parses copy as ready with or without a prefix", () => {
+  const bare = parseComposerSlashCommand("/copy");
+  assert.equal(bare.kind, "ready");
+  if (bare.kind === "ready") {
+    assert.equal(bare.command.kind, "copy");
+    assert.equal(bare.prompt, "");
+  }
+  const spaced = parseComposerSlashCommand("/copy   ");
+  assert.equal(spaced.kind, "ready");
+  if (spaced.kind === "ready") {
+    assert.equal(spaced.prompt, "");
+  }
+  const prefixed = parseComposerSlashCommand("/copy\tkeep this\ncontext ");
+  assert.equal(prefixed.kind, "ready");
+  if (prefixed.kind === "ready") {
+    assert.equal(prefixed.prompt, "keep this\ncontext");
+  }
+});
+
+test("plans copy without forking, sending, or queueing", () => {
+  assert.deepEqual(planComposerSubmission(parseComposerSlashCommand("/copy keep this"), false), {
+    kind: "copy",
+    prefix: "keep this",
+  });
+  assert.deepEqual(planComposerSubmission(parseComposerSlashCommand("/copy"), false), {
+    kind: "copy",
+    prefix: "",
+  });
+  const parsed = parseComposerSlashCommand("/copy keep this");
+  assert.equal(parsed.kind, "ready");
+  if (parsed.kind === "ready") {
+    assert.equal(composerSlashCommandBlockedReason(parsed.command, false), null);
+    assert.equal(composerSlashCommandCanQueue(parsed.command, true), false);
+    assert.deepEqual(composerSlashCommandSubmitLabels(parsed.command), {
+      immediate: "Copy",
+      now: "Copy",
+      queued: "Copy",
+    });
+  }
+  const fork = parseComposerSlashCommand("/fork investigate");
+  assert.equal(fork.kind, "ready");
+  if (fork.kind === "ready") {
+    assert.equal(
+      composerSlashCommandBlockedReason(fork.command, false),
+      FORK_REQUIREMENT_TITLE,
+    );
+    assert.equal(composerSlashCommandCanQueue(fork.command, true), true);
+  }
+});
+
+test("copy places optional text before the message with a blank line between", () => {
+  assert.equal(composerCopyCommandText("   ", "Last message."), "Last message.");
+  assert.equal(
+    composerCopyCommandText("  keep this  ", "Last message."),
+    "keep this\n\nLast message.",
+  );
+  assert.equal(
+    composerCopyCommandText("line one\nline two", "Last message."),
+    "line one\nline two\n\nLast message.",
+  );
+  assert.equal(NO_TRANSCRIPT_MESSAGE_TO_COPY, "This transcript has no message to copy yet.");
+});
+
 test("leaves unknown, embedded, and lookalike slash commands alone", () => {
   for (const value of [
     "/compact now",
@@ -125,6 +197,8 @@ test("leaves unknown, embedded, and lookalike slash commands alone", () => {
     " /fork now",
     "explain /fork now",
     "/fork\nnow",
+    "/copied now",
+    "/Copy now",
   ]) {
     assert.deepEqual(parseComposerSlashCommand(value), { kind: "none" }, value);
   }
@@ -144,6 +218,7 @@ test("rejects empty, reserved, and duplicate prompt names", () => {
   ];
   assert.equal(promptNameError("", prompts), "Enter a prompt name");
   assert.equal(promptNameError("fork", prompts), "/fork is reserved by qMux");
+  assert.equal(promptNameError("copy", prompts), "/copy is reserved by qMux");
   assert.equal(
     promptNameError("deploy", prompts),
     "/deploy is already used by another prompt",

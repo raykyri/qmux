@@ -47,9 +47,13 @@ export function deriveComposerGating(
 
 /** How a composer submission dispatches given its parsed slash command, shared
  * so the slash commands behave identically in the composer and the launcher. */
+export const NO_TRANSCRIPT_MESSAGE_TO_COPY =
+  "This transcript has no message to copy yet.";
+
 export type ComposerSubmissionPlan =
   | { kind: "reject"; message: string }
   | { kind: "fork"; useWorktree: boolean; prompt: string }
+  | { kind: "copy"; prefix: string }
   | { kind: "turn" };
 
 export function planComposerSubmission(
@@ -59,6 +63,9 @@ export function planComposerSubmission(
   if (parsed.kind === "incomplete") {
     return { kind: "reject", message: `Add a message after ${parsed.command.token}` };
   }
+  if (parsed.kind === "ready" && parsed.command.kind === "copy") {
+    return { kind: "copy", prefix: parsed.prompt };
+  }
   if (parsed.kind === "ready") {
     if (!canFork) {
       return { kind: "reject", message: FORK_REQUIREMENT_TITLE };
@@ -66,6 +73,32 @@ export function planComposerSubmission(
     return { kind: "fork", useWorktree: parsed.command.useWorktree, prompt: parsed.prompt };
   }
   return { kind: "turn" };
+}
+
+/** Clipboard text for /copy. A prefix, when present, is placed before the
+ * message with one blank line between them. */
+export function composerCopyCommandText(prefix: string, message: string): string {
+  const lead = prefix.trim();
+  return lead ? `${lead}\n\n${message}` : message;
+}
+
+/** Copy does not fork, so a session that cannot fork can still run it. */
+export function composerSlashCommandBlockedReason(
+  command: ComposerSlashCommand,
+  canFork: boolean,
+): string | null {
+  if (command.kind === "copy" || canFork) {
+    return null;
+  }
+  return FORK_REQUIREMENT_TITLE;
+}
+
+/** Copy acts immediately. It is not a turn, so it cannot be queued. */
+export function composerSlashCommandCanQueue(
+  command: ComposerSlashCommand,
+  canAppendQueue: boolean,
+): boolean {
+  return command.kind !== "copy" && canAppendQueue;
 }
 
 export interface ComposerSlashCommandSubmitLabels {
@@ -79,6 +112,13 @@ export interface ComposerSlashCommandSubmitLabels {
 export function composerSlashCommandSubmitLabels(
   command: ComposerSlashCommand,
 ): ComposerSlashCommandSubmitLabels {
+  if (command.kind === "copy") {
+    return {
+      immediate: "Copy",
+      now: "Copy",
+      queued: "Copy",
+    };
+  }
   if (command.useWorktree) {
     return {
       immediate: "Fork in worktree & send",

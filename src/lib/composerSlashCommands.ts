@@ -1,8 +1,8 @@
-export type ComposerSlashCommandName = "fork" | "worktree";
+export type ComposerSlashCommandName = "fork" | "worktree" | "copy";
 
 /** What a command does when submitted. Fork-only fields (useWorktree) are
- * ignored for other kinds. */
-export type ComposerSlashCommandKind = "fork";
+ * ignored for copy. Copy never sends: it copies the last transcript message. */
+export type ComposerSlashCommandKind = "fork" | "copy";
 
 export interface ComposerSlashCommand {
   name: ComposerSlashCommandName;
@@ -27,6 +27,13 @@ export const COMPOSER_SLASH_COMMANDS: readonly ComposerSlashCommand[] = [
     kind: "fork",
     useWorktree: true,
   },
+  {
+    name: "copy",
+    token: "/copy",
+    description: "Copy the last message. Text after /copy is included first",
+    kind: "copy",
+    useWorktree: false,
+  },
 ];
 
 export type ParsedComposerSlashCommand =
@@ -34,8 +41,11 @@ export type ParsedComposerSlashCommand =
   | { kind: "incomplete"; command: ComposerSlashCommand }
   | { kind: "ready"; command: ComposerSlashCommand; prompt: string };
 
-/** Commands are recognized only at byte zero and only when their exact token is
- * followed by a space or tab. Unknown slash commands remain ordinary agent input. */
+/** Commands are recognized only at byte zero. Fork commands need their exact
+ * token, a space or tab, and a message; the backend queue parser uses those
+ * same rules when a queued turn is claimed. /copy also matches the bare token
+ * and runs immediately, so it is never queued. Unknown slash commands remain
+ * ordinary agent input. */
 export function parseComposerSlashCommand(
   value: string,
 ): ParsedComposerSlashCommand {
@@ -45,7 +55,9 @@ export function parseComposerSlashCommand(
 
   for (const command of COMPOSER_SLASH_COMMANDS) {
     if (value === command.token) {
-      return { kind: "incomplete", command };
+      return command.kind === "copy"
+        ? { kind: "ready", command, prompt: "" }
+        : { kind: "incomplete", command };
     }
     if (!value.startsWith(command.token)) {
       continue;
@@ -55,9 +67,10 @@ export function parseComposerSlashCommand(
       continue;
     }
     const prompt = value.slice(command.token.length).trim();
-    return prompt
-      ? { kind: "ready", command, prompt }
-      : { kind: "incomplete", command };
+    if (!prompt && command.kind !== "copy") {
+      return { kind: "incomplete", command };
+    }
+    return { kind: "ready", command, prompt };
   }
 
   return { kind: "none" };

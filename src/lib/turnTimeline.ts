@@ -903,6 +903,32 @@ export function messageItemCopyText(item: MessageItem): string | null {
   return stripped.trim() ? stripped : null;
 }
 
+/** Copy text of the latest user or assistant message that still has text after
+ * tagged instructions are removed. System rows and tool-only items are skipped. */
+export function lastTranscriptMessageCopyText(items: readonly MessageItem[]): string | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const text = messageItemCopyText(items[index]);
+    if (text) {
+      return text;
+    }
+  }
+  return null;
+}
+
+/** Latest copyable message across chronological transcript sections. An empty
+ * later section falls through to the previous one. */
+export function lastVisibleTranscriptMessageCopyText(
+  sections: readonly (readonly MessageItem[])[],
+): string | null {
+  for (let index = sections.length - 1; index >= 0; index -= 1) {
+    const text = lastTranscriptMessageCopyText(sections[index] ?? []);
+    if (text) {
+      return text;
+    }
+  }
+  return null;
+}
+
 /**
  * One aggregate copy payload per user-delimited assistant run.
  *

@@ -34,6 +34,9 @@ let flushers = new Set<() => void>();
 let userInputs: string[] = [];
 let queues: Record<string, any[]> = {};
 let errors: string[] = [];
+let lastMessageText: string | null = null;
+let clipboardWrites: string[] = [];
+let submittedTurns: string[] = [];
 const registerFlusher = (fn: () => void) => { flushers.add(fn); return () => { flushers.delete(fn); }; };
 function Harness() {
   const [id, setId] = useState('A');
@@ -46,13 +49,14 @@ function Harness() {
     agentMayBeBackgrounded: false, draft: drafts[id] ?? '', queuedTurns: queues[id] ?? [], waitTargets: [], queueSplit: false,
     requireCmdEnterToSend: false, pasteProtection: { confirmMultiLinePaste: true, confirmPasteOverChars: 250000 },
     hasTranscript: false, transcriptCopyPlainText: () => '', transcriptCopyJsonText: () => '', transcriptCopyHandoffText: () => null,
+    transcriptCopyLastMessage: () => lastMessageText,
     onPublishTranscript() { }, composerPolicy: { readyStatuses: ['idle'], queueStatuses: ['idle'], steerStatuses: [], permissionActions: [] },
     shortcutLabelForPane: () => null,
     onQueueChange: (agentId, turns) => { queues[agentId] = turns; redraw(x => x + 1); },
     onQueueDropTargetChange() { }, onMoveQueuedTurn() { },
     composerDrafts, onDraftChange: (agentId, text) => { composerDrafts.set(agentId, text); drafts[agentId] = text; redraw(x => x + 1); }, registerDraftFlusher: registerFlusher,
     onWaitTargetHover() { }, onForkWithPrompt: () => new Promise(resolve => pending.push({ command: 'fork', args: { agentId: id }, resolve })),
-    onTurnSubmitted() { }, onUserInput: id => userInputs.push(id), getQueueScroll: () => undefined, saveQueueScroll() { }, onError: message => { errors.push(message); },
+    onTurnSubmitted(_id, text) { submittedTurns.push(text); }, onUserInput: id => userInputs.push(id), getQueueScroll: () => undefined, saveQueueScroll() { }, onError: message => { errors.push(message); },
   });
 }
 async function mount(initial: Record<string, string>, initialQueues: Record<string, any[]> = {}) {
@@ -61,7 +65,13 @@ async function mount(initial: Record<string, string>, initialQueues: Record<stri
   queues = initialQueues;
   pending = [];
   userInputs = [];
+  clipboardWrites = [];
+  submittedTurns = [];
   mockIPC((command, args) => {
+    if (command === 'plugin:clipboard-manager|write_text') {
+      clipboardWrites.push(args?.text ?? '');
+      return null;
+    }
     if (command === 'agent_submit_turn' || command === 'agent_remove_queued_turn' || command === 'save_pasted_image' || command === 'agent_queue_delivery_turn')
       return new Promise((resolve, reject) => pending.push({ command, args, resolve, reject }));
     if (command === 'prompt_library_list')
@@ -304,4 +314,44 @@ test('failed send after remount preserves replacement and releases busy for retr
   assert.equal(drafts.A, 'new draft');
   assert.equal(button('Send').disabled, false);
   assert.equal(errors.at(-1), 'delivery failed');
+});
+
+test('copy slash copies the last message, prefixes extra text, and clears without sending', async () => {
+  lastMessageText = 'The last reply.';
+  errors = [];
+  await mount({ A: '/copy Keep this' }, { A: [{ id: 'q1', text: 'queued', createdAt: 0 }] });
+  const copyButtons = [...document.querySelectorAll('button')].filter((button) => button.textContent?.replace(/[↵⌘]/g, '').trim() === 'Copy');
+  assert.equal(copyButtons.length, 1);
+  assert.equal((copyButtons[0] as HTMLButtonElement).disabled, false);
+  await click('Copy');
+  await flush();
+  assert.deepEqual(clipboardWrites, ['Keep this\n\nThe last reply.']);
+  assert.equal(textarea().value, '');
+  assert.equal(drafts.A, '');
+  assert.equal(pending.length, 0);
+  assert.deepEqual(submittedTurns, []);
+  assert.equal(queues.A.length, 1);
+  assert.deepEqual(errors, []);
+});
+
+test('bare copy slash copies only the last message', async () => {
+  lastMessageText = 'Just the message.';
+  await mount({ A: '/copy' });
+  await click('Copy');
+  await flush();
+  assert.deepEqual(clipboardWrites, ['Just the message.']);
+  assert.equal(textarea().value, '');
+});
+
+test('copy slash keeps the draft when the transcript has no message', async () => {
+  lastMessageText = null;
+  errors = [];
+  await mount({ A: '/copy Keep this' });
+  await click('Copy');
+  await flush();
+  assert.deepEqual(clipboardWrites, []);
+  assert.equal(textarea().value, '/copy Keep this');
+  assert.equal(drafts.A, '/copy Keep this');
+  assert.deepEqual(errors, ['This transcript has no message to copy yet.']);
+  assert.equal(pending.length, 0);
 });

@@ -37,11 +37,16 @@ import {
   stripTaggedInstructionBlocks,
   stripTaggedUserInstructionBlocks,
 } from "../lib/taggedInstructions";
+import { writeClipboardText } from "../lib/clipboard";
 import {
   FORK_REQUIREMENT_TITLE,
+  NO_TRANSCRIPT_MESSAGE_TO_COPY,
   QUEUE_DELIVERY_OPTIONS,
   agentTabStatusDotClass,
   agentTabStatusPill,
+  composerCopyCommandText,
+  composerSlashCommandBlockedReason,
+  composerSlashCommandCanQueue,
   composerSlashCommandSubmitLabels,
   deriveComposerGating,
   planComposerSubmission,
@@ -50,6 +55,7 @@ import {
   waitTargetStatusLabel,
 } from "../lib/composerActions";
 import { parseComposerSlashCommand } from "../lib/composerSlashCommands";
+import { buildTimelineItems, lastTranscriptMessageCopyText } from "../lib/turnTimeline";
 import { bodyFontStackFor, loadSettings } from "../lib/settings";
 import {
   clearSessionDraft,
@@ -553,7 +559,12 @@ export default function GlobalTaskLauncher() {
   const slashSubmitLabels = slashCommand
     ? composerSlashCommandSubmitLabels(slashCommand)
     : null;
-  const slashCanQueue = parsedSlashCommand.kind === "ready" && canAppendQueue;
+  const slashCommandBlocked = slashCommand
+    ? composerSlashCommandBlockedReason(slashCommand, canFork)
+    : null;
+  const slashCanQueue =
+    parsedSlashCommand.kind === "ready" &&
+    composerSlashCommandCanQueue(parsedSlashCommand.command, canAppendQueue);
   const permissionActions =
     selected?.agent.status === "awaitingPermission" ? (policy?.permissionActions ?? []) : [];
 
@@ -704,11 +715,41 @@ export default function GlobalTaskLauncher() {
     await dismissGlobalTaskLauncher().catch(() => undefined);
   }
 
+  // /copy never sends, queues, forks, or dismisses the launcher. It copies the
+  // selected agent's last message, then clears the draft.
+  async function copyLastTranscriptMessage(agent: AgentInfo, prefix: string) {
+    if (submitting) return;
+    if (!launcherDrafts.begin("launcher")) return;
+    const submitted = launcherDrafts.read("launcher").draft;
+    setError(null);
+    try {
+      const turns = await listTurns(agent.id);
+      const normalized = getAgentUiAdapter(agent.adapter).normalizeTurns?.(turns) ?? turns;
+      const message = lastTranscriptMessageCopyText(
+        buildTimelineItems(normalized, loadSettings().showToolCalls),
+      );
+      if (!message) {
+        if (mountedRef.current) setError(NO_TRANSCRIPT_MESSAGE_TO_COPY);
+        return;
+      }
+      await writeClipboardText(composerCopyCommandText(prefix, message));
+      setValue(remainingComposerDraft(launcherDrafts.read("launcher").draft, submitted));
+    } catch (cause) {
+      if (mountedRef.current) setError(errorMessage(cause));
+    } finally {
+      launcherDrafts.end("launcher");
+    }
+  }
+
   function submit(mode: SubmitAgentTurnMode) {
     if (!selected) return;
     const plan = planComposerSubmission(parsedSlashCommand, canFork);
     if (plan.kind === "reject") {
       setError(plan.message);
+      return;
+    }
+    if (plan.kind === "copy") {
+      void copyLastTranscriptMessage(selected.agent, plan.prefix);
       return;
     }
     if (plan.kind === "fork" && mode !== "queue") {
@@ -990,8 +1031,13 @@ export default function GlobalTaskLauncher() {
               <button
                 type="button"
                 className="control-button"
-                disabled={submitting || parsedSlashCommand.kind !== "ready" || !canFork}
-                title={!canFork ? FORK_REQUIREMENT_TITLE : undefined}
+                disabled={
+                  submitting ||
+                  !selected ||
+                  parsedSlashCommand.kind !== "ready" ||
+                  Boolean(slashCommandBlocked)
+                }
+                title={slashCommandBlocked ?? undefined}
                 onClick={() => submit(slashCanQueue ? "queue" : "send")}
               >
                 <span>

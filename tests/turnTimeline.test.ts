@@ -9,6 +9,8 @@ import {
   formatAbsoluteMessageTimestamp,
   formatMessageTimestamp,
   formatPlainTextTranscript,
+  lastTranscriptMessageCopyText,
+  lastVisibleTranscriptMessageCopyText,
   messageItemCopyText,
   messageItemIsTaggedInstruction,
   messageItemText,
@@ -832,6 +834,35 @@ test("formatAbsoluteMessageTimestamp uses time-only for today and date otherwise
 
   const lastYearLabel = formatAbsoluteMessageTimestamp(lastYear, now, locale);
   assert.match(lastYearLabel, /2025/);
+});
+
+test("last transcript message copy is the latest copyable message card", () => {
+  nextIndex = 0;
+  const earlier = buildTimelineItems([
+    turn("user", [text("Earlier question")]),
+    turn("assistant", [text("Earlier answer")]),
+  ]);
+  const tail = buildTimelineItems([
+    turn("system", [text("Hidden system")]),
+    turn("assistant", [text("<system-reminder>\nHidden only.\n</system-reminder>")]),
+    turn("user", [text("<user-instructions>\nHidden only.\n</user-instructions>")]),
+  ]);
+  assert.equal(lastTranscriptMessageCopyText(tail), null);
+  assert.equal(lastVisibleTranscriptMessageCopyText([earlier, tail]), "Earlier answer");
+
+  nextIndex = 0;
+  const current = buildTimelineItems([
+    turn("assistant", [text("Answer")]),
+    turn("user", [text("Follow-up")]),
+    turn("assistant", [text("Looking"), toolUse("tool-1")]),
+    turn("user", [toolResult("tool-1", "tool output")]),
+    turn("assistant", [text("Final answer")]),
+  ]);
+  assert.equal(lastTranscriptMessageCopyText(current), "Final answer");
+  assert.equal(
+    lastTranscriptMessageCopyText(current.slice(0, 2)),
+    "Follow-up",
+  );
 });
 
 test("formatMessageTimestamp falls back to absolute after 24 hours", () => {

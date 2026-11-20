@@ -359,7 +359,11 @@ import {
   overlayLiveTurnState,
   threadIdForAgent,
 } from "./lib/threadGraph";
-import { buildTimelineItems, formatPlainTextTranscript } from "./lib/turnTimeline";
+import {
+  buildTimelineItems,
+  formatPlainTextTranscript,
+  lastVisibleTranscriptMessageCopyText,
+} from "./lib/turnTimeline";
 import {
   buildHandoffDocument,
   latestHandoffAnchorKey,
@@ -15753,6 +15757,14 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                       })
                     : null;
                 }}
+                transcriptCopyLastMessage={() =>
+                  lastVisibleTranscriptMessageCopyText([
+                    ...surface.conversationHistory.map((segment) =>
+                      buildTimelineItems(segment.turns, settings.showToolCalls),
+                    ),
+                    buildTimelineItems(surface.turns, settings.showToolCalls),
+                  ])
+                }
                 onPublishTranscript={() => {
                   const turnsSnapshot = surface.turns;
                   const title =
