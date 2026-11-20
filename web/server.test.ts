@@ -1138,9 +1138,6 @@ test("the landing page renders the app replica and its own image policy", async 
     /Use your terminal agents like a desktop app, or switch modes when you need it\./,
   );
   assert.match(body, /What should we investigate next\?/);
-  const queueHead = body.indexOf("commit the landing copy pass");
-  const queueTail = body.indexOf("narrow the replay window once the image step lands");
-  assert.ok(queueHead >= 0 && queueTail >= 0 && queueHead < queueTail);
   const slashQueueHead = body.indexOf(
     "/fork Review with a fanout of Claude and Codex subagents",
   );
@@ -1186,11 +1183,11 @@ test("the landing page renders the app replica and its own image policy", async 
   // step timeline the enhancement replays from.
   assert.match(
     body,
-    /data-mock-features="replay queue groups sessions panes terminal-map panels menus sidebar-menus images disclosures"/,
+    /data-mock-features="replay queue groups sessions panes panels menus sidebar-menus images disclosures"/,
   );
   assert.match(
     body,
-    /data-mock-features="queue groups sessions panes terminal-map panels menus sidebar-menus images disclosures"/,
+    /data-mock-features="queue groups sessions panes panels menus sidebar-menus images disclosures"/,
   );
   // Every visible sidebar tab ships a complete terminal/transcript pair in
   // each replica. The defaults are visible without JavaScript and the
@@ -1256,7 +1253,6 @@ test("the landing page renders the app replica and its own image policy", async 
   assert.match(body, /class="prompt-library-section-label">Project</);
   assert.match(body, /class="prompt-library-section-path" title="~\/code\/qmux"/);
   assert.match(body, /aria-label="Collapse left sidebar"/);
-  assert.match(body, /aria-label="Open terminal map"/);
   assert.match(body, /title="Split transcript and queue"/);
   assert.match(body, /data-mock-action="journal"/);
   assert.match(body, /data-mock-panel="journal" hidden/);
@@ -1277,17 +1273,6 @@ test("the landing page renders the app replica and its own image policy", async 
   assert.match(body, /data-mock-action="hide-sidebar"/);
   assert.match(body, /data-mock-action="show-sidebar"/);
   assert.match(body, /data-mock-action="show-right"/);
-  // The terminal map ships as closed modal markup: one rail per sidebar pane
-  // plus the drafts column, each with its queue cards and ghost composer.
-  assert.match(body, /data-mock-action="open-terminal-map"/);
-  assert.match(body, /data-mock-terminal-map="true" hidden/);
-  assert.match(body, /class="terminal-map-popover"/);
-  assert.equal((body.match(/class="home-rail"/g) ?? []).length, 30);
-  assert.equal((body.match(/data-mock-open-session=/g) ?? []).length, 28);
-  assert.equal((body.match(/class="mock-rail-composer"/g) ?? []).length, 30);
-  assert.match(body, /data-mock-home-chip="__drafts__"/);
-  assert.match(body, /data-mock-home-menu="qmux" hidden/);
-  assert.match(body, /home-rail-paused">paused</);
   // The sidebar's right-click menus ship closed: one details menu per tab and
   // one group menu per group, mirroring the app's pairing.
   assert.equal((body.match(/data-mock-tab-menu=/g) ?? []).length, 28);

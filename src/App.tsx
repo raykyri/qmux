@@ -143,28 +143,10 @@ import {
   NativeSelect,
   Textarea,
 } from "./components/ui";
-import { queuedTurnDeliveryLabel } from "./components/QueuedTurnCard";
-import {
-  latestUserTurnTimestamp,
-  mergeRailPastTurns,
-  railLatestUserTurn,
-  railPastTurnSummaries,
-  railPastTurns,
-  railQueuedTurnText,
-} from "./lib/homeRails";
 import {
   ThreadGraphRequestTracker,
   uniqueResolvedThreadIds,
 } from "./lib/threadGraphRefresh";
-import HomeGroupSelector from "./components/HomeGroupSelector";
-import type { HomeGroup } from "./components/HomeGroupSelector";
-import HomeRails from "./components/HomeRails";
-import TerminalMapButton from "./components/TerminalMapButton";
-import type {
-  HomeRailPastTurn,
-  HomeRailScrollPosition,
-  HomeRailWorkstream,
-} from "./components/HomeRails";
 import LinkContextMenu from "./components/LinkContextMenu";
 import FileMatchMenu from "./components/FileMatchMenu";
 import PublishDialog, { type PublishDialogTarget } from "./components/PublishDialog";
@@ -289,7 +271,6 @@ import {
   formatTranscriptCopyJson,
   isEditableTarget,
   isWebKeyboardTarget,
-  latestTurnTimestamp,
   IS_MAC,
   isTerminalTarget,
   measureTerminalCellSize,
@@ -621,14 +602,10 @@ import {
   listSavedPrompts,
   listAgentTranscripts,
   listAgentTurnQueue,
-  listHomeTurnHistory,
   launchConversationHistory,
-  createGlobalDraft,
-  deleteGlobalDraft,
   destroyHumanBrowser,
   hideAllHumanBrowsers,
   reloadHumanBrowser,
-  assignGlobalDraft,
   listTurns,
   listPanes,
   listPublications,
@@ -648,7 +625,6 @@ import {
   getResearchTree,
   markAppInterfaceReady,
   moveQueuedAgentTurn,
-  reorderQueuedAgentTurn,
   movePaneToGroup,
   movePaneToNewGroup,
   downloadRemoteFile,
@@ -698,10 +674,6 @@ import {
   openRepositoryWorktree,
   paneRepositoryInventory,
   suggestPaneWorktreeName,
-  sendNextQueuedAgentTurn,
-  setQueuedTurnPause,
-  submitAgentTurn,
-  unpauseAgent,
   updateMenuBar,
   worktreeStatus,
 } from "./lib/api";
@@ -716,7 +688,6 @@ import type {
   ConversationHistoryLaunchMode,
   GlobalTaskLauncherHotkey,
   GlobalTaskLauncherSetting,
-  GlobalDraft,
   GroupInfo,
   InitialPaneSize,
   MessageAnchor,
@@ -814,11 +785,6 @@ const RESEARCH_FOLDER_SCOPE_KEY = "qmux.research-folder-scope.v1";
 // Whether the Journal page is forward on the research surface. Selection-level
 // UI state, like the active tree id — the journal's contents live backend-side.
 const JOURNAL_OPEN_KEY = "qmux.journal-open.v1";
-// Agent ids whose Home rail the user has hidden via the group selector. Persisted
-// as a JSON array; a terminal's absence means it's shown (new terminals default
-// visible).
-const HOME_HIDDEN_TERMINALS_KEY = "qmux.home-hidden-terminals.v1";
-const HOME_DRAFTS_VISIBLE_KEY = "qmux.home-drafts-visible.v1";
 // Browser-overlay / link-action owner for a research tree's document. Keyed
 // per tree so an overlay opened from one tree's links doesn't follow the user
 // into another tree (each tree keeps its own overlay, like panes do).
@@ -1786,13 +1752,6 @@ function agentHistoryRequestKey(agent: AgentInfo) {
   ].join("\0");
 }
 
-interface HomeTurnHistoryState {
-  requestKey: string;
-  pastTurns: HomeRailPastTurn[];
-  nextBefore: string | null;
-  loading: boolean;
-}
-
 function MainApp({ onReady }: { onReady?: () => void }) {
   const appRef = useRef<HTMLElement | null>(null);
   const paneListRef = useRef<HTMLElement | null>(null);
@@ -2085,24 +2044,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const [conversationHistoryByThread, setConversationHistoryByThread] = useState<
     Record<string, ConversationHistoryState>
   >({});
-  const [homeTurnHistoryByAgent, setHomeTurnHistoryByAgent] = useState<
-    Record<string, HomeTurnHistoryState>
-  >({});
-  const homeTurnHistoryByAgentRef = useRef(homeTurnHistoryByAgent);
-  homeTurnHistoryByAgentRef.current = homeTurnHistoryByAgent;
-  const homeHistoryRequestKeyByAgentRef = useRef(new Map<string, string>());
-  const homeHistoryRequestSequenceByAgentRef = useRef(new Map<string, number>());
-  /** One auto-retry budget per agent+requestKey after an initial history load fails. */
-  const homeHistoryRetryBudgetByAgentRef = useRef(new Map<string, string>());
   const [queuedTurnsByAgent, setQueuedTurnsByAgentState] = useState<Record<string, QueuedTurn[]>>({});
-  // Application-global prompt drafts (the home Drafts rail). Backend-owned;
-  // hydrated at boot and kept fresh by drafts.changed events.
-  const [globalDrafts, setGlobalDraftsState] = useState<GlobalDraft[]>([]);
-  const globalDraftsRevisionRef = useRef(0);
-  const setGlobalDrafts = useCallback((next: SetStateAction<GlobalDraft[]>) => {
-    globalDraftsRevisionRef.current += 1;
-    setGlobalDraftsState(next);
-  }, []);
   // Per-agent hook-event history. It backs only the "copy transcript as JSON"
   // export — nothing renders it — so it lives outside React state: hooks fire on
   // every tool call of a busy agent, and putting each one through setState was a
@@ -2397,126 +2339,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     setSidebarModeState(mode);
     localStorage.setItem(SIDEBAR_MODE_STORAGE_KEY, mode);
   }, [captureSidebarScroll]);
-  // The Home rails' visibility filter: agent ids the user has hidden via the
-  // group selector's checkboxes. Everything not in the set is shown, so new
-  // terminals appear by default. Persists across restarts.
-  const [hiddenHomeTerminalIds, setHiddenHomeTerminalIds] = useState<Set<string>>(() => {
-    try {
-      const raw = localStorage.getItem(HOME_HIDDEN_TERMINALS_KEY);
-      const parsed = raw ? (JSON.parse(raw) as unknown) : null;
-      return Array.isArray(parsed)
-        ? new Set(parsed.filter((id): id is string => typeof id === "string"))
-        : new Set();
-    } catch {
-      return new Set();
-    }
-  });
-  const persistHiddenHomeTerminalIds = useCallback((next: Set<string>) => {
-    localStorage.setItem(HOME_HIDDEN_TERMINALS_KEY, JSON.stringify(Array.from(next)));
-  }, []);
-  const [homeDraftsVisible, setHomeDraftsVisible] = useState(() => {
-    try {
-      return localStorage.getItem(HOME_DRAFTS_VISIBLE_KEY) !== "false";
-    } catch {
-      return true;
-    }
-  });
-  const setHomeDraftsVisibility = useCallback((visible: boolean) => {
-    setHomeDraftsVisible(visible);
-    localStorage.setItem(HOME_DRAFTS_VISIBLE_KEY, String(visible));
-  }, []);
-  const showHomeDrafts = useCallback(() => setHomeDraftsVisibility(true), [
-    setHomeDraftsVisibility,
-  ]);
-  // Show/hide a batch of terminals in one write (a group checkbox toggling all
-  // its terminals at once).
-  const setHomeTerminalsHidden = useCallback(
-    (agentIds: string[], hidden: boolean) => {
-      setHiddenHomeTerminalIds((current) => {
-        const next = new Set(current);
-        for (const id of agentIds) {
-          if (hidden) {
-            next.add(id);
-          } else {
-            next.delete(id);
-          }
-        }
-        persistHiddenHomeTerminalIds(next);
-        return next;
-      });
-    },
-    [persistHiddenHomeTerminalIds],
-  );
-  // Flip one terminal's visibility (a dropdown row in the group menu).
-  const toggleHomeTerminal = useCallback(
-    (agentId: string) => {
-      setHiddenHomeTerminalIds((current) => {
-        const next = new Set(current);
-        if (next.has(agentId)) {
-          next.delete(agentId);
-        } else {
-          next.add(agentId);
-        }
-        persistHiddenHomeTerminalIds(next);
-        return next;
-      });
-    },
-    [persistHiddenHomeTerminalIds],
-  );
-  // Per-rail scroll positions for the home view, kept here so leaving Home and
-  // coming back restores each column (same shape as the queue/transcript scroll
-  // stores above). Ephemeral by design: dropped on app restart.
-  const homeRailScrollByAgentRef = useRef<Record<string, HomeRailScrollPosition>>({});
-  const readHomeRailScroll = useCallback(
-    (agentId: string) => homeRailScrollByAgentRef.current[agentId] ?? null,
-    [],
-  );
-  const saveHomeRailScroll = useCallback((agentId: string, position: HomeRailScrollPosition) => {
-    homeRailScrollByAgentRef.current[agentId] = position;
-  }, []);
-  // Half-typed home-rail composer text, keyed by rail id. App-owned so a tab
-  // away can unmount Home without losing it; the transient backend mirror also
-  // restores it after a WebKit reload without carrying it across app restarts.
-  const [initialHomeComposerDrafts] = useState(() =>
-    readSessionDraftJson<Record<string, string>>(SESSION_DRAFT_KEYS.homeComposers),
-  );
-  const [homeComposerDrafts, setHomeComposerDrafts] = useState<Record<string, string>>(
-    initialHomeComposerDrafts ?? {},
-  );
-  const [homeComposerDraftsReady, setHomeComposerDraftsReady] = useState(
-    initialHomeComposerDrafts !== null,
-  );
-  useEffect(() => {
-    if (initialHomeComposerDrafts !== null) {
-      return;
-    }
-    let disposed = false;
-    void loadSessionDraftJson<Record<string, string>>(SESSION_DRAFT_KEYS.homeComposers)
-      .then((restored) => {
-        if (!disposed && restored) {
-          setHomeComposerDrafts((current) => ({ ...restored, ...current }));
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!disposed) {
-          setHomeComposerDraftsReady(true);
-        }
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [initialHomeComposerDrafts]);
-  useEffect(() => {
-    if (!homeComposerDraftsReady) {
-      return;
-    }
-    if (Object.values(homeComposerDrafts).some(Boolean)) {
-      saveSessionDraftJson(SESSION_DRAFT_KEYS.homeComposers, homeComposerDrafts);
-    } else {
-      clearSessionDraft(SESSION_DRAFT_KEYS.homeComposers);
-    }
-  }, [homeComposerDrafts, homeComposerDraftsReady]);
   const setActivePaneId = useCallback(
     (next: SetStateAction<string | null>) => {
       if (typeof next === "function") {
@@ -2599,12 +2421,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   );
   const [newAgentOpen, setNewAgentOpen] = useState(false);
   const [newAgentError, setNewAgentError] = useState<string | null>(null);
-  const [terminalMapOpen, setTerminalMapOpen] = useState(false);
   const newAgentOpenRef = useRef(newAgentOpen);
   newAgentOpenRef.current = newAgentOpen;
-  const terminalMapOpenRef = useRef(terminalMapOpen);
-  terminalMapOpenRef.current = terminalMapOpen;
-  const terminalMapDialogRef = useRef<HTMLDivElement | null>(null);
   const [recoveredNewDocumentContext] = useState(() =>
     readSessionDraftJson<{
       workspaceId: string | null;
@@ -3899,94 +3717,13 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     }
     await Promise.all(requests);
   }, [fetchRetainedThreadGraph]);
-  const fetchHomeTurnHistoryPage = useCallback(
-    async (agent: AgentInfo, before: string | null) => {
-      const requestKey = agentHistoryRequestKey(agent);
-      const sequence = (homeHistoryRequestSequenceByAgentRef.current.get(agent.id) ?? 0) + 1;
-      homeHistoryRequestSequenceByAgentRef.current.set(agent.id, sequence);
-      setHomeTurnHistoryByAgent((current) => {
-        const existing = current[agent.id];
-        const next: HomeTurnHistoryState =
-          before !== null && existing?.requestKey === requestKey
-            ? { ...existing, loading: true }
-            : { requestKey, pastTurns: [], nextBefore: null, loading: true };
-        return { ...current, [agent.id]: next };
-      });
-      try {
-        const page = await listHomeTurnHistory(agent.id, before);
-        if (
-          homeHistoryRequestSequenceByAgentRef.current.get(agent.id) !== sequence ||
-          homeHistoryRequestKeyByAgentRef.current.get(agent.id) !== requestKey
-        ) {
-          return;
-        }
-        const pageTurns = railPastTurnSummaries(page.turns);
-        setHomeTurnHistoryByAgent((current) => {
-          const existing = current[agent.id];
-          if (!existing || existing.requestKey !== requestKey) {
-            return current;
-          }
-          return {
-            ...current,
-            [agent.id]: {
-              requestKey,
-              pastTurns:
-                before === null
-                  ? pageTurns
-                  : mergeRailPastTurns(pageTurns, existing.pastTurns),
-              nextBefore: page.nextBefore,
-              loading: false,
-            },
-          };
-        });
-      } catch (err) {
-        if (
-          homeHistoryRequestSequenceByAgentRef.current.get(agent.id) === sequence &&
-          homeHistoryRequestKeyByAgentRef.current.get(agent.id) === requestKey
-        ) {
-          // Initial loads stamp the request key before the IPC call. On failure
-          // drop it so leaving/returning home or a soft retry can re-issue the
-          // same key instead of treating the blank history as a permanent load.
-          // "Load earlier" keeps the key so the button can retry the same page.
-          if (before === null) {
-            homeHistoryRequestKeyByAgentRef.current.delete(agent.id);
-          }
-          setHomeTurnHistoryByAgent((current) => {
-            const existing = current[agent.id];
-            return existing?.requestKey === requestKey
-              ? { ...current, [agent.id]: { ...existing, loading: false } }
-              : current;
-          });
-          setError(err instanceof Error ? err.message : String(err));
-          if (
-            before === null &&
-            homeHistoryRetryBudgetByAgentRef.current.get(agent.id) !== requestKey
-          ) {
-            homeHistoryRetryBudgetByAgentRef.current.set(agent.id, requestKey);
-            window.setTimeout(() => {
-              if (homeHistoryRequestKeyByAgentRef.current.has(agent.id)) {
-                return;
-              }
-              const live = agentsRef.current.find((candidate) => candidate.id === agent.id);
-              if (!live || agentHistoryRequestKey(live) !== requestKey) {
-                return;
-              }
-              homeHistoryRequestKeyByAgentRef.current.set(agent.id, requestKey);
-              void fetchHomeTurnHistoryPage(live, null);
-            }, 1_500);
-          }
-        }
-      }
-    },
-    [],
-  );
   const historyTargetAgents = useMemo(
     () =>
-      (terminalMapOpen ? sidebarPanes : visibleTerminalPanes).flatMap((pane) => {
+      visibleTerminalPanes.flatMap((pane) => {
         const agent = agentByPaneId.get(pane.id);
         return agent ? [agent] : [];
       }),
-    [agentByPaneId, sidebarPanes, terminalMapOpen, visibleTerminalPanes],
+    [agentByPaneId, visibleTerminalPanes],
   );
   const retainedTurnHistoryAgentIds = useMemo(
     () => new Set(historyTargetAgents.map((agent) => agent.id)),
@@ -4020,58 +3757,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       }
     }
   }, [retainedGraphHistoryThreadIds]);
-  useEffect(() => {
-    if (!terminalMapOpen) {
-      for (const agentId of homeHistoryRequestSequenceByAgentRef.current.keys()) {
-        homeHistoryRequestSequenceByAgentRef.current.set(
-          agentId,
-          (homeHistoryRequestSequenceByAgentRef.current.get(agentId) ?? 0) + 1,
-        );
-      }
-      homeHistoryRequestKeyByAgentRef.current.clear();
-      homeHistoryRetryBudgetByAgentRef.current.clear();
-      setHomeTurnHistoryByAgent((current) =>
-        Object.keys(current).length > 0 ? {} : current,
-      );
-      return;
-    }
-    const liveAgentIds = new Set(historyTargetAgents.map((agent) => agent.id));
-    setHomeTurnHistoryByAgent((current) => {
-      const entries = Object.entries(current).filter(([agentId]) => liveAgentIds.has(agentId));
-      return entries.length === Object.keys(current).length
-        ? current
-        : Object.fromEntries(entries);
-    });
-    for (const agentId of homeHistoryRequestKeyByAgentRef.current.keys()) {
-      if (!liveAgentIds.has(agentId)) {
-        homeHistoryRequestKeyByAgentRef.current.delete(agentId);
-        homeHistoryRetryBudgetByAgentRef.current.delete(agentId);
-      }
-    }
-    for (const agent of historyTargetAgents) {
-      const requestKey = agentHistoryRequestKey(agent);
-      if (homeHistoryRequestKeyByAgentRef.current.get(agent.id) === requestKey) {
-        continue;
-      }
-      // New session identity gets a fresh retry budget.
-      if (homeHistoryRetryBudgetByAgentRef.current.get(agent.id) !== requestKey) {
-        homeHistoryRetryBudgetByAgentRef.current.delete(agent.id);
-      }
-      homeHistoryRequestKeyByAgentRef.current.set(agent.id, requestKey);
-      void fetchHomeTurnHistoryPage(agent, null);
-    }
-  }, [fetchHomeTurnHistoryPage, historyTargetAgents, terminalMapOpen]);
-  const loadEarlierHomeTurnHistory = useCallback(
-    (agentId: string) => {
-      const history = homeTurnHistoryByAgentRef.current[agentId];
-      const agent = agentsRef.current.find((candidate) => candidate.id === agentId);
-      if (!agent || !history || history.loading || history.nextBefore === null) {
-        return;
-      }
-      void fetchHomeTurnHistoryPage(agent, history.nextBefore);
-    },
-    [fetchHomeTurnHistoryPage],
-  );
   const flushDirtyThreadGraphs = useCallback(() => {
     threadGraphRefreshTimerRef.current = null;
     const dirtyAgentIds = [...dirtyThreadGraphAgentIdsRef.current];
@@ -6132,7 +5817,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       diagramLightbox !== null ||
       newResearchOpen ||
       newAgentOpen ||
-      terminalMapOpen ||
       newResearchFolderRequest !== null ||
       publicationTarget ||
       commandPaletteOpen ||
@@ -6208,116 +5892,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     }
     void setNativeTerminalKeyboardOwner(desiredNativeKeyboardOwner).catch(() => undefined);
   }, [desiredNativeKeyboardOwner]);
-  // The body calls component-scoped helpers (turnInfoForAgent, displayPaneTitle,
-  // paneTabStatus*, queuedTurnsForAgent, paneWaitsOnOtherPane) that are recreated
-  // each render, so they are intentionally NOT in the dep array. Instead we depend
-  // on the state atoms those helpers read — keep this list in sync when a helper
-  // starts reading new state, or the memo will serve stale workstreams.
-  const homeRailWorkstreams = useMemo<HomeRailWorkstream[]>(() => {
-    // Only the terminal-map popover renders the rails, but this memo's inputs
-    // churn with every event batch — recomputing the per-agent latest-turn
-    // extraction (a regex pass over each latest user message) for a hidden map
-    // was pure waste.
-    if (!terminalMapOpen) {
-      return [];
-    }
-    // A pane files under its root sidebar group (nested child groups fold into
-    // their root ancestor) — the unit the home workspace tabs select between.
-    const rootGroupIdOf = (groupId: string): string => {
-      let current = groupById.get(groupId);
-      const seen = new Set<string>();
-      while (current?.parentId && !seen.has(current.id)) {
-        seen.add(current.id);
-        const parent = groupById.get(current.parentId);
-        if (!parent) {
-          break;
-        }
-        current = parent;
-      }
-      return current?.id ?? groupId;
-    };
-    return sidebarPanes.flatMap((pane) => {
-      const agent = agentByPaneId.get(pane.id);
-      if (!agent) {
-        return [];
-      }
-      const statusClass = agent.status === "awaitingInput" ? "status-awaiting-input" : "";
-      const turnInfo = turnInfoForAgent(agent);
-      const homeHistory = homeTurnHistoryByAgent[agent.id];
-      return [
-        {
-          agentId: agent.id,
-          paneId: pane.id,
-          rootGroupId: rootGroupIdOf(pane.groupId),
-          title: displayPaneTitle(pane, agent),
-          statusTone: paneTabStatusTone(agent),
-          statusClass,
-          waitingOnPane: paneWaitsOnOtherPane(agent),
-          paused: agent.paused ?? false,
-          latestUserTurn: railLatestUserTurn(turnInfo.turns),
-          currentStartedAt: latestUserTurnTimestamp(turnInfo.turns),
-          currentSettledAt: latestTurnTimestamp(turnInfo.turns),
-          pastTurns: mergeRailPastTurns(
-            homeHistory?.pastTurns ?? [],
-            railPastTurns(turnInfo.turns),
-          ),
-          hasEarlierPastTurns: homeHistory?.nextBefore != null,
-          loadingEarlierPastTurns: homeHistory?.loading ?? false,
-          queuedTurns: (queuedTurnsByAgent[agent.id] ?? []).map((turn) => ({
-            id: turn.id,
-            text: railQueuedTurnText(turn.text),
-            rawText: turn.text,
-            pauseAfter: turn.pauseAfter,
-            waitForAgentId: turn.waitFor?.agentId ?? null,
-            waitForLabel: turn.waitFor?.label ?? null,
-            deliveryLabel: turn.delivery ? queuedTurnDeliveryLabel(turn.delivery) : null,
-          })),
-        },
-      ];
-    });
-  }, [
-    agentByPaneId,
-    agentTurnInfoById,
-    groupById,
-    homeTurnHistoryByAgent,
-    queuedTurnsByAgent,
-    sidebarPanes,
-    terminalMapOpen,
-    terminalTitleByPane,
-  ]);
-
-  // One selector group per root sidebar group that owns at least one agent, in
-  // the sidebar's pane order, each carrying its terminals for the per-terminal
-  // dropdown. Like the workstreams memo above, displayGroupName is a
-  // component-scoped helper kept out of the deps; groupById covers the state it
-  // reads.
-  const homeGroups = useMemo<HomeGroup[]>(() => {
-    const groups = new Map<string, HomeGroup>();
-    for (const workstream of homeRailWorkstreams) {
-      let group = groups.get(workstream.rootGroupId);
-      if (!group) {
-        const info = groupById.get(workstream.rootGroupId);
-        group = {
-          id: workstream.rootGroupId,
-          name: info ? displayGroupName(info) : "Workspace",
-          terminals: [],
-        };
-        groups.set(workstream.rootGroupId, group);
-      }
-      group.terminals.push({ agentId: workstream.agentId, title: workstream.title });
-    }
-    return Array.from(groups.values());
-  }, [groupById, homeRailWorkstreams]);
-
-  // The rails show every workstream the user hasn't hidden, across all groups.
-  const homeVisibleWorkstreams = useMemo(
-    () =>
-      homeRailWorkstreams.filter(
-        (workstream) => !hiddenHomeTerminalIds.has(workstream.agentId),
-      ),
-    [hiddenHomeTerminalIds, homeRailWorkstreams],
-  );
-
   // Load session lists when a pane's right side is visible so transcript pickers are ready.
   useEffect(() => {
     for (const agentId of visibleTurnPaneAgentIds) {
@@ -7074,145 +6648,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     }
   }
 
-  // Home-rail card reorder: same shape as the composer's persistQueueReorder,
-  // pulling the backend's truth back if the call fails mid-flight.
-  async function reorderHomeQueuedTurn(
-    agentId: string,
-    fromIndex: number,
-    toIndex: number,
-    turn: string,
-    expectedId?: string,
-  ) {
-    setError(null);
-    try {
-      const result = await reorderQueuedAgentTurn(agentId, fromIndex, toIndex, turn, expectedId);
-      setAgentQueuedTurns(agentId, result.queuedTurns);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      try {
-        setAgentQueuedTurns(agentId, await listAgentTurnQueue(agentId));
-      } catch {
-        // Best-effort resync.
-      }
-    }
-  }
-
-  // Home-rail ghost composer: send straight through when the agent is ready
-  // for input, otherwise queue behind it (never steer a running agent from
-  // the overview). Returns whether the turn was accepted so the rail knows to
-  // clear its draft.
-  async function queueHomeTurn(agentId: string, text: string): Promise<boolean> {
-    setError(null);
-    try {
-      const result = await submitAgentTurn(agentId, text, "auto");
-      setAgentQueuedTurns(agentId, result.queuedTurns);
-      return true;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      return false;
-    }
-  }
-
-  // Home-rail … menu: drop a queued turn (Remove, and the edit-recall's removal
-  // step). Returns whether the backend dropped it so an edit only pulls text in
-  // on success.
-  async function removeHomeQueuedTurn(
-    agentId: string,
-    index: number,
-    rawText: string,
-    expectedId?: string,
-  ): Promise<boolean> {
-    setError(null);
-    try {
-      const result = await removeQueuedAgentTurn(agentId, index, rawText, expectedId);
-      setAgentQueuedTurns(agentId, result.queuedTurns);
-      return true;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      return false;
-    }
-  }
-
-  // Home-rail card menu: push the top queued turn immediately, the same command
-  // behind the composer menu's "Send top queued item now!".
-  async function sendNextHomeQueuedTurn(agentId: string) {
-    setError(null);
-    try {
-      const result = await sendNextQueuedAgentTurn(agentId);
-      setAgentQueuedTurns(agentId, result.queuedTurns);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  // Home-rail card menu: toggle a queued turn's pause-after-send flag, the same
-  // command behind the composer menu's "Pause after top queued item".
-  async function setHomeQueuedTurnPause(
-    agentId: string,
-    index: number,
-    pauseAfter: boolean,
-    rawText: string,
-    expectedId?: string,
-  ) {
-    setError(null);
-    try {
-      setAgentQueuedTurns(
-        agentId,
-        await setQueuedTurnPause(agentId, index, pauseAfter, rawText, expectedId),
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  // Home-rail card menu: clear a paused queue, mirroring the composer's Unpause
-  // button (the backend drains the next turn if the agent is idle).
-  async function unpauseHomeAgent(agentId: string) {
-    setError(null);
-    try {
-      const result = await unpauseAgent(agentId);
-      setAgentQueuedTurns(agentId, result.queuedTurns);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function createHomeDraft(text: string): Promise<boolean> {
-    setError(null);
-    try {
-      const draft = await createGlobalDraft(text);
-      // The drafts.changed event carries the full list moments later; append
-      // eagerly so the card appears without waiting on the round-trip.
-      setGlobalDrafts((current) =>
-        current.some((existing) => existing.id === draft.id) ? current : [...current, draft],
-      );
-      return true;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      return false;
-    }
-  }
-
-  async function deleteHomeDraft(draftId: string) {
-    setError(null);
-    try {
-      setGlobalDrafts(await deleteGlobalDraft(draftId));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function assignHomeDraft(draftId: string, agentId: string) {
-    setError(null);
-    try {
-      const result = await assignGlobalDraft(draftId, agentId);
-      setGlobalDrafts(result.drafts);
-      setAgentQueuedTurns(agentId, result.queuedTurns);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
   function paneIdsForSplitStatusGroup(paneId: string): string[] {
     const split = paneSplitForPane(paneSplitsRef.current, paneId);
     if (!split) {
@@ -7818,7 +7253,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     let cancelled = false;
     let cancelSecondary: (() => void) | undefined;
     let restoreHiddenResearch: (() => Promise<void>) | undefined;
-    const initialGlobalDraftsRevision = globalDraftsRevisionRef.current;
     const initialNotificationRevision = notificationLogRevisionRef.current;
     const initialResearchNavRevision = researchNavRefreshSeqRef.current;
     const initialResearchDetailRevision = researchDetailRequestSeqRef.current;
@@ -7849,7 +7283,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             getComposerSnapshot().catch(() => ({
               queues: {} as Record<string, QueuedTurn[]>,
               drafts: {} as Record<string, string>,
-              globalDrafts: [] as GlobalDraft[],
             })),
           ]);
         if (cancelled) {
@@ -7904,9 +7337,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           ...composers.queues,
           ...queuedTurnsByAgentRef.current,
         });
-        if (globalDraftsRevisionRef.current === initialGlobalDraftsRevision) {
-          setGlobalDrafts(composers.globalDrafts);
-        }
         for (const flush of composerDraftFlushersRef.current) flush();
         const restoredDrafts = reconcileStartupDrafts(
           composers.drafts, draftsByAgentRef.current, startupDraftOverridesRef.current ?? new Map(),
@@ -9337,7 +8767,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     // "research" with activeSurface "pane" (a terminal pane on the research
     // stage), the mismatch the boot-restore path treats as unrecoverable.
     setNewAgentOpen(false);
-    setTerminalMapOpen(false);
     setSidebarMode("research");
     setActiveSurface("research");
     setNewResearchOpen(true);
@@ -9371,7 +8800,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     settingsOpen ||
     newResearchOpen ||
     newAgentOpen ||
-    terminalMapOpen ||
     Boolean(publicationTarget) ||
     commandPaletteOpen ||
     conversationHistoryOpen ||
@@ -10759,7 +10187,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     setTranscriptNoticeByAgent,
     setShellJobByAgent: setShellJobByAgentFromEvent,
     setAgentQueuedTurns,
-    setGlobalDrafts,
     shouldRefreshAgentThreadGraph: (agentId: string) =>
       retainedGraphHistoryAgentIdsRef.current.has(agentId),
     onAgentThreadGraphDirty: scheduleAgentThreadGraphRefresh,
@@ -11134,7 +10561,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   }
 
   function openNewAgentPopover() {
-    setTerminalMapOpen(false);
     setNewResearchOpen(false);
     setNewAgentError(null);
     setNewAgentOpen(true);
@@ -11262,17 +10688,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     };
   }, [launcherGroup?.id, launcherRemote?.id, refreshAdapterReadiness]);
 
-  function toggleTerminalMap() {
-    if (terminalMapOpenRef.current) {
-      setTerminalMapOpen(false);
-      return;
-    }
-    setNewAgentOpen(false);
-    setNewResearchOpen(false);
-    setConversationHistoryOpen(false);
-    setTerminalMapOpen(true);
-  }
-
   function toggleConversationHistory() {
     if (conversationHistoryOpenRef.current) {
       setConversationHistoryOpen(false);
@@ -11280,37 +10695,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     }
     setNewAgentOpen(false);
     setNewResearchOpen(false);
-    setTerminalMapOpen(false);
     setConversationHistoryOpen(true);
   }
-
-  function closeTerminalMap() {
-    setTerminalMapOpen(false);
-  }
-
-  // Escape is handled here in bubble phase so a rail/group menu's capture
-  // listener can consume the key first. The app-level capture dispatcher
-  // would otherwise close the whole map before those menus see it.
-  useEffect(() => {
-    if (!terminalMapOpen) {
-      return;
-    }
-    const frame = window.requestAnimationFrame(() => {
-      terminalMapDialogRef.current?.focus();
-    });
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) {
-        return;
-      }
-      event.preventDefault();
-      setTerminalMapOpen(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [terminalMapOpen]);
 
   function openResearchPaneTab(paneId: string) {
     // The research detail that renders the "Open terminal" button trails
@@ -11349,12 +10735,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     const commands: PaletteCommand[] = [];
     const visiblePane = researchSurfaceActive ? undefined : activePane;
     const visibleAgent = researchSurfaceActive ? undefined : activeAgent;
-    commands.push({
-      id: "nav:home",
-      section: "Go to",
-      title: "Terminal map",
-      action: () => toggleTerminalMap(),
-    });
     for (const tree of researchTrees) {
       commands.push({
         id: `research:${tree.id}`,
@@ -13421,7 +12801,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     settingsOpen ||
     newResearchOpen ||
     newAgentOpen ||
-    terminalMapOpen ||
     Boolean(publicationTarget) ||
     Boolean(renamePaneId || renameGroupId);
   useEffect(() => {
@@ -14209,9 +13588,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           return;
         case "openNewResearch":
           createResearchFromSidebar();
-          return;
-        case "focusHome":
-          toggleTerminalMap();
           return;
         case "openConversationHistory":
           toggleConversationHistory();
@@ -15436,17 +14812,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               <PanelLeftOpen size={14} aria-hidden="true" />
             </button>
           ) : null}
-          {restoresLeftSidebar ? (
-            <TerminalMapButton
-              className="icon-button turn-pane-header-button turn-pane-floating-restore-button"
-              pressed={terminalMapOpen}
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                toggleTerminalMap();
-              }}
-            />
-          ) : null}
           <button
             type="button"
             className="icon-button turn-pane-header-button turn-pane-floating-collapse-button"
@@ -15466,10 +14831,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     );
   }
 
-  // Window-level buttons for the active pane: show the left sidebar, open the
-  // terminal map, expand the transcripts, show the right bar. The active
-  // terminal hosts them in its corner toolbar; the floating group below is
-  // only the fallback when no terminal is on screen.
+  // Window-level buttons for the active pane: show the left sidebar, expand
+  // the transcripts, show the right bar. The active terminal hosts them in its
+  // corner toolbar; the floating group below is only the fallback when no
+  // terminal is on screen.
   function renderPaneRestoreButtons(buttonClassName: string) {
     const surface = floatingRestoreButtonVisible ? activeTurnPaneSurface : null;
     return (
@@ -15484,13 +14849,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           >
             <PanelLeftOpen size={14} aria-hidden="true" />
           </Button>
-        ) : null}
-        {floatingLeftSidebarRestoreVisible ? (
-          <TerminalMapButton
-            className={`icon-button ${buttonClassName}`}
-            pressed={terminalMapOpen}
-            onClick={toggleTerminalMap}
-          />
         ) : null}
         {floatingStageTranscriptExpandVisible ? (
           <Button
@@ -15717,14 +15075,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                 leftSidebarRestore.kind === "turn-pane-header"
                   ? () => setLeftSidebarCollapsedForActivePane(false)
                   : undefined
-              }
-              onOpenTerminalMap={
-                leftSidebarRestore.kind === "turn-pane-header"
-                  ? toggleTerminalMap
-                  : undefined
-              }
-              terminalMapOpen={
-                leftSidebarRestore.kind === "turn-pane-header" ? terminalMapOpen : false
               }
               onInsertPrompt={
                 agent ? (text) => requestComposerInsert(agent.id, text) : undefined
@@ -16104,11 +15454,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             >
               <History size={14} aria-hidden="true" />
             </button>
-            <TerminalMapButton
-              className="icon-button sidebar-header-button"
-              pressed={terminalMapOpen}
-              onClick={toggleTerminalMap}
-            />
             <button
               type="button"
               className="icon-button sidebar-header-button"
@@ -18901,12 +18246,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               onShowSidebar={
                 researchSidebarRestoreInHeader ? showLeftSidebarInResearch : undefined
               }
-              onOpenTerminalMap={
-                researchSidebarRestoreInHeader ? toggleTerminalMap : undefined
-              }
-              terminalMapOpen={
-                researchSidebarRestoreInHeader ? terminalMapOpen : false
-              }
             />
           ) : null}
           {researchStageView === "multi-select" ? (
@@ -18977,12 +18316,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               onPublicationBindingChange={handlePublicationBindingChange}
               onShowSidebar={
                 researchSidebarRestoreInHeader ? showLeftSidebarInResearch : undefined
-              }
-              onOpenTerminalMap={
-                researchSidebarRestoreInHeader ? toggleTerminalMap : undefined
-              }
-              terminalMapOpen={
-                researchSidebarRestoreInHeader ? terminalMapOpen : false
               }
               workspaceCanGoBack={canGoWorkspaceBack(researchWorkspaceHistory)}
               workspaceCanGoForward={canGoWorkspaceForward(researchWorkspaceHistory)}
@@ -19432,60 +18765,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       {newAgentOpen ? (
         <DialogRoot className="new-agent-backdrop" onDismiss={closeNewAgentPopover}>
           {renderLauncher()}
-        </DialogRoot>
-      ) : null}
-
-      {terminalMapOpen ? (
-        <DialogRoot className="terminal-map-backdrop" onDismiss={closeTerminalMap}>
-          <div
-            ref={terminalMapDialogRef}
-            className="terminal-map-popover"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Terminal map"
-            tabIndex={-1}
-          >
-            <div className="home-board">
-              <HomeGroupSelector
-                groups={homeGroups}
-                draftsVisible={homeDraftsVisible}
-                onDraftsVisibleChange={setHomeDraftsVisibility}
-                hiddenTerminalIds={hiddenHomeTerminalIds}
-                onSetTerminalsHidden={setHomeTerminalsHidden}
-                onToggleTerminal={toggleHomeTerminal}
-              />
-              <HomeRails
-                workstreams={homeVisibleWorkstreams}
-                activePaneIds={visibleTerminalPaneIdSet}
-                drafts={globalDrafts}
-                draftsVisible={homeDraftsVisible}
-                onShowDrafts={showHomeDrafts}
-                onActivatePane={(paneId) => {
-                  closeTerminalMap();
-                  focusPaneTab(paneId);
-                }}
-                onLoadEarlierPastTurns={loadEarlierHomeTurnHistory}
-                onReorderQueuedTurn={(agentId, fromIndex, toIndex, text, expectedId) =>
-                  void reorderHomeQueuedTurn(agentId, fromIndex, toIndex, text, expectedId)
-                }
-                onMoveQueuedTurn={(fromAgentId, toAgentId, index, text, expectedId) =>
-                  void moveQueuedTurnToAgent(fromAgentId, toAgentId, index, text, expectedId)
-                }
-                onQueueTurn={queueHomeTurn}
-                onRemoveQueuedTurn={removeHomeQueuedTurn}
-                onUnpauseAgent={unpauseHomeAgent}
-                onSetQueuedTurnPause={setHomeQueuedTurnPause}
-                onSendNextQueuedTurn={sendNextHomeQueuedTurn}
-                onCreateDraft={createHomeDraft}
-                onDeleteDraft={deleteHomeDraft}
-                onAssignDraft={(draftId, agentId) => void assignHomeDraft(draftId, agentId)}
-                readRailScroll={readHomeRailScroll}
-                saveRailScroll={saveHomeRailScroll}
-                composerDrafts={homeComposerDrafts}
-                setComposerDrafts={setHomeComposerDrafts}
-              />
-            </div>
-          </div>
         </DialogRoot>
       ) : null}
 

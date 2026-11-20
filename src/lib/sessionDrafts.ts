@@ -10,7 +10,6 @@ const IMMEDIATE_BACKEND_FLUSH_MAX_CHARS = 4_096;
 
 export const SESSION_DRAFT_KEYS = {
   homeLauncher: "home-launcher",
-  homeComposers: "home-composers",
   newResearchInline: "new-research-inline",
   newResearchModal: "new-research-modal",
   newDocumentContext: "new-document-context",

@@ -13,7 +13,6 @@ import {
 import {
   agentEventAffectsThinkingState,
   isAgentInfo,
-  isGlobalDraft,
   isQueuedTurn,
   isTurn,
   reconcileReplacedTurns,
@@ -26,7 +25,6 @@ import type { ExitPreflightRequest, PaneContextMenuState } from "../appTypes";
 import type {
   ActiveWorkspace,
   AgentInfo,
-  GlobalDraft,
   GroupInfo,
   PaneInfo,
   PaneSplitInfo,
@@ -84,7 +82,6 @@ export interface UseQmuxEventsHandlers {
   setTranscriptNoticeByAgent: Dispatch<SetStateAction<Record<string, string | null>>>;
   setShellJobByAgent: Dispatch<SetStateAction<Record<string, ShellAgentJobInfo>>>;
   setAgentQueuedTurns: (agentId: string, queuedTurns: QueuedTurn[]) => void;
-  setGlobalDrafts: Dispatch<SetStateAction<GlobalDraft[]>>;
   // Thread graphs are demand-loaded by App. Hidden or parked agents still emit
   // turn events, but those events must not populate an ever-growing graph cache.
   shouldRefreshAgentThreadGraph?: (agentId: string) => boolean;
@@ -178,7 +175,6 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
     setTranscriptNoticeByAgent,
     setShellJobByAgent,
     setAgentQueuedTurns,
-    setGlobalDrafts,
     shouldRefreshAgentThreadGraph,
     onAgentThreadGraphDirty,
     shouldRetainAgentTurns,
@@ -556,12 +552,6 @@ export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {
           setAgentQueuedTurns(event.agentId, queuedTurns);
         } else {
           void refreshAgentTurnQueue(event.agentId).catch(() => undefined);
-        }
-      }
-      if (event.type === "drafts.changed") {
-        const drafts = event.payload.drafts;
-        if (Array.isArray(drafts) && drafts.every(isGlobalDraft)) {
-          setGlobalDrafts(drafts);
         }
       }
       if (event.type === "turn.appended") {

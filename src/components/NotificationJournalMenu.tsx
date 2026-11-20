@@ -165,7 +165,7 @@ export default function NotificationJournalMenu({
                   className="notification-journal-toggle"
                   onClick={() => onShowNotificationsChange(!showNotifications)}
                 >
-                  <span className="home-group-checkbox" aria-hidden="true">
+                  <span className="notification-journal-checkbox" aria-hidden="true">
                     {showNotifications ? <Check size={10} strokeWidth={3} /> : null}
                   </span>
                   Show notifications

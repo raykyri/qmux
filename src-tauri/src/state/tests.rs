@@ -115,44 +115,6 @@ fn sample_group_with_id(id: &str) -> GroupInfo {
 }
 
 #[test]
-fn global_drafts_crud_and_claim() {
-    let state = AppState::new(test_config(PathBuf::from("/tmp/qmux-state-global-drafts")));
-
-    assert!(state.create_global_draft("   ".to_string()).is_err());
-    let draft = state
-        .create_global_draft("  review the diff  ".to_string())
-        .unwrap();
-    assert_eq!(draft.text, "review the diff");
-    assert!(draft.consumed.is_none());
-    assert_eq!(state.global_drafts().unwrap().len(), 1);
-
-    let updated = state
-        .update_global_draft(&draft.id, "review the whole diff".to_string())
-        .unwrap();
-    assert_eq!(updated.text, "review the whole diff");
-
-    // A claim marks the draft consumed exactly once; a second claim (the
-    // concurrent double-assign race) must fail rather than double-deliver.
-    let claimed = state.claim_global_draft(&draft.id, "agent-1").unwrap();
-    assert_eq!(claimed.consumed.as_ref().unwrap().agent_id, "agent-1");
-    assert!(state.claim_global_draft(&draft.id, "agent-2").is_err());
-    // A consumed draft is history: no edits.
-    assert!(
-        state
-            .update_global_draft(&draft.id, "too late".to_string())
-            .is_err()
-    );
-
-    // Unclaim (assign rollback) reopens it for a later assign.
-    state.unclaim_global_draft(&draft.id).unwrap();
-    assert!(state.global_drafts().unwrap()[0].consumed.is_none());
-    state.claim_global_draft(&draft.id, "agent-2").unwrap();
-
-    assert!(state.delete_global_draft("missing").is_err());
-    assert!(state.delete_global_draft(&draft.id).unwrap().is_empty());
-}
-
-#[test]
 fn interface_drafts_survive_webview_reloads_but_not_app_restarts() {
     let workspace = PathBuf::from("/tmp/qmux-state-interface-drafts");
     let state = AppState::new(test_config(workspace.clone()));
@@ -8747,7 +8709,6 @@ fn startup_composer_snapshot_batches_only_existing_agents_and_preserves_queue_or
         "missing-agent".into(),
         VecDeque::from([QueuedTurn::new("orphan".into())]),
     );
-    state.create_global_draft("global".into()).unwrap();
     let snapshot = state.composer_snapshot().unwrap();
     assert_eq!(snapshot.drafts.len(), 1);
     assert_eq!(snapshot.drafts.get("agent-1").unwrap(), "draft");
@@ -8756,7 +8717,6 @@ fn startup_composer_snapshot_batches_only_existing_agents_and_preserves_queue_or
         serde_json::to_value(&snapshot.queues["agent-1"]).unwrap(),
         serde_json::to_value(state.agent_queued_turns("agent-1").unwrap()).unwrap()
     );
-    assert_eq!(snapshot.global_drafts.len(), 1);
     std::fs::remove_dir_all(root).unwrap();
 }
 

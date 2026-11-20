@@ -29,7 +29,6 @@
     "test:terminal-title": "node --import tsx --test tests/terminalTitle.test.ts",
     "test:active-workspace": "node --import tsx --test tests/activeWorkspace.test.ts",
     "test:composer-slash-commands": "node --import tsx --test tests/composerSlashCommands.test.ts",
-    "test:home-rails": "node --import tsx --test tests/homeRails.test.ts",
     "test:claude-turns": "node --import tsx --test tests/claudeTurns.test.ts",
     "test:pane-splits": "node --import tsx --test tests/paneSplits.test.ts",
     "test:sidebar-controls": "node --import tsx --test tests/sidebarControls.test.ts",

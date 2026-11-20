@@ -41,7 +41,6 @@ import {
   GitBranchIcon,
   GlobeIcon,
   HistoryIcon,
-  LayoutDashboardIcon,
   LoaderCircleIcon,
   MessageSquareTextIcon,
   MinusIcon,
@@ -84,8 +83,6 @@ import {
   JOURNAL_COMPOSER_PLACEHOLDER,
   JOURNAL_VIEW_ID,
   MOCK_GROUPS,
-  MOCK_HOME_DRAFTS,
-  MOCK_HOME_RAILS,
   MOCK_JOURNAL_ENTRIES,
   MOCK_NOTIFICATIONS,
   MOCK_RESEARCH_ARCHIVED,
@@ -947,14 +944,6 @@ function Sidebar({ research, mode }: { research: boolean; mode: SidebarMode }) {
         </span>
         <span
           className="sidebar-header-button"
-          data-mock-action="open-terminal-map"
-          title="Terminal map"
-          aria-label="Open terminal map"
-        >
-          <LayoutDashboardIcon size={14} />
-        </span>
-        <span
-          className="sidebar-header-button"
           title="Light mode"
           aria-label="Switch to light mode"
         >
@@ -1453,7 +1442,7 @@ function NotificationJournal() {
           aria-checked="true"
           data-mock-log-show
         >
-          <span className="home-group-checkbox">
+          <span className="notification-journal-checkbox">
             <CheckIcon size={10} strokeWidth={3} />
           </span>
           Show notifications
@@ -1679,225 +1668,6 @@ function BrowserOverlay() {
             <span className="mock-preview-name">Local HTML fragment</span>
             <span className="mock-preview-pass">sandboxed</span>
           </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// The sidebar's dashboard button opens the terminal map: every agent's queue
-// laid out side by side, the way the app's Home board does it. It ships hidden
-// and inert — one column per sidebar pane, plus the global drafts rail — and
-// the enhancement script makes the stream chips, composers, and rail heads
-// live. A rail's current card is that session's own prompt, so a column and
-// its transcript never disagree.
-function HomeGroupChip({ group }: { group: MockGroup }) {
-  return (
-    <div className="home-group-chip" data-mock-home-chip={group.name}>
-      <span
-        className="control-button home-group-toggle"
-        data-mock-action="toggle-home-stream"
-        data-mock-stream={group.name}
-      >
-        <span className="home-group-checkbox">
-          <CheckIcon size={10} strokeWidth={3} />
-        </span>
-        <span className="home-group-name">{group.name}</span>
-        <span className="home-group-count">
-          {group.panes.length}/{group.panes.length}
-        </span>
-      </span>
-      <span
-        className="control-button home-group-caret"
-        data-mock-home-caret={group.name}
-        title={`Choose terminals in ${group.name}`}
-        aria-label={`Choose terminals in ${group.name}`}
-        aria-haspopup="menu"
-        aria-expanded="false"
-      >
-        <ChevronDownIcon size={13} />
-      </span>
-      <div
-        className="popover-surface popover-surface--context home-group-menu"
-        role="menu"
-        aria-label={`Terminals in ${group.name}`}
-        data-mock-home-menu={group.name}
-        hidden
-      >
-        {group.panes.map((pane) => (
-          <span
-            key={pane.sessionId}
-            className="menu-item home-group-menu-item is-shown"
-            role="menuitemcheckbox"
-            aria-checked="true"
-            data-mock-home-menu-item={pane.sessionId}
-          >
-            <span className="home-group-checkbox">
-              <CheckIcon size={10} strokeWidth={3} />
-            </span>
-            <span className="home-group-menu-item-name">{pane.title}</span>
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function HomeGroupSelector() {
-  return (
-    <div className="home-group-selector" role="group" aria-label="Home streams">
-      <div className="home-group-chip" data-mock-home-chip="__drafts__">
-        <span
-          className="control-button home-group-toggle"
-          data-mock-action="toggle-home-stream"
-          data-mock-stream="__drafts__"
-        >
-          <span className="home-group-checkbox">
-            <CheckIcon size={10} strokeWidth={3} />
-          </span>
-          <span className="home-group-name">Drafts</span>
-        </span>
-      </div>
-      {MOCK_GROUPS.map((group) => (
-        <HomeGroupChip key={group.name} group={group} />
-      ))}
-    </div>
-  );
-}
-
-function HomeDraftCard({ text, label }: { text: string; label: string }) {
-  return (
-    <div className="queued-turn">
-      <div className="queued-turn-text">{text}</div>
-      <div className="queued-turn-actions">
-        <span
-          className="control-button home-rail-turn-remove"
-          data-mock-remove-draft
-          aria-label={`${label}: ${text}`}
-        >
-          <XIcon size={13} />
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function HomeDraftsRail() {
-  return (
-    <div className="home-rail" data-mock-rail="__drafts__" data-mock-rail-group="__drafts__">
-      <div className="home-rail-head is-static">
-        <span className="home-rail-title">Drafts</span>
-        {MOCK_HOME_DRAFTS.length > 0 ? (
-          <span className="home-rail-count">{MOCK_HOME_DRAFTS.length}</span>
-        ) : null}
-      </div>
-      <div className="home-rail-scroll">
-        {MOCK_HOME_DRAFTS.map((text) => (
-          <HomeDraftCard key={text} text={text} label="Delete draft" />
-        ))}
-      </div>
-      <div className="home-rail-composer">
-        <div className="mock-rail-composer">New draft…</div>
-      </div>
-    </div>
-  );
-}
-
-function HomeRail({ group, pane }: { group: MockGroup; pane: MockPane }) {
-  const rail = MOCK_HOME_RAILS[pane.sessionId];
-  // The fixture keeps follow-ups in newest-first order; the map presents the
-  // queue head first, matching the live queue surfaces.
-  const queued = [...(rail?.queued ?? [])].reverse();
-  return (
-    <div
-      className="home-rail"
-      data-mock-rail={pane.sessionId}
-      data-mock-rail-group={group.name}
-    >
-      <span className="home-rail-head" data-mock-open-session={pane.sessionId}>
-        <span className={`pane-tab-dot status-${pane.status}`} />
-        <span className="home-rail-title">{pane.title}</span>
-        {queued.length > 0 ? (
-          <span className="home-rail-count">{queued.length} queued</span>
-        ) : null}
-        {rail?.paused ? <span className="home-rail-paused">paused</span> : null}
-      </span>
-      <div className="home-rail-scroll">
-        {(rail?.past ?? []).map((turn) => (
-          <div className="queued-turn is-past" key={turn.text}>
-            <div className="queued-turn-text">{turn.text}</div>
-            <div className="queued-turn-receipt">
-              <CheckIcon size={11} strokeWidth={2.5} className="queued-turn-receipt-ok" />
-              {` ${turn.receipt}`}
-            </div>
-          </div>
-        ))}
-        {rail ? (
-          <div
-            className={`queued-turn is-current${
-              rail.current.tone === "active" ? " tone-active" : " tone-done"
-            }`}
-          >
-            <div className="queued-turn-text">{rail.current.text}</div>
-            <div className="queued-turn-receipt">
-              {rail.current.tone === "active" ? (
-                <span className="queued-turn-receipt-live">●</span>
-              ) : (
-                <CheckIcon size={11} strokeWidth={2.5} className="queued-turn-receipt-ok" />
-              )}
-              {` ${rail.current.receipt}`}
-            </div>
-          </div>
-        ) : null}
-        {queued.map((text) => (
-          <div className="queued-turn" key={text}>
-            <div className="queued-turn-text">{text}</div>
-            <div className="queued-turn-actions">
-              <span
-                className="control-button home-rail-turn-remove"
-                data-mock-remove-queued
-                aria-label={`Remove queued turn: ${text}`}
-              >
-                <XIcon size={13} />
-              </span>
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="home-rail-composer">
-        <div className="mock-rail-composer">Queue a follow-up…</div>
-      </div>
-    </div>
-  );
-}
-
-function TerminalMap() {
-  return (
-    <div className="confirm-dialog-backdrop terminal-map-backdrop" data-mock-terminal-map hidden>
-      <div
-        className="terminal-map-popover"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Terminal map"
-        tabIndex={-1}
-        data-mock-terminal-map-dialog
-      >
-        <div className="home-board">
-          <HomeGroupSelector />
-          <section className="home-rails-section" aria-label="Agent workstreams">
-            <div className="home-rails">
-              <div className="home-rails-inner">
-                <div className="home-rails-columns">
-                  <HomeDraftsRail />
-                  {MOCK_GROUPS.flatMap((group) =>
-                    group.panes.map((pane) => (
-                      <HomeRail key={pane.sessionId} group={group} pane={pane} />
-                    )),
-                  )}
-                </div>
-              </div>
-            </div>
-          </section>
         </div>
       </div>
     </div>
@@ -2340,7 +2110,6 @@ export const MOCKUP_FEATURES = [
   "groups",
   "sessions",
   "panes",
-  "terminal-map",
   "panels",
   "menus",
   "sidebar-menus",
@@ -2427,7 +2196,6 @@ export default function AppMockup({
               group.panes.map((pane) => <PaneTabMenu key={pane.sessionId} pane={pane} />),
             )
           : null}
-        {features.includes("terminal-map") ? <TerminalMap /> : null}
         {features.includes("panels") ? <NotificationJournalConfirm /> : null}
         {features.includes("research-menus")
           ? Object.keys(MOCK_RESEARCH_DOCS).map((id) => <ResearchRowMenu key={id} id={id} />)

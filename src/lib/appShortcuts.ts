@@ -6,7 +6,6 @@ export type AppShortcutCommand =
   | { type: "focusResearchTab"; tabIndex: number }
   | { type: "homeOrCycleAdapter" }
   | { type: "openNewResearch" }
-  | { type: "focusHome" }
   | { type: "focusResearchHome" }
   | { type: "focusTerminalMode" }
   | { type: "toggleSidebarMode" }
@@ -188,7 +187,7 @@ export function contextualizeAppShortcut(
 // uses this to decide what may still run when the chord's origin pane no
 // longer exists in React: running one of these against a different pane than
 // the user aimed at would be worse than dropping the keystroke, while every
-// other command (mode toggles, map, settings, palette…) is safe to run from
+// other command (mode toggles, settings, palette…) is safe to run from
 // anywhere.
 export function appShortcutTargetsActivePane(command: AppShortcutCommand): boolean {
   return (
@@ -219,8 +218,6 @@ function appShortcutLabel(command: AppShortcutCommand): string {
       return "open the launcher";
     case "openNewResearch":
       return "start a new research";
-    case "focusHome":
-      return "open the terminal map";
     case "focusResearchHome":
       return "start a new research";
     case "focusTerminalMode":
@@ -381,7 +378,6 @@ export function parseAppShortcutCommand(
     case "fontZoomReset":
     case "homeOrCycleAdapter":
     case "openNewResearch":
-    case "focusHome":
     case "focusResearchHome":
     case "focusTerminalMode":
     case "toggleSidebarMode":

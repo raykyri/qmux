@@ -162,8 +162,6 @@ interface ResearchDocumentProps {
   onPublicationBindingChange: (binding: PublicationBinding) => void;
   /** Reopens the application sidebar when research is using the full width. */
   onShowSidebar?: () => void;
-  onOpenTerminalMap?: () => void;
-  terminalMapOpen?: boolean;
   /** Show held-⌘ shortcut badges (the ⌘J follow-ups hint). */
   shortcutHintsShown: boolean;
   /** Workspace-level back/forward (Recent Activity ↔ documents). Used when
@@ -1670,8 +1668,6 @@ function ResearchDocument({
   publicationBinding,
   onPublicationBindingChange,
   onShowSidebar,
-  onOpenTerminalMap,
-  terminalMapOpen,
   shortcutHintsShown,
   workspaceCanGoBack = false,
   workspaceCanGoForward = false,
@@ -4850,11 +4846,7 @@ function ResearchDocument({
         title={headerTitle}
         headerActions={
           onShowSidebar ? (
-            <ResearchSidebarRestoreButton
-              onClick={onShowSidebar}
-              onOpenTerminalMap={onOpenTerminalMap}
-              terminalMapOpen={terminalMapOpen}
-            />
+            <ResearchSidebarRestoreButton onClick={onShowSidebar} />
           ) : undefined
         }
       >
@@ -5408,11 +5400,7 @@ function ResearchDocument({
               </span>
             ) : null}
             {onShowSidebar ? (
-              <ResearchSidebarRestoreButton
-                onClick={onShowSidebar}
-                onOpenTerminalMap={onOpenTerminalMap}
-                terminalMapOpen={terminalMapOpen}
-              />
+              <ResearchSidebarRestoreButton onClick={onShowSidebar} />
             ) : null}
             {selectedView?.hasTranscriptActivity && selectedNodeId ? (
               <button

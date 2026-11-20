@@ -17,8 +17,6 @@ interface NewDocumentPaneProps {
   }) => Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
   onShowSidebar?: () => void;
-  onOpenTerminalMap?: () => void;
-  terminalMapOpen?: boolean;
   sessionDraftKey?: string;
 }
 
@@ -36,8 +34,6 @@ export default function NewDocumentPane({
   onCreate,
   onDirtyChange,
   onShowSidebar,
-  onOpenTerminalMap,
-  terminalMapOpen,
   sessionDraftKey,
 }: NewDocumentPaneProps) {
   return (
@@ -46,11 +42,7 @@ export default function NewDocumentPane({
       hidden={hidden}
       headerActions={
         onShowSidebar ? (
-          <ResearchSidebarRestoreButton
-            onClick={onShowSidebar}
-            onOpenTerminalMap={onOpenTerminalMap}
-            terminalMapOpen={terminalMapOpen}
-          />
+          <ResearchSidebarRestoreButton onClick={onShowSidebar} />
         ) : undefined
       }
     >

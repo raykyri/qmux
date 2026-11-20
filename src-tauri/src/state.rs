@@ -336,7 +336,6 @@ pub struct AppState {
 pub struct ComposerSnapshot {
     queues: HashMap<String, Vec<QueuedTurn>>,
     drafts: HashMap<String, String>,
-    global_drafts: Vec<GlobalDraft>,
 }
 
 struct AppStateInner {
@@ -564,8 +563,6 @@ struct Model {
     /// Pane ids with a backend retirement worker in flight. Transient and deduplicated.
     research_retiring_panes: HashSet<String>,
     agent_turn_queues: HashMap<String, VecDeque<QueuedTurn>>,
-    /// Application-global prompt drafts (the home Drafts rail), oldest first.
-    global_drafts: Vec<GlobalDraft>,
     /// A queued turn claimed for delivery but not yet confirmed on the PTY, per agent
     /// (at most one — `agent_draining` serializes drains). Popped out of the queue at
     /// claim and persisted here so a crash mid-delivery re-queues it on restart
@@ -906,27 +903,6 @@ pub struct AgentDeliveryDebugInfo {
     pub inflight: Option<AgentDeliveryDebugTurn>,
     pub outstanding_sends: Vec<AgentOutstandingSend>,
     pub submit_watch_send_ids: Vec<u64>,
-}
-
-/// A prompt queued application-wide before it has an owner — the home view's
-/// Drafts rail. Assigning one to an agent marks it consumed (kept for a while
-/// as history) rather than deleting it, so an assignment that queues work is
-/// still visible and a crash can never silently lose the text.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GlobalDraft {
-    pub id: String,
-    pub text: String,
-    pub created_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub consumed: Option<GlobalDraftConsumed>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GlobalDraftConsumed {
-    pub agent_id: String,
-    pub at: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -3079,7 +3055,6 @@ impl AppState {
                     model.agent_drafts.insert(agent_id, draft);
                 }
             }
-            model.global_drafts = persisted.global_drafts;
             for session in persisted.recent_sessions {
                 if !session.id.trim().is_empty() {
                     model.recent_sessions.insert(session.id.clone(), session);
@@ -3310,7 +3285,6 @@ impl AppState {
                 recent_sessions: recent_sessions_sorted(&model),
                 artifacts: model.artifacts.clone(),
                 drafts: model.agent_drafts.clone(),
-                global_drafts: model.global_drafts.clone(),
                 inflight: model.agent_inflight.clone(),
                 pending_pause: {
                     let mut ids = model
@@ -3904,47 +3878,6 @@ impl AppState {
                 .flat_map(|turns| turns.iter().cloned())
                 .collect())
         }
-    }
-
-    pub fn home_turn_history(
-        &self,
-        agent_id: &str,
-        before: Option<&str>,
-        limit: usize,
-    ) -> Result<thread_graph::HomeTurnHistoryPage, String> {
-        let (agent, record) = {
-            let model = self
-                .inner
-                .model
-                .lock()
-                .map_err(|_| "model lock poisoned".to_string())?;
-            let agent = model
-                .agents
-                .get(agent_id)
-                .cloned()
-                .ok_or_else(|| format!("agent not found: {agent_id}"))?;
-            let thread_id = thread_graph::agent_thread_id(&agent);
-            (agent, model.threads.get(&thread_id).cloned())
-        };
-        let Some(record) = record else {
-            return Ok(thread_graph::HomeTurnHistoryPage {
-                turns: Vec::new(),
-                next_before: None,
-            });
-        };
-        let store = thread_graph::ThreadStore::new(record.storage_root);
-        let Some(graph) = store.read_thread(&record.id)? else {
-            return Ok(thread_graph::HomeTurnHistoryPage {
-                turns: Vec::new(),
-                next_before: None,
-            });
-        };
-        Ok(thread_graph::home_turn_history_page(
-            &graph,
-            &thread_graph::agent_branch_id(&agent),
-            before,
-            limit,
-        ))
     }
 
     pub fn list_thread_graphs(&self) -> Result<Vec<thread_graph::ThreadGraph>, String> {
@@ -6864,161 +6797,6 @@ impl AppState {
     /// Stores the agent's composer draft and snapshots it to disk. A trimmed-empty
     /// draft drops the entry so recovery never restores stray whitespace and the
     /// map does not grow an entry per cleared composer.
-    /// The current millisecond wall clock, matching QmuxEvent timestamps.
-    fn now_millis() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or_default()
-    }
-
-    pub fn global_drafts(&self) -> Result<Vec<GlobalDraft>, String> {
-        let model = self
-            .inner
-            .model
-            .lock()
-            .map_err(|_| "model lock poisoned".to_string())?;
-        Ok(model.global_drafts.clone())
-    }
-
-    /// Emits the full drafts list — the store is small and global, so every
-    /// mutation broadcasts the whole truth instead of deltas.
-    fn emit_global_drafts(&self, drafts: &[GlobalDraft]) {
-        self.emit(QmuxEvent::new(
-            "drafts.changed",
-            None,
-            None,
-            json!({ "drafts": drafts }),
-        ));
-    }
-
-    pub fn create_global_draft(&self, text: String) -> Result<GlobalDraft, String> {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return Err("Draft text cannot be empty".to_string());
-        }
-        let draft = GlobalDraft {
-            id: self.next_id("draft"),
-            text: trimmed.to_string(),
-            created_at: Self::now_millis(),
-            consumed: None,
-        };
-        let drafts = {
-            let mut model = self
-                .inner
-                .model
-                .lock()
-                .map_err(|_| "model lock poisoned".to_string())?;
-            model.global_drafts.push(draft.clone());
-            model.global_drafts.clone()
-        };
-        self.persist();
-        self.emit_global_drafts(&drafts);
-        Ok(draft)
-    }
-
-    pub fn update_global_draft(&self, draft_id: &str, text: String) -> Result<GlobalDraft, String> {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return Err("Draft text cannot be empty".to_string());
-        }
-        let (draft, drafts) = {
-            let mut model = self
-                .inner
-                .model
-                .lock()
-                .map_err(|_| "model lock poisoned".to_string())?;
-            let draft = model
-                .global_drafts
-                .iter_mut()
-                .find(|draft| draft.id == draft_id)
-                .ok_or_else(|| format!("Draft {draft_id} was not found"))?;
-            if draft.consumed.is_some() {
-                return Err("Draft was already assigned".to_string());
-            }
-            draft.text = trimmed.to_string();
-            (draft.clone(), model.global_drafts.clone())
-        };
-        self.persist();
-        self.emit_global_drafts(&drafts);
-        Ok(draft)
-    }
-
-    pub fn delete_global_draft(&self, draft_id: &str) -> Result<Vec<GlobalDraft>, String> {
-        let drafts = {
-            let mut model = self
-                .inner
-                .model
-                .lock()
-                .map_err(|_| "model lock poisoned".to_string())?;
-            let before = model.global_drafts.len();
-            model.global_drafts.retain(|draft| draft.id != draft_id);
-            if model.global_drafts.len() == before {
-                return Err(format!("Draft {draft_id} was not found"));
-            }
-            model.global_drafts.clone()
-        };
-        self.persist();
-        self.emit_global_drafts(&drafts);
-        Ok(drafts)
-    }
-
-    /// Atomically claims a draft for assignment: marks it consumed only if it
-    /// wasn't already, so two concurrent assigns can't both deliver the text.
-    /// The claim happens before the submit; `unclaim_global_draft` rolls it
-    /// back if the submit fails (the move_queued_agent_turn shape).
-    pub fn claim_global_draft(
-        &self,
-        draft_id: &str,
-        agent_id: &str,
-    ) -> Result<GlobalDraft, String> {
-        let (draft, drafts) = {
-            let mut model = self
-                .inner
-                .model
-                .lock()
-                .map_err(|_| "model lock poisoned".to_string())?;
-            let draft = model
-                .global_drafts
-                .iter_mut()
-                .find(|draft| draft.id == draft_id)
-                .ok_or_else(|| format!("Draft {draft_id} was not found"))?;
-            if draft.consumed.is_some() {
-                return Err("Draft was already assigned".to_string());
-            }
-            draft.consumed = Some(GlobalDraftConsumed {
-                agent_id: agent_id.to_string(),
-                at: Self::now_millis(),
-            });
-            (draft.clone(), model.global_drafts.clone())
-        };
-        self.persist();
-        self.emit_global_drafts(&drafts);
-        Ok(draft)
-    }
-
-    pub fn unclaim_global_draft(&self, draft_id: &str) -> Result<(), String> {
-        let drafts = {
-            let mut model = self
-                .inner
-                .model
-                .lock()
-                .map_err(|_| "model lock poisoned".to_string())?;
-            let Some(draft) = model
-                .global_drafts
-                .iter_mut()
-                .find(|draft| draft.id == draft_id)
-            else {
-                return Ok(());
-            };
-            draft.consumed = None;
-            model.global_drafts.clone()
-        };
-        self.persist();
-        self.emit_global_drafts(&drafts);
-        Ok(())
-    }
-
     pub fn set_agent_draft(&self, agent_id: &str, draft: String) -> Result<(), String> {
         {
             let mut model = self
@@ -7065,7 +6843,6 @@ impl AppState {
                 .filter(|(id, _)| model.agents.contains_key(*id))
                 .map(|(id, draft)| (id.clone(), draft.clone()))
                 .collect(),
-            global_drafts: model.global_drafts.clone(),
         })
     }
 

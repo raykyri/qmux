@@ -595,16 +595,6 @@ export interface AgentDeliveryDebugInfo {
   submitWatchSendIds: number[];
 }
 
-// A prompt queued application-wide before it has an owner — the home view's
-// Drafts rail. Assigning it to an agent marks it consumed (kept as history)
-// rather than deleting it.
-export interface GlobalDraft {
-  id: string;
-  text: string;
-  createdAt: number;
-  consumed?: { agentId: string; at: number } | null;
-}
-
 export interface QueuedTurnWait {
   agentId: string;
   paneId?: string | null;
@@ -725,18 +715,6 @@ export interface TurnNode extends BaseThreadNode {
     timestamp?: number | null;
   };
   native?: NativeTurnRef | null;
-}
-
-export interface HomeTurnSummary {
-  id: string;
-  text: string;
-  settledAt: number | null;
-}
-
-export interface HomeTurnHistoryPage {
-  turns: HomeTurnSummary[];
-  /** Turn id cursor for the next older page (pass as `before` to listHomeTurnHistory). */
-  nextBefore: string | null;
 }
 
 export interface HandoffNode extends BaseThreadNode {

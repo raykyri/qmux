@@ -207,6 +207,19 @@ button.user-notification-open:hover {
   color: var(--text-primary);
 }
 
+.notification-journal-checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  border: 1px solid var(--accent-strong);
+  border-radius: 4px;
+  background: var(--accent-strong);
+  color: var(--text-on-accent);
+}
+
 .notification-journal-mark-all {
   flex: none;
   min-height: 0;

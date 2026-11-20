@@ -379,7 +379,6 @@ test("only pane-targeted commands are withheld from an unknown origin pane", () 
   assert.equal(appShortcutTargetsActivePane({ type: "newDocument" }), false);
   assert.equal(appShortcutTargetsActivePane({ type: "focusFollowups" }), false);
   assert.equal(appShortcutTargetsActivePane({ type: "openFolderMenu" }), false);
-  assert.equal(appShortcutTargetsActivePane({ type: "focusHome" }), false);
   assert.equal(
     appShortcutTargetsActivePane({ type: "openConversationHistory" }),
     false,

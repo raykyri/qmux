@@ -91,14 +91,13 @@ use transcript::{
     set_agent_transcript as repoint_agent_transcript,
 };
 use turn_queue::{
-    AgentDebugInputKind, AssignGlobalDraftRequest, AssignGlobalDraftResult,
-    MoveQueuedAgentTurnRequest, MoveQueuedAgentTurnResult, QueueDeliveryAgentTurnRequest,
-    QueueWaitAgentTurnRequest, RemoveQueuedAgentTurnRequest, RemoveQueuedAgentTurnResult,
-    ReorderQueuedAgentTurnRequest, ReorderQueuedAgentTurnResult, SendNextQueuedAgentTurnResult,
-    SubmitAgentTurnRequest, SubmitAgentTurnResult, debug_agent_input, move_queued_agent_turn,
-    queue_delivery_agent_turn, queue_wait_agent_turn, remove_queued_agent_turn,
-    reorder_queued_agent_turn, send_next_queued_agent_turn, set_agent_typing_for_document,
-    submit_agent_turn, unpause_agent,
+    AgentDebugInputKind, MoveQueuedAgentTurnRequest, MoveQueuedAgentTurnResult,
+    QueueDeliveryAgentTurnRequest, QueueWaitAgentTurnRequest, RemoveQueuedAgentTurnRequest,
+    RemoveQueuedAgentTurnResult, ReorderQueuedAgentTurnRequest, ReorderQueuedAgentTurnResult,
+    SendNextQueuedAgentTurnResult, SubmitAgentTurnRequest, SubmitAgentTurnResult,
+    debug_agent_input, move_queued_agent_turn, queue_delivery_agent_turn, queue_wait_agent_turn,
+    remove_queued_agent_turn, reorder_queued_agent_turn, send_next_queued_agent_turn,
+    set_agent_typing_for_document, submit_agent_turn, unpause_agent,
 };
 use workspace::{
     AgentInfo, AgentStatus, CreateGroupRequest, GroupInfo, LaunchOrigin, RepositoryInventory,
@@ -1594,21 +1593,6 @@ fn list_turns(
     agent_id: Option<String>,
 ) -> Result<Vec<Turn>, String> {
     state.list_turns(agent_id.as_deref())
-}
-
-#[tauri::command]
-async fn list_home_turn_history(
-    state: tauri::State<'_, AppState>,
-    agent_id: String,
-    before: Option<String>,
-    limit: Option<usize>,
-) -> Result<thread_graph::HomeTurnHistoryPage, String> {
-    let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        state.home_turn_history(&agent_id, before.as_deref(), limit.unwrap_or(100))
-    })
-    .await
-    .map_err(|err| format!("list_home_turn_history task failed: {err}"))?
 }
 
 #[tauri::command]
@@ -3312,46 +3296,6 @@ fn agent_move_queued_turn(
 }
 
 #[tauri::command(async)]
-fn list_global_drafts(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<state::GlobalDraft>, String> {
-    state.global_drafts()
-}
-
-#[tauri::command(async)]
-fn create_global_draft(
-    state: tauri::State<'_, AppState>,
-    text: String,
-) -> Result<state::GlobalDraft, String> {
-    state.create_global_draft(text)
-}
-
-#[tauri::command(async)]
-fn update_global_draft(
-    state: tauri::State<'_, AppState>,
-    draft_id: String,
-    text: String,
-) -> Result<state::GlobalDraft, String> {
-    state.update_global_draft(&draft_id, text)
-}
-
-#[tauri::command(async)]
-fn delete_global_draft(
-    state: tauri::State<'_, AppState>,
-    draft_id: String,
-) -> Result<Vec<state::GlobalDraft>, String> {
-    state.delete_global_draft(&draft_id)
-}
-
-#[tauri::command(async)]
-fn assign_global_draft(
-    state: tauri::State<'_, AppState>,
-    request: AssignGlobalDraftRequest,
-) -> Result<AssignGlobalDraftResult, String> {
-    turn_queue::assign_global_draft(&state, request)
-}
-
-#[tauri::command(async)]
 fn agent_send_next_queued_turn(
     state: tauri::State<'_, AppState>,
     agent_id: String,
@@ -4185,7 +4129,6 @@ fn main() {
             list_turns,
             list_conversation_history,
             launch_conversation_history,
-            list_home_turn_history,
             list_thread_graphs,
             get_thread_graph,
             get_conversation_history_snapshot,
@@ -4300,11 +4243,6 @@ fn main() {
             agent_remove_queued_turn,
             agent_reorder_queued_turn,
             agent_move_queued_turn,
-            list_global_drafts,
-            create_global_draft,
-            update_global_draft,
-            delete_global_draft,
-            assign_global_draft,
             agent_send_next_queued_turn,
             agent_debug_input,
             agent_delivery_debug,

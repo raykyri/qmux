@@ -74,7 +74,7 @@ function install(override: (command: string, args: any) => any = () => undefined
       case "pane_splits_get": return [split];
       case "pane_splits_set": return args.splits;
       case "list_research_folders": return { folders: [], membership: {}, starred: [], collapsed: [] };
-      case "composer_snapshot": return { queues: {}, drafts: {}, globalDrafts: [] };
+      case "composer_snapshot": return { queues: {}, drafts: {} };
       case "get_notification_log": return [];
       case "plugin:window|is_focused": return true;
       case "plugin:window|scale_factor": return 1;

@@ -1,8 +1,6 @@
 use crate::journal::JournalState;
 use crate::research::{ResearchFolderState, ResearchNode, ResearchTree};
-use crate::state::{
-    ArtifactInfo, GlobalDraft, PaneInfo, PaneSplitInfo, QueuedTurn, RecentSessionInfo,
-};
+use crate::state::{ArtifactInfo, PaneInfo, PaneSplitInfo, QueuedTurn, RecentSessionInfo};
 use crate::thread_graph::ThreadRecord;
 use crate::user_notifications::NotificationLog;
 use crate::workspace::{AgentInfo, GroupInfo};
@@ -85,9 +83,6 @@ pub struct PersistedState {
     /// queues and transcripts.
     #[serde(default)]
     pub drafts: HashMap<String, String>,
-    /// Application-global prompt drafts (the home Drafts rail), oldest first.
-    #[serde(default)]
-    pub global_drafts: Vec<GlobalDraft>,
     /// Per-agent in-flight turn: a queued turn claimed for delivery but not confirmed
     /// on the PTY before shutdown. Recovered by re-queueing at the front so a crash
     /// mid-delivery re-sends rather than loses it. Absent in older state files.
@@ -153,7 +148,6 @@ impl Default for PersistedState {
             recent_sessions: Vec::new(),
             artifacts: Vec::new(),
             drafts: HashMap::new(),
-            global_drafts: Vec::new(),
             inflight: HashMap::new(),
             pending_pause: Vec::new(),
             pane_splits: Vec::new(),
@@ -759,7 +753,9 @@ fn deserialize_lenient(value: Value) -> (PersistedState, Vec<String>) {
     state.inflight = take_typed_map(&mut map, "inflight", "in-flight turn", &mut dropped);
     state.pending_pause = take_string_vec(&mut map, "pendingPause");
     state.drafts = take_string_map(&mut map, "drafts");
-    state.global_drafts = take_vec(&mut map, "globalDrafts", "global draft", &mut dropped);
+    // The home Drafts rail is gone. Drop leftover global drafts so older files
+    // load cleanly and the next save omits them.
+    map.remove("globalDrafts");
     state.threads = take_typed_map(&mut map, "threads", "thread", &mut dropped);
     state.thread_focus = take_string_map(&mut map, "threadFocus");
     state.research_trees = take_typed_map(&mut map, "researchTrees", "research tree", &mut dropped);
@@ -1166,38 +1162,6 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("qmux-persist-{nanos}-{seq}"));
         fs::create_dir_all(&dir).unwrap();
         dir
-    }
-
-    #[test]
-    fn global_drafts_round_trip() {
-        use crate::state::{GlobalDraft, GlobalDraftConsumed};
-        let root = temp_root();
-        let drafts = vec![
-            GlobalDraft {
-                id: "draft-1".to_string(),
-                text: "open draft".to_string(),
-                created_at: 100,
-                consumed: None,
-            },
-            GlobalDraft {
-                id: "draft-2".to_string(),
-                text: "assigned draft".to_string(),
-                created_at: 200,
-                consumed: Some(GlobalDraftConsumed {
-                    agent_id: "agent-1".to_string(),
-                    at: 300,
-                }),
-            },
-        ];
-        let state = PersistedState {
-            global_drafts: drafts.clone(),
-            ..Default::default()
-        };
-        save(&root, &state).unwrap();
-        let outcome = load_with_diagnostics(&root);
-        assert!(outcome.warning.is_none());
-        assert_eq!(outcome.state.global_drafts, drafts);
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

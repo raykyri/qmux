@@ -29,11 +29,9 @@ import type {
   ClaudeSkill,
   ConversationHistoryEntry,
   ConversationHistoryLaunchRequest,
-  GlobalDraft,
   GlobalTaskLauncherHotkey,
   GlobalTaskLauncherSetting,
   GroupInfo,
-  HomeTurnHistoryPage,
   InitialPaneSize,
   MessageAnchor,
   MoveQueuedAgentTurnResult,
@@ -445,18 +443,6 @@ export function listTurns(agentId?: string | null) {
   return invoke<Turn[]>("list_turns", { agentId: agentId ?? null });
 }
 
-export function listHomeTurnHistory(
-  agentId: string,
-  before?: string | null,
-  limit = 100,
-) {
-  return invoke<HomeTurnHistoryPage>("list_home_turn_history", {
-    agentId,
-    before: before ?? null,
-    limit,
-  });
-}
-
 export function getThreadGraph(threadId: string) {
   return invoke<ThreadGraph | null>("get_thread_graph", { threadId });
 }
@@ -700,34 +686,7 @@ export function getComposerSnapshot() {
   return invoke<{
     queues: Record<string, QueuedTurn[]>;
     drafts: Record<string, string>;
-    globalDrafts: GlobalDraft[];
   }>("composer_snapshot");
-}
-
-export function listGlobalDrafts() {
-  return invoke<GlobalDraft[]>("list_global_drafts");
-}
-
-export function createGlobalDraft(text: string) {
-  return invoke<GlobalDraft>("create_global_draft", { text });
-}
-
-export function deleteGlobalDraft(draftId: string) {
-  return invoke<GlobalDraft[]>("delete_global_draft", { draftId });
-}
-
-export interface AssignGlobalDraftResult {
-  sent: boolean;
-  drafts: GlobalDraft[];
-  queuedTurns: QueuedTurn[];
-}
-
-/** Hands a draft to an agent atomically: claim, then send-or-queue, with the
- * claim rolled back if the submit fails. */
-export function assignGlobalDraft(draftId: string, agentId: string) {
-  return invoke<AssignGlobalDraftResult>("assign_global_draft", {
-    request: { draftId, agentId },
-  });
 }
 
 /** Toggles the pause-after-send flag on one queued turn. `expectedId` is the
