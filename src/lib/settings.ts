@@ -268,8 +268,13 @@ export interface AppSettings {
   bodyFontId: string;
   /** id into FONT_OPTIONS */
   fontId: string;
-  /** terminal color theme: DEFAULT_THEME_ID or a catalog scheme name */
-  themeId: string;
+  /**
+   * Terminal color theme while appearance is dark. DEFAULT_THEME_ID or a
+   * catalog scheme name. Independent of `lightThemeId`.
+   */
+  darkThemeId: string;
+  /** Terminal color theme while appearance is light. */
+  lightThemeId: string;
   /** terminal font size in px */
   fontSize: number;
   /** whether the focused terminal cursor blinks */
@@ -363,7 +368,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   appearance: "dark",
   bodyFontId: DEFAULT_BODY_FONT_ID,
   fontId: DEFAULT_FONT_ID,
-  themeId: DEFAULT_THEME_ID,
+  darkThemeId: DEFAULT_THEME_ID,
+  lightThemeId: DEFAULT_THEME_ID,
   fontSize: TERMINAL_FONT_SIZE,
   cursorBlink: false,
   cursorStyle: "block",
@@ -396,6 +402,17 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showNotifications: true,
   requireCmdEnterToSend: true,
 };
+
+/** The terminal theme saved for the appearance that is currently selected. */
+export function themeIdForAppearance(
+  settings: Pick<AppSettings, "appearance" | "darkThemeId" | "lightThemeId">,
+): string {
+  return settings.appearance === "light" ? settings.lightThemeId : settings.darkThemeId;
+}
+
+function storedThemeId(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
 
 /** Resolves a stored body font id to its CSS stack, falling back to the default. */
 export function bodyFontStackFor(bodyFontId: string): string {
@@ -485,6 +502,7 @@ export function loadSettings(): AppSettings {
     const parsed = JSON.parse(raw) as Omit<Partial<AppSettings>, "colorTheme" | "appearance"> & {
       colorTheme?: unknown;
       appearance?: unknown;
+      themeId?: unknown;
       openRouterTitlesEnabled?: boolean;
     };
     const storedColorTheme = typeof parsed.colorTheme === "string" ? parsed.colorTheme : null;
@@ -505,10 +523,13 @@ export function loadSettings(): AppSettings {
         : DEFAULT_FONT_ID;
     // Any non-empty string is accepted: the catalog lives on the native side,
     // which falls back to the default colors for names it cannot resolve.
-    const themeId =
-      typeof parsed.themeId === "string" && parsed.themeId.length > 0
-        ? parsed.themeId
-        : DEFAULT_THEME_ID;
+    // A blob that only has the old single `themeId` applies it to both
+    // appearances, so the current choice survives until one side is changed.
+    const legacyThemeId = storedThemeId(parsed.themeId);
+    const darkThemeId =
+      storedThemeId(parsed.darkThemeId) ?? legacyThemeId ?? DEFAULT_THEME_ID;
+    const lightThemeId =
+      storedThemeId(parsed.lightThemeId) ?? legacyThemeId ?? DEFAULT_THEME_ID;
     const fontSize =
       typeof parsed.fontSize === "number" ? clampFontSize(parsed.fontSize) : TERMINAL_FONT_SIZE;
     const cursorBlink =
@@ -635,7 +656,8 @@ export function loadSettings(): AppSettings {
       appearance,
       bodyFontId,
       fontId,
-      themeId,
+      darkThemeId,
+      lightThemeId,
       fontSize,
       cursorBlink,
       cursorStyle,

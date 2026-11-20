@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "../src/lib/settings";
+import {
+  DEFAULT_SETTINGS,
+  loadSettings,
+  saveSettings,
+  themeIdForAppearance,
+} from "../src/lib/settings";
 
 const store = new Map<string, string>();
 (globalThis as { localStorage?: unknown }).localStorage = {
@@ -41,11 +46,53 @@ test("settings stored before the appearance field keep every other preference", 
   assert.equal(settings.appearance, "dark");
   assert.equal(settings.colorTheme, "orange-blob");
   assert.equal(settings.bodyFontId, "system");
-  assert.equal(settings.themeId, "Dracula");
+  assert.equal(settings.darkThemeId, "Dracula");
+  assert.equal(settings.lightThemeId, "Dracula");
   assert.equal(settings.fontSize, 18);
   assert.equal(settings.preventSleep, false);
   assert.equal(settings.researchLaunchInstruction, "Check primary sources");
   saveSettings(settings);
   assert.equal(loadSettings().fontSize, 18);
   assert.equal(loadSettings().colorTheme, "orange-blob");
+  assert.equal(loadSettings().darkThemeId, "Dracula");
+  assert.equal(loadSettings().lightThemeId, "Dracula");
+});
+
+test("light and dark terminal themes persist separately", () => {
+  store.set(
+    key,
+    JSON.stringify({
+      appearance: "dark",
+      darkThemeId: "Dracula",
+      lightThemeId: "Catppuccin Latte",
+    }),
+  );
+  const dark = loadSettings();
+  assert.equal(themeIdForAppearance(dark), "Dracula");
+  assert.equal(themeIdForAppearance({ ...dark, appearance: "light" }), "Catppuccin Latte");
+  saveSettings({ ...dark, appearance: "light", lightThemeId: "Solarized Light" });
+  const saved = JSON.parse(store.get(key)!) as {
+    darkThemeId: string;
+    lightThemeId: string;
+    themeId?: string;
+  };
+  assert.equal(saved.darkThemeId, "Dracula");
+  assert.equal(saved.lightThemeId, "Solarized Light");
+  assert.equal(saved.themeId, undefined);
+  const reloaded = loadSettings();
+  assert.equal(reloaded.appearance, "light");
+  assert.equal(reloaded.darkThemeId, "Dracula");
+  assert.equal(reloaded.lightThemeId, "Solarized Light");
+
+  store.set(
+    key,
+    JSON.stringify({
+      darkThemeId: "",
+      lightThemeId: "Solarized Light",
+      themeId: "Dracula",
+    }),
+  );
+  const fallback = loadSettings();
+  assert.equal(fallback.darkThemeId, "Dracula");
+  assert.equal(fallback.lightThemeId, "Solarized Light");
 });

@@ -526,6 +526,7 @@ import {
   scrollSensitivityFor,
   SYSTEM_BODY_FONT_ID,
   TAB_TITLE_PROVIDER_OPTIONS,
+  themeIdForAppearance,
   WORKTREE_LOCATION_OPTIONS,
   type AppSettings,
   type BodyFontOption,
@@ -2665,7 +2666,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // The application color theme and the light/dark appearance only adjust
   // qmux's built-in terminal palette; explicitly selected Ghostty themes keep
   // their authored backgrounds.
-  const effectiveThemeId = previewThemeId ?? settings.themeId;
+  const activeThemeId = themeIdForAppearance(settings);
+  const effectiveThemeId = previewThemeId ?? activeThemeId;
   const terminalThemeName = terminalThemeNameFor({
     themeId: effectiveThemeId,
     colorTheme: settings.colorTheme,
@@ -2828,8 +2830,8 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     };
   }, []);
   const selectedTheme = useMemo(
-    () => themeCatalog?.find((theme) => theme.name === settings.themeId) ?? null,
-    [settings.themeId, themeCatalog],
+    () => themeCatalog?.find((theme) => theme.name === activeThemeId) ?? null,
+    [activeThemeId, themeCatalog],
   );
   const effectiveTheme = useMemo(
     () => themeCatalog?.find((theme) => theme.name === effectiveThemeId) ?? null,
@@ -2844,13 +2846,13 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   }, [themeCatalog]);
   const themeOptionNames = useMemo(() => {
     const names = [DEFAULT_THEME_ID];
-    if (selectedTheme === null && settings.themeId !== DEFAULT_THEME_ID) {
-      names.push(settings.themeId);
+    if (selectedTheme === null && activeThemeId !== DEFAULT_THEME_ID) {
+      names.push(activeThemeId);
     }
     names.push(...themeGroups.dark.map((theme) => theme.name));
     names.push(...themeGroups.light.map((theme) => theme.name));
     return names;
-  }, [selectedTheme, settings.themeId, themeGroups]);
+  }, [selectedTheme, activeThemeId, themeGroups]);
 
   const focusThemeOption = useCallback((themeId: string) => {
     themeOptionRefs.current.get(themeId)?.focus();
@@ -2859,11 +2861,17 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   const openThemePicker = useCallback(() => {
     setThemePickerOpen(true);
     setPreviewThemeId(null);
-    requestAnimationFrame(() => focusThemeOption(settingsRef.current.themeId));
+    requestAnimationFrame(() =>
+      focusThemeOption(themeIdForAppearance(settingsRef.current)),
+    );
   }, [focusThemeOption]);
 
   const chooseTheme = useCallback((themeId: string) => {
-    setSettings((current) => ({ ...current, themeId }));
+    setSettings((current) =>
+      current.appearance === "light"
+        ? { ...current, lightThemeId: themeId }
+        : { ...current, darkThemeId: themeId },
+    );
     setThemePickerOpen(false);
     setPreviewThemeId(null);
     requestAnimationFrame(() => themePickerTriggerRef.current?.focus());
@@ -2905,7 +2913,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     label: string,
     theme: NativeTerminalTheme | null,
   ) {
-    const selected = settings.themeId === themeId;
+    const selected = activeThemeId === themeId;
     const previewed = effectiveThemeId === themeId;
     return (
       <button
@@ -16961,9 +16969,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                   }}
                 >
                   <span>
-                    {settings.themeId === DEFAULT_THEME_ID
+                    {activeThemeId === DEFAULT_THEME_ID
                       ? "qmux (default)"
-                      : settings.themeId}
+                      : activeThemeId}
                   </span>
                 </Button>
                 {themePickerOpen ? (
@@ -16979,11 +16987,11 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                       "qmux (default)",
                       themeCatalog?.find((theme) => theme.name === DEFAULT_THEME_ID) ?? null,
                     )}
-                    {selectedTheme === null && settings.themeId !== DEFAULT_THEME_ID
+                    {selectedTheme === null && activeThemeId !== DEFAULT_THEME_ID
                       ? // A stored theme the catalog doesn't have (or the catalog
                         // is still loading): keep it available without silently
                         // jumping the visible selection to the default.
-                        renderThemeOption(settings.themeId, settings.themeId, null)
+                        renderThemeOption(activeThemeId, activeThemeId, null)
                       : null}
                     {themeGroups.dark.length > 0 ? (
                       <div role="group" aria-labelledby="settings-theme-dark-label">
