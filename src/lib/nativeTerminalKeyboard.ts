@@ -13,6 +13,21 @@ export type WindowFocusKeyboardOwner =
   | "remembered-web-editable"
   | "native-terminal";
 
+/** Marks a scrubber whose press must not bounce keyboard focus back to the
+ * terminal mid-drag. Menu separators are not resize handles and stay unmarked. */
+export const NATIVE_RESIZE_HANDLE_SELECTOR = "[data-resize-handle]";
+
+export function nativeResizeHandleProps(): { "data-resize-handle": "" } {
+  return { "data-resize-handle": "" };
+}
+
+export function isNativeResizeHandleTarget(target: EventTarget | null): boolean {
+  if (!target || typeof (target as Element).closest !== "function") {
+    return false;
+  }
+  return (target as Element).closest(NATIVE_RESIZE_HANDLE_SELECTOR) !== null;
+}
+
 /** Distinguishes a real app reactivation from WebKit first-responder churn.
  * A remembered editor is restored only when the whole app is returning; on an
  * internal webview focus event the active terminal still reclaims ownership. */

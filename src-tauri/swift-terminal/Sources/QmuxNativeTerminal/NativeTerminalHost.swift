@@ -87,6 +87,14 @@ final class NativeTerminalHost {
     /// control that owns the gesture never sees its pointer-up (a text
     /// selection freezes, a pressed button sticks in its active state).
     private var webGesturePointerActive = false
+    /// Pane whose keyboard should return after a press that WebKit also
+    /// received. Restoring on the next turn, while the button is still down,
+    /// pointer-cancels a scrubber drag started from that press.
+    private weak var deferredKeyboardRestorePane: NativeTerminalPane?
+    private var deferredKeyboardRestoreScheduled = false
+    /// Bumped when a newer gesture or a reset retires a queued restore, so
+    /// that restore cannot run against the pane the newer gesture recorded.
+    private var deferredKeyboardRestoreGeneration: UInt64 = 0
     /// DOM rectangles (webview CSS coordinates, matching the flipped container)
     /// that own pointer events even where they overlap a terminal surface —
     /// small controls floating over the terminal, like the right-bar restore
@@ -625,6 +633,7 @@ final class NativeTerminalHost {
         pointerCapturePane = nil
         webPointerClaim = .released
         webGesturePointerActive = false
+        clearDeferredKeyboardRestore()
         webOverlayRegions.removeAll()
         iframeShortcutFallbackActive = false
         browserOverlayOpen = false
@@ -768,6 +777,7 @@ final class NativeTerminalHost {
         pointerCapturePane = nil
         webPointerClaim = .released
         webGesturePointerActive = false
+        clearDeferredKeyboardRestore()
         webOverlayRegions.removeAll()
         iframeShortcutFallbackActive = false
         browserOverlayOpen = false
@@ -984,7 +994,65 @@ final class NativeTerminalHost {
         }
         pointerCapturePane = nil
         webGesturePointerActive = false
+        clearDeferredKeyboardRestore()
         webPointerClaim.retireGesture()
+    }
+
+    private func clearDeferredKeyboardRestore() {
+        deferredKeyboardRestorePane = nil
+        deferredKeyboardRestoreScheduled = false
+        deferredKeyboardRestoreGeneration &+= 1
+    }
+
+    /// Records the pane that owned the keyboard when a press was handed to
+    /// WebKit. A press outside every terminal frame does not call this: that
+    /// click belongs to web chrome and must keep whatever focus it moved.
+    private func deferKeyboardRestore(to pane: NativeTerminalPane) {
+        guard pane.acceptsKeyboardInput else { return }
+        deferredKeyboardRestorePane = pane
+    }
+
+    private func scheduleDeferredKeyboardRestore(for event: NSEvent) {
+        // A new press retires a restore whose release never arrived. Applying
+        // it on this click's mouse-up would pull focus back to the terminal
+        // after the user had clicked web chrome. The press below records a
+        // fresh restore when it is itself handed to WebKit.
+        if isPointerDown(event) {
+            clearDeferredKeyboardRestore()
+            return
+        }
+        guard shouldRestoreDeferredTerminalKeyboard(
+            restorePending: deferredKeyboardRestorePane != nil,
+            isPointerDown: false,
+            isPointerUp: isPointerUp(event),
+            noButtonsPressed: NSEvent.pressedMouseButtons == 0
+        ) else { return }
+        guard !deferredKeyboardRestoreScheduled else { return }
+        deferredKeyboardRestoreScheduled = true
+        let generation = deferredKeyboardRestoreGeneration
+        DispatchQueue.main.async { [weak self] in
+            guard let self, generation == self.deferredKeyboardRestoreGeneration else { return }
+            self.deferredKeyboardRestoreScheduled = false
+            self.performDeferredKeyboardRestore()
+        }
+    }
+
+    /// Runs after the release has been delivered, so the page sees pointer-up
+    /// before AppKit moves first responder. If the button mask still includes
+    /// the button that just went up, leave the pane pending for the next event
+    /// that shows it released.
+    private func performDeferredKeyboardRestore() {
+        guard let pane = deferredKeyboardRestorePane else { return }
+        if NSEvent.pressedMouseButtons != 0 {
+            return
+        }
+        deferredKeyboardRestorePane = nil
+        guard keyboardOwnerPane === pane,
+              pane.acceptsKeyboardInput,
+              panes[pane.paneID] === pane,
+              window?.firstResponder !== pane.view
+        else { return }
+        window?.makeFirstResponder(pane.view)
     }
 
     private func deferInterfaceHealthCheckIfNeeded(_ changedWindow: NSWindow? = nil) {
@@ -1639,6 +1707,10 @@ final class NativeTerminalHost {
 
     private func routePointerEvent(_ event: NSEvent) -> NSEvent? {
         guard event.window === window else { return event }
+        // A press handed to WebKit restores the terminal only after the button
+        // is up. Doing it at the start lets the release reach the page before
+        // the async restore runs, including when a claim short-circuits below.
+        scheduleDeferredKeyboardRestore(for: event)
         // WKWebView owns the complete gesture while a web control claims pointer
         // routing (resize drags, open menus over the terminal, etc.). Returning
         // the event is essential: consuming it here would bypass DOM hit-testing
@@ -1679,6 +1751,12 @@ final class NativeTerminalHost {
             if webOverlayRegions.values.contains(where: { $0.contains(point) }) {
                 if isPointerDown(event) {
                     webGesturePointerActive = true
+                    // The scrubber overlaps a terminal frame. Remember the
+                    // keyboard owner so mouse-up can return focus, but do not
+                    // reassert it on this press: that cancels the drag.
+                    if event.type == .leftMouseDown, let keyboardOwnerPane {
+                        deferKeyboardRestore(to: keyboardOwnerPane)
+                    }
                 }
                 return event
             }
@@ -1734,9 +1812,10 @@ final class NativeTerminalHost {
         }
         // Let the webview observe presses so React can update the active pane;
         // continuations and scrolling stay native to avoid duplicate handling.
-        // The webview may reclaim first responder while processing the returned
-        // press. Re-assert the explicit owner once dispatch completes, or the
-        // first keystroke after a terminal click can land in WKWebView.
+        // The webview may reclaim first responder while processing a returned
+        // press. A single left click restores that owner at mouse-up, so a
+        // scrubber drag on the same press is not pointer-cancelled. Later
+        // clicks stay in Ghostty and restore on the next turn.
         if isPointerDown(event) {
             // A right-click must stay native so WKWebView cannot open a second
             // context menu. Tell React which split pane became active through
@@ -1755,14 +1834,24 @@ final class NativeTerminalHost {
             // event bridge it lands after the DOM's optimistic activation
             // and corrects it whenever they differ.
             pane.reportActivation()
-            DispatchQueue.main.async { [weak self, weak pane] in
-                guard let self, let pane,
-                      self.keyboardOwnerPane === pane,
-                      pane.acceptsKeyboardInput,
-                      self.panes[pane.paneID] === pane,
-                      self.window?.firstResponder !== pane.view
-                else { return }
-                self.window?.makeFirstResponder(pane.view)
+            if shouldDeferTerminalKeyboardRestore(
+                isLeftMouseDown: event.type == .leftMouseDown,
+                clickCount: event.clickCount
+            ) {
+                // WebKit receives this press and may focus itself while handling
+                // it. Restoring on the next turn pointer-cancels a scrubber drag
+                // whose handle overlaps this pane. Mouse-up restores instead.
+                deferKeyboardRestore(to: pane)
+            } else {
+                DispatchQueue.main.async { [weak self, weak pane] in
+                    guard let self, let pane,
+                          self.keyboardOwnerPane === pane,
+                          pane.acceptsKeyboardInput,
+                          self.panes[pane.paneID] === pane,
+                          self.window?.firstResponder !== pane.view
+                    else { return }
+                    self.window?.makeFirstResponder(pane.view)
+                }
             }
             // Ghostty already received the press above. Only the first press
             // needs to reach React for pane activation.

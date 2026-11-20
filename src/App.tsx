@@ -42,6 +42,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import type {
+  ComponentProps,
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
@@ -310,6 +311,8 @@ import {
 } from "./lib/composerActions";
 import {
   desiredNativeTerminalKeyboardOwner,
+  isNativeResizeHandleTarget,
+  nativeResizeHandleProps,
   reconcileWebSelectionForTabSwitch,
   windowFocusKeyboardOwner,
 } from "./lib/nativeTerminalKeyboard";
@@ -941,6 +944,25 @@ function groupDropTargetsEqual(
   return a === b || (a !== null && b !== null && a.index === b.index);
 }
 
+function NativeResizeHandle({
+  className,
+  layoutKey,
+  ...props
+}: Omit<ComponentProps<"div">, "ref"> & {
+  /** Undefined freezes rect tracking. The drag already owns the pointer. */
+  layoutKey?: unknown;
+}) {
+  const ref = useNativeWebOverlayRegion<HTMLDivElement>(IS_MAC, layoutKey);
+  return (
+    <div
+      {...props}
+      {...nativeResizeHandleProps()}
+      ref={ref}
+      className={className}
+    />
+  );
+}
+
 function claimResizePointer(event: ReactPointerEvent<HTMLDivElement>): () => void {
   const handle = event.currentTarget;
   const pointerId = event.pointerId;
@@ -1047,6 +1069,7 @@ function TerminalSplitResizer({
       aria-orientation={column ? "vertical" : "horizontal"}
       tabIndex={0}
       style={style}
+      {...nativeResizeHandleProps()}
       onPointerEnter={claimOnHover}
       // Re-arms a claim the guards above retired while the pointer never left
       // (a blur with the cursor resting here): pointerenter will not fire
@@ -13187,6 +13210,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       });
       return true;
     };
+    const webResizeGestureRef = { current: false };
     const bounceStolenFocus = () => {
       const returningToApp = !nativeWindowFocusedRef.current;
       lastWindowFocusSeqRef.current = ++focusOrderSeqRef.current;
@@ -13195,6 +13219,11 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         return;
       }
       requestAnimationFrame(() => {
+        // A scrubber press makes the webview first responder. Bouncing the
+        // terminal back while the button is down pointer-cancels the drag.
+        if (webResizeGestureRef.current) {
+          return;
+        }
         if (
           isWebKeyboardTarget(document.activeElement) ||
           (document.activeElement instanceof Element &&
@@ -13222,9 +13251,27 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       lastUserInputSeqRef.current = ++focusOrderSeqRef.current;
       schedule();
     };
+    const notePointerDown = (event: PointerEvent) => {
+      noteUserIntent();
+      if (event.button !== 0) {
+        return;
+      }
+      // Replace, rather than only set: a drag whose release never reached the
+      // page must not suppress the bounce for every later click.
+      webResizeGestureRef.current = isNativeResizeHandleTarget(event.target);
+    };
+    const endWebResizeGesture = (event: PointerEvent) => {
+      if (event.buttons === 0) {
+        webResizeGestureRef.current = false;
+      }
+    };
+    const handleWindowBlur = () => {
+      webResizeGestureRef.current = false;
+      schedule();
+    };
     window.addEventListener("focusin", handleFocusIn);
     window.addEventListener("focusout", schedule);
-    window.addEventListener("blur", schedule);
+    window.addEventListener("blur", handleWindowBlur);
     window.addEventListener("focus", bounceStolenFocus);
     // Recovery backstop for editables that vanish on a path the explicit
     // re-samples (pane membership, the known modals) don't cover: WebKit emits
@@ -13235,7 +13282,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     // them is cheap (rAF-coalesced, no-op state update) and heals any such
     // wedge on the user's next keystroke or click, whatever overlay caused it.
     window.addEventListener("keydown", noteUserIntent, true);
-    window.addEventListener("pointerdown", noteUserIntent, true);
+    window.addEventListener("pointerdown", notePointerDown, true);
+    window.addEventListener("pointerup", endWebResizeGesture, true);
+    window.addEventListener("pointercancel", endWebResizeGesture, true);
+    window.addEventListener("pointermove", endWebResizeGesture, true);
     const appWindow = getCurrentWindow();
     void appWindow
       .onFocusChanged(({ payload: focused }) => {
@@ -13264,10 +13314,13 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       disposed = true;
       window.removeEventListener("focusin", handleFocusIn);
       window.removeEventListener("focusout", schedule);
-      window.removeEventListener("blur", schedule);
+      window.removeEventListener("blur", handleWindowBlur);
       window.removeEventListener("focus", bounceStolenFocus);
       window.removeEventListener("keydown", noteUserIntent, true);
-      window.removeEventListener("pointerdown", noteUserIntent, true);
+      window.removeEventListener("pointerdown", notePointerDown, true);
+      window.removeEventListener("pointerup", endWebResizeGesture, true);
+      window.removeEventListener("pointercancel", endWebResizeGesture, true);
+      window.removeEventListener("pointermove", endWebResizeGesture, true);
       if (frame !== null) {
         cancelAnimationFrame(frame);
       }
@@ -15239,8 +15292,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
 
   function renderTurnPaneResizer() {
     return (
-      <div
+      <NativeResizeHandle
         className="turn-pane-resizer"
+        layoutKey={terminalGeometryResizing ? undefined : turnPaneWidth}
         role="separator"
         aria-label="Resize command queue"
         aria-orientation="vertical"
@@ -16016,8 +16070,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       style={appStyle}
     >
       {!leftSidebarCollapsed ? (
-        <div
+        <NativeResizeHandle
           className="sidebar-resizer"
+          layoutKey={terminalGeometryResizing ? undefined : sidebarWidth}
           role="separator"
           aria-label="Resize sidebar"
           aria-orientation="vertical"

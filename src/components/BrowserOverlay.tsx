@@ -30,6 +30,9 @@ import {
 import type { HumanBrowserSnapshot } from "../lib/api";
 import { isHumanBrowserLifecycleBusy } from "../lib/humanBrowserLifecycleQueue";
 import { previewCanvasColor } from "../lib/browserOverlay";
+import { IS_MAC } from "../lib/appHelpers";
+import { useNativeWebOverlayRegion } from "../hooks/useNativeWebOverlayRegion";
+import { nativeResizeHandleProps } from "../lib/nativeTerminalKeyboard";
 import type { HumanBrowserNavigationState } from "../lib/humanBrowserState";
 
 const MIN_BROWSER_OVERLAY_WIDTH = 360;
@@ -134,6 +137,12 @@ export default function BrowserOverlay({
     null,
   );
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  const resizeRegionRef = useNativeWebOverlayRegion<HTMLDivElement>(
+    IS_MAC && !fullWidth,
+    resizing
+      ? undefined
+      : `${size?.width ?? 0}x${size?.height ?? 0}:${geometryRevision}`,
+  );
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const addressInputRef = useRef<HTMLInputElement | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -773,7 +782,9 @@ export default function BrowserOverlay({
       </div>
       {fullWidth ? null : (
         <div
+          ref={resizeRegionRef}
           className="browser-overlay-resize-border"
+          {...nativeResizeHandleProps()}
           role="separator"
           aria-label="Resize browser height"
           title="Drag to resize browser height"

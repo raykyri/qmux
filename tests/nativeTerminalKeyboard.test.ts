@@ -4,6 +4,8 @@ import { JSDOM } from "jsdom";
 
 import {
   desiredNativeTerminalKeyboardOwner,
+  isNativeResizeHandleTarget,
+  nativeResizeHandleProps,
   reconcileWebSelectionForTabSwitch,
   windowFocusKeyboardOwner,
 } from "../src/lib/nativeTerminalKeyboard";
@@ -135,6 +137,23 @@ test("current web focus wins without requiring restoration", () => {
     }),
     "current-web-editable",
   );
+});
+
+test("resize handles are marked and menu separators are not", (t) => {
+  const { window } = new JSDOM(`
+    <div class="sidebar-resizer"><span class="line"></span></div>
+    <div class="menu-divider" role="separator"></div>
+  `);
+  t.after(() => window.close());
+  const { document } = window;
+  const handle = document.querySelector(".sidebar-resizer")!;
+  for (const [name, value] of Object.entries(nativeResizeHandleProps())) {
+    handle.setAttribute(name, value);
+  }
+  assert.equal(isNativeResizeHandleTarget(handle), true);
+  assert.equal(isNativeResizeHandleTarget(handle.querySelector(".line")), true);
+  assert.equal(isNativeResizeHandleTarget(document.querySelector(".menu-divider")), false);
+  assert.equal(isNativeResizeHandleTarget(null), false);
 });
 
 test("internal WebKit focus churn does not revive an old editor", () => {

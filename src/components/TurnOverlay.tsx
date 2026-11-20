@@ -24,10 +24,13 @@ import type {
   TranscriptOption,
 } from "../types";
 import {
+  IS_MAC,
   isEditableTarget,
   placePanePopover,
   turnPaneRectFrom,
 } from "../lib/appHelpers";
+import { useNativeWebOverlayRegion } from "../hooks/useNativeWebOverlayRegion";
+import { nativeResizeHandleProps } from "../lib/nativeTerminalKeyboard";
 import { claimNativeTerminalPointerForWebDrag } from "../lib/api";
 import { writeClipboardText } from "../lib/clipboard";
 import { buildHandoffDocument, type HandoffContext } from "../lib/handoff";
@@ -960,6 +963,10 @@ export default function TurnOverlay({
   );
   const readerMode =
     readerModeRequested && focusedAssistantItems.length > 0;
+  const queueSplitRegionRef = useNativeWebOverlayRegion<HTMLDivElement>(
+    IS_MAC && queueSplit && !readerMode,
+    effectiveQueueSplitHeight,
+  );
   const displayedTimelineItems = readerMode ? focusedAssistantItems : timelineItems;
   const hasTimelineContent = readerMode
     ? displayedTimelineItems.length > 0
@@ -1330,7 +1337,9 @@ export default function TurnOverlay({
       />
       {!readerMode && queueSplit ? (
         <div
+          ref={queueSplitRegionRef}
           className="turn-queue-resizer"
+          {...nativeResizeHandleProps()}
           role="separator"
           aria-label="Resize queue split"
           aria-orientation="horizontal"
