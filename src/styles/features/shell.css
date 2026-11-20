@@ -199,6 +199,20 @@
   border-bottom-left-radius: 0;
 }
 
+.sidebar-new-menu {
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.sidebar-new-menu .menu-item {
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.sidebar-new-menu .menu-item svg {
+  flex: none;
+}
+
 /* Reopens the collapsed left sidebar. Sits just right of the macOS traffic
    lights (they end at 57px) and uses the same grouped header-button chrome
    as the other window controls. */

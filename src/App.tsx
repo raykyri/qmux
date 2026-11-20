@@ -140,8 +140,12 @@ import {
   DialogRoot,
   DialogTitle,
   Input,
+  Menu,
+  MenuItem,
   NativeSelect,
+  PopoverPortal,
   Textarea,
+  useAnchoredPopover,
 } from "./components/ui";
 import {
   ThreadGraphRequestTracker,
@@ -1958,6 +1962,26 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     null,
   );
   const [settingsMenu, setSettingsMenu] = useState<{ x: number; y: number } | null>(null);
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
+  const newMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const newMenuRef = useRef<HTMLDivElement | null>(null);
+  const closeNewMenu = useCallback(() => setNewMenuOpen(false), []);
+  const newMenuStyle = useAnchoredPopover({
+    open: newMenuOpen,
+    onClose: closeNewMenu,
+    triggerRef: newMenuTriggerRef,
+    popoverRef: newMenuRef,
+    preferredWidth: 220,
+  });
+  useLayoutEffect(() => {
+    if (!newMenuOpen) return;
+    return claimNativeTerminalPointerForWebOverlay();
+  }, [newMenuOpen]);
+  function chooseNewMenuAction(action: () => void) {
+    newMenuTriggerRef.current?.focus();
+    setNewMenuOpen(false);
+    action();
+  }
   const [newRemoteGroupDialogOpen, setNewRemoteGroupDialogOpen] = useState(false);
   const { pendingRemoteGroups, createPendingRemoteGroup } = useRemoteGroupCreation();
   const paneContextMenuRef = useRef<HTMLDivElement | null>(null);
@@ -5243,6 +5267,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     }
     setLeftSidebarCollapsed(collapsed);
     if (collapsed) {
+      setNewMenuOpen(false);
       setPaneContextMenu(null);
       setGroupMenu(null);
       setSettingsMenu(null);
@@ -5825,6 +5850,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       linkMenu ||
       paneContextMenu ||
       groupMenu ||
+      newMenuOpen ||
       settingsMenu,
   );
   const nativeBrowserOccluded = Boolean(
@@ -8806,6 +8832,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         renamePaneId ||
         renameGroupId ||
         settingsMenu ||
+        newMenuOpen ||
         groupMenu ||
         paneContextMenu ||
         linkMenu,
@@ -12896,6 +12923,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // below, which is registered exactly once. Mirrored every render, read only
   // at event time.
   const escapeOverlayStateRef = useRef({
+    newMenuOpen,
     paneContextMenu,
     groupMenu,
     settingsMenu,
@@ -12916,6 +12944,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   });
   useEffect(() => {
     escapeOverlayStateRef.current = {
+      newMenuOpen,
       paneContextMenu,
       groupMenu,
       settingsMenu,
@@ -13011,7 +13040,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       // The remaining overlays dismiss together on one Escape, as they did as
       // independent listeners that each observed the same keydown.
       const menusOpen = Boolean(
-        overlays.paneContextMenu || overlays.groupMenu || overlays.settingsMenu,
+        overlays.paneContextMenu ||
+          overlays.groupMenu ||
+          overlays.settingsMenu ||
+          overlays.newMenuOpen,
       );
       const dialogsOpen = Boolean(
         overlays.repositoryBrowser ||
@@ -15420,6 +15452,24 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         >
           <div className="titlebar-drag" data-tauri-drag-region aria-hidden="true" />
           <div className="sidebar-header-controls is-grouped">
+            <Button
+              ref={newMenuTriggerRef}
+              variant="icon"
+              className={`sidebar-header-button${newMenuOpen ? " is-active" : ""}`}
+              aria-label="New"
+              title="New"
+              aria-haspopup="menu"
+              aria-expanded={newMenuOpen}
+              aria-controls={newMenuOpen ? "sidebar-new-menu" : undefined}
+              onClick={() => {
+                setPaneContextMenu(null);
+                setGroupMenu(null);
+                setSettingsMenu(null);
+                setNewMenuOpen((open) => !open);
+              }}
+            >
+              <Plus size={14} aria-hidden="true" />
+            </Button>
             <button
               type="button"
               className="icon-button sidebar-header-button"
@@ -15870,6 +15920,59 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         ) : null}
         </aside>
       )}
+
+      {newMenuOpen ? (
+        <PopoverPortal>
+          <Menu
+            id="sidebar-new-menu"
+            ref={newMenuRef}
+            className="sidebar-new-menu"
+            aria-label="New"
+            style={newMenuStyle ?? undefined}
+          >
+            <MenuItem
+              onClick={() => chooseNewMenuAction(() => {
+                setSidebarMode("terminal");
+                setActiveSurface("pane");
+                void addShellPane();
+              })}
+            >
+              <SquareTerminal size={14} aria-hidden="true" />
+              <span>New shell</span>
+            </MenuItem>
+            <MenuItem onClick={() => chooseNewMenuAction(openNewAgentPopover)}>
+              <MessageSquareText size={14} aria-hidden="true" />
+              <span>New agent</span>
+            </MenuItem>
+            <MenuItem
+              disabled={folderPickerStatus !== null}
+              onClick={() => chooseNewMenuAction(() => {
+                setSidebarMode("terminal");
+                setActiveSurface("pane");
+                void createGroupFromSettingsMenu();
+              })}
+            >
+              <Plus size={14} aria-hidden="true" />
+              <span>New group...</span>
+            </MenuItem>
+            <MenuItem
+              onClick={() => chooseNewMenuAction(() => {
+                setSidebarMode("terminal");
+                setActiveSurface("pane");
+                openNewRemoteGroupDialog();
+              })}
+            >
+              <Globe size={14} aria-hidden="true" />
+              <span>New remote group...</span>
+            </MenuItem>
+            <div className="menu-divider" role="separator" />
+            <MenuItem onClick={() => chooseNewMenuAction(() => setSettingsOpen(true))}>
+              <Settings size={14} aria-hidden="true" />
+              <span>Settings</span>
+            </MenuItem>
+          </Menu>
+        </PopoverPortal>
+      ) : null}
 
       {settingsMenu ? (
         <div
