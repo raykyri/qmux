@@ -153,7 +153,7 @@ and these builds have no updater artifacts or signing secrets. Download
 them from the CI run's artifacts; they are not notarized releases. The workflow
 also supports manual runs and retains artifacts for seven days.
 
-For signed CI releases, follow the [GitHub Actions setup guide](docs/ci-and-releases.md)
+For signed CI releases, follow the [GitHub Actions setup guide](RELEASE.md)
 to configure the `release` environment, signing secrets, and publishing variables.
 
 Development:
