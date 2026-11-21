@@ -30,6 +30,16 @@ final class QmuxTerminalView: TerminalView {
     private var annotationGestureContentGeneration: UInt64?
     private var annotationGestureSelectionFingerprint: (text: String, start: UInt32, length: UInt32)?
 
+    override func scrollWheel(with event: NSEvent) {
+        // Switching tabs can reveal this surface under a stationary pointer,
+        // without a mouseMoved event. Ghostty's scroll handler uses its cached
+        // mouse position for TUI mouse reports, so refresh it before scrolling
+        // or Codex can receive wheel events outside its scrollable region until
+        // the user clicks. Reuse Ghostty's coordinate/modifier conversion.
+        super.mouseMoved(with: event)
+        super.scrollWheel(with: event)
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = annotationPoint(from: event)
         let state = annotationViewportState?()
