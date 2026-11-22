@@ -202,15 +202,7 @@
 .sidebar-new-menu {
   padding: 4px;
   overflow-y: auto;
-}
-
-.sidebar-new-menu .menu-item {
-  gap: 8px;
-  white-space: nowrap;
-}
-
-.sidebar-new-menu .menu-item svg {
-  flex: none;
+  font-size: calc(13.5px + var(--font-ui-size-offset));
 }
 
 /* Reopens the collapsed left sidebar. Sits just right of the macOS traffic

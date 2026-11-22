@@ -115,8 +115,6 @@
 
 .link-context-menu .link-context-menu-item {
   gap: 8px;
-  min-height: calc(var(--control-h-md) - 2px);
-  padding-block: 5px;
   white-space: nowrap;
 }
 
@@ -132,8 +130,8 @@
   justify-content: flex-start;
   width: 100%;
   min-width: 0;
-  min-height: var(--control-h-md);
-  padding: 6px 10px;
+  min-height: 28px;
+  padding: 5px 8px;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: transparent;

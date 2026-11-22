@@ -15930,46 +15930,48 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             aria-label="New"
             style={newMenuStyle ?? undefined}
           >
-            <MenuItem
-              onClick={() => chooseNewMenuAction(() => {
-                setSidebarMode("terminal");
-                setActiveSurface("pane");
-                void addShellPane();
-              })}
-            >
-              <SquareTerminal size={14} aria-hidden="true" />
-              <span>New shell</span>
-            </MenuItem>
-            <MenuItem onClick={() => chooseNewMenuAction(openNewAgentPopover)}>
-              <MessageSquareText size={14} aria-hidden="true" />
-              <span>New agent</span>
-            </MenuItem>
-            <MenuItem
-              disabled={folderPickerStatus !== null}
-              onClick={() => chooseNewMenuAction(() => {
-                setSidebarMode("terminal");
-                setActiveSurface("pane");
-                void createGroupFromSettingsMenu();
-              })}
-            >
-              <Plus size={14} aria-hidden="true" />
-              <span>New group...</span>
-            </MenuItem>
-            <MenuItem
-              onClick={() => chooseNewMenuAction(() => {
-                setSidebarMode("terminal");
-                setActiveSurface("pane");
-                openNewRemoteGroupDialog();
-              })}
-            >
-              <Globe size={14} aria-hidden="true" />
-              <span>New remote group...</span>
-            </MenuItem>
-            <div className="menu-divider" role="separator" />
-            <MenuItem onClick={() => chooseNewMenuAction(() => setSettingsOpen(true))}>
-              <Settings size={14} aria-hidden="true" />
-              <span>Settings</span>
-            </MenuItem>
+            <div className="group-context-actions">
+              <MenuItem
+                onClick={() => chooseNewMenuAction(() => {
+                  setSidebarMode("terminal");
+                  setActiveSurface("pane");
+                  void addShellPane();
+                })}
+              >
+                <SquareTerminal size={13} aria-hidden="true" />
+                <span>New local shell</span>
+              </MenuItem>
+              <MenuItem onClick={() => chooseNewMenuAction(openNewAgentPopover)}>
+                <MessageSquareText size={13} aria-hidden="true" />
+                <span>New agent...</span>
+              </MenuItem>
+              <MenuItem
+                disabled={folderPickerStatus !== null}
+                onClick={() => chooseNewMenuAction(() => {
+                  setSidebarMode("terminal");
+                  setActiveSurface("pane");
+                  void createGroupFromSettingsMenu();
+                })}
+              >
+                <Plus size={13} aria-hidden="true" />
+                <span>Open local folder...</span>
+              </MenuItem>
+              <MenuItem
+                onClick={() => chooseNewMenuAction(() => {
+                  setSidebarMode("terminal");
+                  setActiveSurface("pane");
+                  openNewRemoteGroupDialog();
+                })}
+              >
+                <Globe size={13} aria-hidden="true" />
+                <span>Open remote shell...</span>
+              </MenuItem>
+              <div className="context-menu-divider" role="separator" />
+              <MenuItem onClick={() => chooseNewMenuAction(() => setSettingsOpen(true))}>
+                <Settings size={13} aria-hidden="true" />
+                <span>Settings...</span>
+              </MenuItem>
+            </div>
           </Menu>
         </PopoverPortal>
       ) : null}
@@ -15990,15 +15992,6 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                 <button
                   type="button"
                   role="menuitem"
-                  className="control-button"
-                  onClick={openNewRemoteGroupDialog}
-                >
-                  <Globe size={13} aria-hidden="true" />
-                  <span>New remote group...</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
                   className="control-button context-menu-has-shortcut"
                   disabled={folderPickerStatus !== null}
                   onClick={() => {
@@ -16006,8 +15999,17 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                   }}
                 >
                   <Plus size={13} aria-hidden="true" />
-                  <span>New group...</span>
+                  <span>Open local folder...</span>
                   <kbd className="context-menu-shortcut">⌘⇧N</kbd>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="control-button"
+                  onClick={openNewRemoteGroupDialog}
+                >
+                  <Globe size={13} aria-hidden="true" />
+                  <span>Open remote shell...</span>
                 </button>
               </>
             ) : null}
@@ -16043,7 +16045,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               }}
             >
               <Settings size={13} aria-hidden="true" />
-              <span>Settings</span>
+              <span>Settings...</span>
             </button>
           </div>
         </div>
@@ -16146,7 +16148,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
               }}
             >
               <Plus size={13} aria-hidden="true" />
-              <span>New group...</span>
+              <span>Open local folder...</span>
               <kbd className="context-menu-shortcut">⌘⇧N</kbd>
             </button>
             <button
