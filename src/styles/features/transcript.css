@@ -913,6 +913,10 @@ header + .turn-blocks {
   color: var(--text-activity);
 }
 
+.turn-paste-tag {
+  color: var(--text-activity);
+}
+
 /* Pasted images referenced by "[Image: source: <path>]" transcript markers
    render inline in the user bubble; pathless "[Image #N]" references, loads
    still in flight, and failed reads fall back to the muted chip. */

@@ -42,6 +42,7 @@ import {
 import { requestSaveDraftAsPrompt } from "../lib/promptLibrary";
 import { transcriptDisclosureLabel } from "../lib/transcriptDisclosures";
 import CollapsedTranscriptDisclosure from "./CollapsedTranscriptDisclosure";
+import PastedContentText, { hasPastedContent } from "./PastedContentText";
 import { formatEstimatedTokenCount } from "../lib/tokenEstimate";
 import {
   captureTranscriptScrollPosition,
@@ -2155,10 +2156,10 @@ function MessageBlockView({ block, role }: { block: MessageBlock; role: string }
           return <UserTextWithImages segments={segments} />;
         }
       }
-      if (role === "user" && block.text.length > LONG_USER_MESSAGE_COLLAPSE_THRESHOLD) {
+      if (role === "user" && !hasPastedContent(block.text) && block.text.length > LONG_USER_MESSAGE_COLLAPSE_THRESHOLD) {
         return <CollapsedUserText text={block.text} />;
       }
-      return <p className="turn-text">{block.text}</p>;
+      return <p className="turn-text"><PastedContentText text={block.text} /></p>;
     }
     return (
       <TranscriptMarkdown
@@ -2182,7 +2183,7 @@ function UserTextWithImages({ segments }: { segments: ImageMarkerSegment[] }) {
         segment.kind === "image" ? (
           <TranscriptImage key={index} marker={segment.text} />
         ) : (
-          <span key={index}>{segment.text}</span>
+          <span key={index}><PastedContentText text={segment.text} /></span>
         ),
       )}
     </p>

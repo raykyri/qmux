@@ -382,7 +382,8 @@ function parseOpeningTagAt(value: string, start: number): { tag: string; end: nu
 }
 
 function isInstructionTagName(tag: string) {
-  if (tag.length === 0) {
+  // Paste envelopes contain the user's content, not injected instructions.
+  if (tag.length === 0 || tag === "pasted_content") {
     return false;
   }
   for (const char of tag) {
