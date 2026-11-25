@@ -5,6 +5,7 @@ import {
 } from "./lib/nativeTerminalLayout";
 import { createPortal, flushSync } from "react-dom";
 import { ComposerDrafts } from "./lib/composerDrafts";
+import { composerFileDrops } from "./lib/composerFileDrop";
 import { afterStartupPaint, loadInitialWorkspace, reconcileStartupArtifacts, reconcileStartupDrafts, startupResearchPane } from "./lib/startupHydration";
 import RemoteLinkContextMenu from "./components/RemoteLinkContextMenu";
 import { useRemoteFilePreviews } from "./hooks/useRemoteFilePreviews";
@@ -8882,6 +8883,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   markdownDropBlockedRef.current = markdownDropBlocked;
 
   useEffect(() => {
+    if (markdownDropBlocked) composerFileDrops.clear();
+  }, [markdownDropBlocked]);
+
+  useEffect(() => {
     if (!markdownDropBlocked && sidebarMode === "research") {
       return;
     }
@@ -8941,6 +8946,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         }
         scaleFactorRevision += 1;
         scaleFactor = payload.scaleFactor;
+        composerFileDrops.clearHover();
         // Wait for the next native `over` event to re-evaluate the physical
         // pointer against the CSS bounds using the new display scale.
         setMarkdownDropTargetActive(false);
@@ -8958,14 +8964,25 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         if (disposed) {
           return;
         }
+        if (payload.type === "enter") {
+          markdownDragEligible =
+            payload.paths.length === 1 && isMarkdownDocumentPath(payload.paths[0]);
+        }
+        if (payload.type === "drop") {
+          // Native file drops do not emit the DOM input events used to authorize focus changes.
+          lastUserInputSeqRef.current = ++focusOrderSeqRef.current;
+        }
+        if (composerFileDrops.handle(payload, scaleFactor, markdownDropBlockedRef.current)) {
+          if (payload.type === "drop") markdownDragEligible = false;
+          setMarkdownDropTargetActive(false);
+          return;
+        }
         if (payload.type === "leave") {
           markdownDragEligible = false;
           setMarkdownDropTargetActive(false);
           return;
         }
         if (payload.type === "enter") {
-          markdownDragEligible =
-            payload.paths.length === 1 && isMarkdownDocumentPath(payload.paths[0]);
           showDropTarget(payload.position);
           return;
         }
@@ -9037,6 +9054,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       disposed = true;
       unlistenDrop?.();
       unlistenScale?.();
+      composerFileDrops.clear();
     };
   }, []);
   const chooseResearchWorkspaceFolder = useCallback(async (): Promise<GroupInfo | null> => {

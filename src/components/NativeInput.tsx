@@ -38,6 +38,7 @@ import {
 import type { ComposerPolicy } from "../adapters";
 import { writeClipboardText } from "../lib/clipboard";
 import { growComposerTextarea } from "../lib/composerTextarea";
+import { composerFileDrops, fileDropInsertion } from "../lib/composerFileDrop";
 import {
   completeComposerSlashCommand,
   matchingComposerSlashCommands,
@@ -338,6 +339,8 @@ export default function NativeInput({
     maxWidth: number;
   } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerRef = useRef<HTMLDivElement | null>(null);
+  const [fileDropActive, setFileDropActive] = useState(false);
   const slashPopoverRef = useRef<HTMLDivElement | null>(null);
   const slashListId = useId();
   const [textareaFocused, setTextareaFocused] = useState(false);
@@ -407,6 +410,26 @@ export default function NativeInput({
     setDraftForAgent(origin.id, latest.text.slice(0, start) + text + latest.text.slice(end));
     focusComposer(origin.id, start + text.length);
   }
+
+  const fileDropsEnabled = !pane.remoteSession && !pane.remoteClient;
+  const fileDropHandlerRef = useRef<(paths: string[]) => void>(() => undefined);
+  fileDropHandlerRef.current = (paths) => {
+    if (!fileDropsEnabled) return;
+    const origin = captureInsertion();
+    const text = fileDropInsertion(origin.draft.text, origin.start, origin.end, paths);
+    if (!text) return;
+    textareaRef.current?.focus();
+    finishInsertion(origin, text);
+    onUserInput(agent.id);
+  };
+  useLayoutEffect(() => {
+    const element = composerRef.current;
+    if (!element || !fileDropsEnabled) return;
+    return composerFileDrops.register(element, {
+      onHover: setFileDropActive,
+      onDrop: (paths) => fileDropHandlerRef.current(paths),
+    });
+  }, [agent.id, fileDropsEnabled]);
 
   // Persist an image pasted into the composer and splice a "[Image: <path>]"
   // marker at the caret. The queue renders that marker as a thumbnail, and it is
@@ -1406,7 +1429,14 @@ export default function NativeInput({
           <span>No turns queued</span>
         </div>
       ) : null}
-      <div className="native-input-composer">
+      <div
+        ref={composerRef}
+        className={`native-input-composer${fileDropActive ? " is-file-drop-target" : ""}`}
+        data-composer-file-drop={fileDropsEnabled ? "" : undefined}
+      >
+        {fileDropActive ? (
+          <span className="composer-file-drop-hint" role="status">Drop files to add to your message</span>
+        ) : null}
         <textarea
           ref={textareaRef}
           value={value}

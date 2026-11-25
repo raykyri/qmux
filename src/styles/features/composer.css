@@ -1,3 +1,22 @@
+.native-input-composer.is-file-drop-target {
+  position: relative;
+  outline: 2px solid var(--accent-color);
+  outline-offset: -2px;
+}
+
+.composer-file-drop-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+}
+
 .queued-turn-stack {
   display: grid;
   align-content: start;

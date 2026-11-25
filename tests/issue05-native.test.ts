@@ -3,6 +3,8 @@ import { test, after, afterEach } from 'node:test';
 import { JSDOM } from 'jsdom';
 import { act, createElement as h, useState } from 'react';
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
+import { PhysicalPosition } from '@tauri-apps/api/dpi';
+import { composerFileDrops } from '../src/lib/composerFileDrop';
 const dom = new JSDOM('<!doctype html><div id="root"></div><button id="outside">Outside</button>', { url: 'http://localhost', pretendToBeVisual: true });
 for (const key of ['window', 'document', 'HTMLElement', 'HTMLTextAreaElement', 'Element', 'Node', 'Event', 'MouseEvent', 'KeyboardEvent', 'FileReader', 'File', 'Blob']) {
   Object.defineProperty(globalThis, key, { value: (dom.window as any)[key], configurable: true });
@@ -37,6 +39,7 @@ let errors: string[] = [];
 let lastMessageText: string | null = null;
 let clipboardWrites: string[] = [];
 let submittedTurns: string[] = [];
+let remoteAgentIds = new Set<string>();
 const registerFlusher = (fn: () => void) => { flushers.add(fn); return () => { flushers.delete(fn); }; };
 function Harness() {
   const [id, setId] = useState('A');
@@ -44,7 +47,12 @@ function Harness() {
   changeAgent = setId;
   selected = id;
   return h(NativeInput, {
-    pane: { id: 'pane-' + id } as any,
+    pane: {
+      id: 'pane-' + id,
+      remoteSession: remoteAgentIds.has(id)
+        ? { remoteId: 'remote', tmuxServer: 'qmux', tmuxSession: id }
+        : null,
+    } as any,
     agent: { id, adapter: 'claude', status: 'idle', sessionId: 'session-' + id } as any,
     agentMayBeBackgrounded: false, draft: drafts[id] ?? '', queuedTurns: queues[id] ?? [], waitTargets: [], queueSplit: false,
     requireCmdEnterToSend: false, pasteProtection: { confirmMultiLinePaste: true, confirmPasteOverChars: 250000 },
@@ -59,7 +67,8 @@ function Harness() {
     onTurnSubmitted(_id, text) { submittedTurns.push(text); }, onUserInput: id => userInputs.push(id), getQueueScroll: () => undefined, saveQueueScroll() { }, onError: message => { errors.push(message); },
   });
 }
-async function mount(initial: Record<string, string>, initialQueues: Record<string, any[]> = {}) {
+async function mount(initial: Record<string, string>, initialQueues: Record<string, any[]> = {}, remoteIds: string[] = []) {
+  remoteAgentIds = new Set(remoteIds);
   composerDrafts = new ComposerDrafts();
   drafts = { ...initial };
   queues = initialQueues;
@@ -354,4 +363,72 @@ test('copy slash keeps the draft when the transcript has no message', async () =
   assert.equal(drafts.A, '/copy Keep this');
   assert.deepEqual(errors, ['This transcript has no message to copy yet.']);
   assert.equal(pending.length, 0);
+});
+
+test('file drop inserts at the selection, focuses the composer, and persists without sending', async () => {
+  await mount({ A: 'Read this please', B: 'other draft' });
+  await act(async () => {
+    textarea().setSelectionRange(5, 9);
+    document.getElementById('outside')!.focus();
+    const position = new PhysicalPosition(10, 20);
+    composerFileDrops.handle({ type: 'enter', paths: ['/tmp/report.pdf'], position }, 1, false, textarea);
+  });
+  assert.ok(document.querySelector('.is-file-drop-target'));
+  await act(async () => {
+    composerFileDrops.handle({ type: 'drop', paths: ['/tmp/report.pdf', '/tmp/chart.png'], position: new PhysicalPosition(10, 20) }, 1, false, textarea);
+    await new Promise(r => setTimeout(r, 5));
+  });
+  const expected = 'Read [File: "/tmp/report.pdf"]\n[Image: /tmp/chart.png] please';
+  assert.equal(textarea().value, expected);
+  assert.equal(drafts.A, expected);
+  assert.equal(document.activeElement, textarea());
+  assert.equal(document.querySelector('.is-file-drop-target'), null);
+  assert.deepEqual(userInputs, ['A']);
+  assert.deepEqual(submittedTurns, []);
+  assert.equal(pending.length, 0, 'dropping references does not read or upload file contents');
+  await switchTo('B');
+  assert.equal(textarea().value, 'other draft');
+  await switchTo('A');
+  assert.equal(textarea().value, expected);
+});
+
+test('dropping after changing agents uses the new composer and survives an in-flight send', async () => {
+  await mount({ A: 'A draft', B: 'B draft' });
+  await switchTo('B');
+  await click('Send');
+  await act(() => {
+    textarea().setSelectionRange(textarea().value.length, textarea().value.length);
+    composerFileDrops.handle({ type: 'drop', paths: ['/tmp/large.zip'], position: new PhysicalPosition(0, 0) }, 1, false, textarea);
+  });
+  assert.equal(drafts.A, 'A draft');
+  assert.equal(drafts.B, 'B draft\n[File: "/tmp/large.zip"]');
+  await finish();
+  assert.equal(textarea().value, '[File: "/tmp/large.zip"]');
+  assert.equal(drafts.B, textarea().value);
+});
+
+test('remote composers reject file drops and clear the local drop highlight on switching', async () => {
+  await mount({ A: 'local draft', B: 'remote draft' }, {}, ['B']);
+  const position = new PhysicalPosition(10, 20);
+  await act(() => {
+    composerFileDrops.handle({ type: 'enter', paths: ['/tmp/local.pdf'], position }, 1, false, textarea);
+  });
+  assert.ok(document.querySelector('.is-file-drop-target'));
+  await switchTo('B');
+  assert.equal(document.querySelector('[data-composer-file-drop]'), null);
+  assert.equal(document.querySelector('.is-file-drop-target'), null);
+  await act(() => {
+    for (const type of ['enter', 'drop'] as const) {
+      assert.equal(composerFileDrops.handle({ type, paths: ['/tmp/local.pdf'], position }, 1, false, textarea), false);
+    }
+  });
+  assert.equal(textarea().value, 'remote draft');
+  assert.equal(drafts.B, 'remote draft');
+  assert.deepEqual(userInputs, []);
+  assert.equal(pending.length, 0);
+  await switchTo('A');
+  await act(() => {
+    assert.equal(composerFileDrops.handle({ type: 'drop', paths: ['/tmp/local.pdf'], position }, 1, false, textarea), true);
+  });
+  assert.match(textarea().value, /local\.pdf/);
 });
