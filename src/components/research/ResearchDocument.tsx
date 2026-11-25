@@ -1577,6 +1577,7 @@ const ThreadSegment = memo(function ThreadSegment({
       ref={(element) => registerSegmentElement(node.id, "anchor", element)}
       className={`research-thread-segment${isSelected ? " is-selected" : ""}`}
       data-segment-anchor={node.id}
+      data-node-id={node.id}
     >
       <ResearchSegmentPrompt
         visible={!view.isDocument && !view.isConversation}

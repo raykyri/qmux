@@ -571,6 +571,7 @@ import {
   browserOpenTerminalPath,
   browserOpenPreviewExternal,
   browserRevealLocalPath,
+  researchFileAction,
   claimNativeTerminalPointerForWebDrag,
   claimNativeTerminalPointerForWebOverlay,
   clearAgentWorkingStatus,
@@ -3240,6 +3241,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     paneId: string | null;
     trigger?: HTMLElement;
     transcript?: string | null;
+    researchNodeId?: string;
   } | null>(null);
   const [fileMatchMenu, setFileMatchMenu] = useState<{
     paneId: string;
@@ -4977,6 +4979,16 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     }
   }, [remotePreviews, remotePreviewRequests, agents, panes, browserOverlayByPane]);
 
+  function openResearchFile(ownerId: string, path: string, nodeId: string | undefined, action: "open" | "reveal" | "defaultApp", fragment = "") {
+    if (!nodeId) {
+      setError("This file link has no originating research node");
+      return;
+    }
+    void researchFileAction(ownerId.slice(RESEARCH_BROWSER_OWNER_PREFIX.length), nodeId, path, action)
+      .then((url) => { if (url) openBrowserOverlay(ownerId, url + fragment, true); })
+      .catch(reportHumanBrowserError);
+  }
+
   const openLinkForPane = useCallback(
     (paneId: string | null | undefined, url: string, trigger?: HTMLElement, external = false) => {
       // Command-click bypasses the overlay, including its toggle-on-repeat
@@ -4992,6 +5004,11 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       }
       const fileTarget = transcriptFileTarget(url);
       const localPath = fileTarget?.path ?? pathFromQmuxFileHref(url);
+      if (localPath && paneId?.startsWith(RESEARCH_BROWSER_OWNER_PREFIX)) {
+        const nodeId = trigger?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+        openResearchFile(paneId, localPath, nodeId, "open", fileTarget?.fragment);
+        return;
+      }
       if (localPath && paneId && panesRef.current.find((pane) => pane.id === paneId)?.remoteSession) {
         const transcript = agentsRef.current.find((agent) => agent.paneId === paneId)?.transcriptPath;
         if (!transcript) {
@@ -5460,11 +5477,13 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     let actions = cache.get(paneId);
     if (!actions) {
       actions = {
+        fileLinks: paneId.startsWith(RESEARCH_BROWSER_OWNER_PREFIX),
         openLink: (url, trigger, external) => {
           openLinkForPaneRef.current(paneId, url, trigger, external);
         },
         openLinkMenu: (url, x, y, trigger) => setLinkMenu({
           url, x, y, paneId, trigger,
+          researchNodeId: trigger?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId,
           transcript: agentsRef.current.find((a) => a.paneId === paneId)?.transcriptPath,
         }),
         openCodexInlineVisualization: (file) => {
@@ -19018,12 +19037,18 @@ function MainApp({ onReady }: { onReady?: () => void }) {
                 canPreviewLocalFilePath(linkMenuLocalPath)))
           }
           onOpenInternal={() => {
-            openLinkForPane(linkMenu.paneId, linkMenu.url, linkMenu.trigger);
+            if (linkMenuLocalPath && linkMenuPaneId?.startsWith(RESEARCH_BROWSER_OWNER_PREFIX)) {
+              openResearchFile(linkMenuPaneId, linkMenuLocalPath, linkMenu.researchNodeId, "open", transcriptFileTarget(linkMenu.url)?.fragment);
+            } else {
+              openLinkForPane(linkMenu.paneId, linkMenu.url, linkMenu.trigger);
+            }
             setLinkMenu(null);
           }}
           onOpenExternal={() => {
             if (linkMenuLocalPath !== undefined && linkMenuPaneId !== null) {
-              void browserRevealLocalPath(linkMenuPaneId, linkMenuLocalPath).catch((err) => {
+              if (linkMenuPaneId.startsWith(RESEARCH_BROWSER_OWNER_PREFIX)) {
+                openResearchFile(linkMenuPaneId, linkMenuLocalPath, linkMenu.researchNodeId, "reveal");
+              } else void browserRevealLocalPath(linkMenuPaneId, linkMenuLocalPath).catch((err) => {
                 setError(err instanceof Error ? err.message : String(err));
               });
             } else {
@@ -19047,7 +19072,9 @@ function MainApp({ onReady }: { onReady?: () => void }) {
           onOpenWithDefaultApp={
             linkMenuLocalPath !== undefined && linkMenuPaneId !== null
               ? () => {
-                  void browserOpenLocalPathExternal(linkMenuPaneId, linkMenuLocalPath).catch(
+                  if (linkMenuPaneId.startsWith(RESEARCH_BROWSER_OWNER_PREFIX)) {
+                    openResearchFile(linkMenuPaneId, linkMenuLocalPath, linkMenu.researchNodeId, "defaultApp");
+                  } else void browserOpenLocalPathExternal(linkMenuPaneId, linkMenuLocalPath).catch(
                     (err) => {
                       setError(err instanceof Error ? err.message : String(err));
                     },

@@ -1165,6 +1165,38 @@ fn canonical_os_action_path(
         .map_err(|err| format!("cannot access '{}': {err}", requested.display()))
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ResearchFileAction {
+    Open,
+    Reveal,
+    DefaultApp,
+}
+
+#[tauri::command(async)]
+fn research_file_action(
+    state: tauri::State<'_, AppState>,
+    tree_id: String,
+    node_id: String,
+    path: String,
+    action: ResearchFileAction,
+) -> Result<Option<String>, String> {
+    let source = state.research_local_file_path(&tree_id, &node_id, &path, false)?;
+    match action {
+        ResearchFileAction::Open if local_link_needs_preview(&source) => state
+            .research_file_preview(&tree_id, &node_id, &path)
+            .map(Some),
+        ResearchFileAction::Open | ResearchFileAction::Reveal => {
+            reveal_path_in_file_manager(&source)?;
+            Ok(None)
+        }
+        ResearchFileAction::DefaultApp => {
+            open_path_with_default_app(&source)?;
+            Ok(None)
+        }
+    }
+}
+
 /// Reveal a local link explicitly selected by the user, without executing it.
 #[tauri::command(async)]
 fn browser_reveal_local_path(
@@ -4162,6 +4194,7 @@ fn main() {
             browser_open_local_path,
             browser_open_terminal_path,
             browser_reveal_local_path,
+            research_file_action,
             browser_open_local_path_external,
             browser_open_codex_inline_visualization,
             browser_open_codex_visualization_reference,

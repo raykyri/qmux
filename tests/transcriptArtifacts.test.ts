@@ -32,6 +32,20 @@ function artifactButtonCount(html: string) {
   return html.match(/class="turn-markdown-artifact-open"/gu)?.length ?? 0;
 }
 
+test("research file links allow relative targets without enabling artifact controls", () => {
+  const html = renderToStaticMarkup(createElement(
+    TranscriptLinkActionsProvider, { actions: { ...actions, fileLinks: true } },
+    createElement(TranscriptMarkdown, {
+      text: "[Report](reports/result.html#summary) [File](file:///tmp/report%23final.html) `report.html`",
+      artifactLinks: false,
+    }),
+  ));
+  assert.match(html, /href="qmux-file:reports\/result.html#summary"/u);
+  assert.match(html, /href="qmux-file:\/tmp\/report%23final.html"/u);
+  assert.match(html, /<code>report.html<\/code>/u);
+  assert.equal(artifactButtonCount(html), 0);
+});
+
 test("plain loopback HTML URLs receive an adjacent launch button", () => {
   const html = render("Preview http://127.0.0.1:8631/mockup-1-unified.html now.");
   assert.equal(artifactButtonCount(html), 1);

@@ -214,6 +214,25 @@ test("local file menu dispatches reveal, default app, and copies the full CSR pa
   assert.equal(copied, path);
 });
 
+test("research links retain the originating node for clicks and context menus", async () => {
+  const { default: TranscriptMarkdown, TranscriptLinkActionsProvider } = await import("../src/components/TranscriptMarkdown");
+  const origins: Array<string | undefined> = [];
+  const record = (_url: string, trigger?: HTMLElement) => {
+    origins.push(trigger?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId);
+  };
+  await act(() => root.render(h(TranscriptLinkActionsProvider, {
+    actions: { fileLinks: true, openLink: record, openLinkMenu: (url, _x, _y, trigger) => record(url, trigger) },
+  }, h("div", { "data-node-id": "root-node" },
+    h("div", { "data-node-id": "child-node" },
+      h(TranscriptMarkdown, { text: "[Result](reports/result.html#summary)", artifactLinks: false }),
+    ),
+  ))));
+  const link = document.querySelector("a")!;
+  await click(link);
+  await act(() => { link.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
+  assert.deepEqual(origins, ["child-node", "child-node"]);
+});
+
 for (const kind of ["image", "diagram"] as const) {
   test(`${kind} lightbox traps focus, inerts the app, and restores focus on close`, async () => {
     await act(() => root.render(h(kind === "image" ? ImageLightbox : DiagramLightbox)));

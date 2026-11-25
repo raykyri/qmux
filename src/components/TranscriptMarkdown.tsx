@@ -230,6 +230,7 @@ function readMathPlugins() {
 // keeps link closures stable above memoized message items while giving ordinary
 // links and links injected into diagram SVGs exactly the same behavior.
 export interface LinkActions {
+  fileLinks?: boolean;
   openLink: (url: string, trigger?: HTMLElement, external?: boolean) => void;
   openLinkMenu: (url: string, x: number, y: number, trigger?: HTMLElement) => void;
   openCodexInlineVisualization?: (file: string) => void;
@@ -291,9 +292,9 @@ function MarkdownLink({
   node,
   ...props
 }: ComponentPropsWithoutRef<"a"> & { node?: TranscriptHastNode }) {
-  const { openLink, openLinkMenu } = useContext(LinkActionsContext);
+  const { openLink, openLinkMenu, fileLinks } = useContext(LinkActionsContext);
   const artifactLinks = useContext(TranscriptArtifactLinksContext);
-  const safe = artifactLinks ? safeTranscriptHref(href) : safeHref(href);
+  const safe = artifactLinks || fileLinks ? safeTranscriptHref(href) : safeHref(href);
   if (!safe) {
     return <span {...props} />;
   }
@@ -470,7 +471,7 @@ function BlockedMarkdownImage({ src, alt }: ComponentPropsWithoutRef<"img">) {
       onClick={(event) => openLink(safe, event.currentTarget, event.metaKey)}
       onContextMenu={(event) => {
         event.preventDefault();
-        openLinkMenu(safe, event.clientX, event.clientY);
+        openLinkMenu(safe, event.clientX, event.clientY, event.currentTarget);
       }}
     >
       {alt ? `Open image: ${alt}` : "Open external image"}
@@ -799,6 +800,7 @@ export default memo(function TranscriptMarkdown({
   inline = false,
   artifactLinks = false,
 }: TranscriptMarkdownProps) {
+  const { fileLinks } = useContext(LinkActionsContext);
   const math = useSyncExternalStore(subscribeToMathPlugins, readMathPlugins, readMathPlugins);
   const source = rewriteDevinFileRefs(text);
   if (oversizedContent && source.length > oversizedContent.maxCharacters) {
@@ -815,7 +817,7 @@ export default memo(function TranscriptMarkdown({
     <TranscriptArtifactLinksContext.Provider value={artifactLinks}>
       <div className={`turn-markdown${className ? ` ${className}` : ""}`}>
         <ReactMarkdown
-          urlTransform={(url, key) => artifactLinks && key === "href"
+          urlTransform={(url, key) => (artifactLinks || fileLinks) && key === "href"
             ? safeTranscriptHref(url) ?? ""
             : defaultUrlTransform(url)}
           components={

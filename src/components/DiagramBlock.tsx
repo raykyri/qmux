@@ -258,7 +258,7 @@ interface DiagramBlockProps {
   lang: DiagramLang;
   code: string;
   openLink: (url: string, trigger?: HTMLElement, external?: boolean) => void;
-  openLinkMenu: (url: string, x: number, y: number) => void;
+  openLinkMenu: (url: string, x: number, y: number, trigger?: HTMLElement) => void;
 }
 
 function diagramLinkFromEvent(event: ReactMouseEvent<HTMLElement>): string | null {
@@ -352,7 +352,7 @@ export default function DiagramBlock({
             const href = diagramLinkFromEvent(event);
             if (!href) return;
             event.preventDefault();
-            openLinkMenu(href, event.clientX, event.clientY);
+            openLinkMenu(href, event.clientX, event.clientY, event.currentTarget);
           }}
           dangerouslySetInnerHTML={{ __html: state.svg }}
         />

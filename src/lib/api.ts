@@ -1006,6 +1006,10 @@ export function browserRevealLocalPath(paneId: string, path: string) {
   return invoke<void>("browser_reveal_local_path", { paneId, path });
 }
 
+export function researchFileAction(treeId: string, nodeId: string, path: string, action: "open" | "reveal" | "defaultApp") {
+  return invoke<string | null>("research_file_action", { treeId, nodeId, path, action });
+}
+
 /** Deliberately hand a root-confined local path to its OS default app. */
 export function browserOpenLocalPathExternal(paneId: string, path: string) {
   return invoke<void>("browser_open_local_path_external", { paneId, path });

@@ -55,6 +55,71 @@ impl AppState {
         if !self.pane_exists(pane_id)? {
             return Err(format!("pane {pane_id} was not found"));
         }
+        self.mint_file_preview_token(pane_id, path, allow_subresources)
+    }
+
+    pub fn research_local_file_path(
+        &self,
+        tree_id: &str,
+        node_id: &str,
+        path: &str,
+        preview: bool,
+    ) -> Result<std::path::PathBuf, String> {
+        let node = self.research_node(node_id)?;
+        if node.tree_id != tree_id {
+            return Err("file link belongs to another research tree".to_string());
+        }
+        if node.origin.is_some() {
+            return Err("this research import has no verified local file context".to_string());
+        }
+        let workspace = self.research_workspace_for_node(node_id)?;
+        if workspace.is_remote() || workspace.imported_research_archive_id.is_some() {
+            return Err(
+                "local file actions are unavailable for remote or imported research".to_string(),
+            );
+        }
+        let cwd = std::path::Path::new(if node.worktree_dir.is_empty() {
+            &workspace.dir
+        } else {
+            &node.worktree_dir
+        });
+        let canonical = crate::canonical_os_action_path(path, Some(cwd))?;
+        if preview
+            && crate::file_server::resolve_under_roots(
+                &canonical,
+                &[cwd.to_path_buf(), std::path::PathBuf::from(&workspace.dir)],
+            )
+            .is_none()
+        {
+            return Err("file is outside this research node's preview folders; use Reveal or Open with default app".to_string());
+        }
+        Ok(canonical)
+    }
+
+    pub fn research_file_preview(
+        &self,
+        tree_id: &str,
+        node_id: &str,
+        path: &str,
+    ) -> Result<String, String> {
+        let canonical = self.research_local_file_path(tree_id, node_id, path, true)?;
+        let port = self
+            .file_server_port()
+            .ok_or("the file server is not running")?;
+        let token = self.mint_file_preview_token(
+            &format!("__research_node__:{node_id}"),
+            &canonical,
+            false,
+        )?;
+        Ok(crate::file_server::file_url(port, &token, &canonical))
+    }
+
+    fn mint_file_preview_token(
+        &self,
+        pane_id: &str,
+        path: &std::path::Path,
+        allow_subresources: bool,
+    ) -> Result<String, String> {
         let canonical = std::fs::canonicalize(path)
             .map_err(|err| format!("failed to resolve {}: {err}", path.display()))?;
         if !canonical.is_file() {
@@ -83,12 +148,21 @@ impl AppState {
         &self,
         token: &str,
     ) -> Option<(String, std::path::PathBuf)> {
-        self.inner
+        let entry = self
+            .inner
             .exact_file_tokens
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .get(token)
-            .map(|(pane, path, _)| (pane.clone(), path.clone()))
+            .map(|(pane, path, _)| (pane.clone(), path.clone()));
+        if let Some((owner, path)) = &entry
+            && let Some(node_id) = owner.strip_prefix("__research_node__:")
+        {
+            let node = self.research_node(node_id).ok()?;
+            self.research_local_file_path(&node.tree_id, node_id, path.to_str()?, true)
+                .ok()?;
+        }
+        entry
     }
 
     pub fn preview_token_allows_subresources(&self, token: &str) -> bool {

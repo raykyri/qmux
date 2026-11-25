@@ -13,6 +13,183 @@ use std::sync::{Arc, Mutex};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn research_file_links_use_durable_node_context_and_strict_grants() {
+    let root = temp_workspace();
+    let project = root.join("project");
+    std::fs::create_dir(&project).unwrap();
+    let state = AppState::new(test_config(root.clone()));
+    let mut group = sample_group();
+    group.dir = project.to_string_lossy().into_owned();
+    state.insert_group_after(group, None).unwrap();
+    let detail = state
+        .create_research_tree(CreateResearchTreeRequest {
+            prompt: "File links".into(),
+            title: None,
+            adapter: "claude".into(),
+            model: None,
+            effort: None,
+            group_id: "group-1".into(),
+        })
+        .unwrap();
+    let tree = &detail.tree.id;
+    let node = &detail.tree.root_node_id;
+    assert!(state.research_node(node).unwrap().pane_id.is_none());
+    let file = project.join("report#final.html");
+    std::fs::write(&file, "<p>research</p>").unwrap();
+    let canonical = file.canonicalize().unwrap();
+    assert_eq!(
+        state
+            .research_local_file_path(tree, node, "report#final.html", true)
+            .unwrap(),
+        canonical
+    );
+    let run_dir = project.join("run");
+    std::fs::create_dir(&run_dir).unwrap();
+    let run_file = run_dir.join("report#final.html");
+    std::fs::write(&run_file, "node-specific report").unwrap();
+    state
+        .inner
+        .model
+        .lock()
+        .unwrap()
+        .research_nodes
+        .get_mut(node)
+        .unwrap()
+        .worktree_dir = run_dir.to_string_lossy().into_owned();
+    assert_eq!(
+        state
+            .research_local_file_path(tree, node, "report#final.html", true)
+            .unwrap(),
+        run_file.canonicalize().unwrap()
+    );
+    state
+        .inner
+        .model
+        .lock()
+        .unwrap()
+        .research_nodes
+        .get_mut(node)
+        .unwrap()
+        .worktree_dir
+        .clear();
+    assert!(
+        state
+            .research_local_file_path("wrong-tree", node, "report#final.html", false)
+            .is_err()
+    );
+    assert!(
+        state
+            .research_local_file_path(tree, "missing-node", "report#final.html", false)
+            .is_err()
+    );
+    assert!(
+        state
+            .research_local_file_path(tree, node, "missing.html", false)
+            .is_err()
+    );
+    let outside = root.join("outside.html");
+    std::fs::write(&outside, "private").unwrap();
+    assert!(
+        state
+            .research_local_file_path(tree, node, "../outside.html", true)
+            .is_err()
+    );
+    assert!(
+        state
+            .research_local_file_path(tree, node, outside.to_str().unwrap(), false)
+            .is_ok()
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outside, project.join("escape.html")).unwrap();
+        assert!(
+            state
+                .research_local_file_path(tree, node, "escape.html", true)
+                .is_err()
+        );
+    }
+    state.set_file_server(45678);
+    let url = state
+        .research_file_preview(tree, node, "report#final.html")
+        .unwrap();
+    let url = url::Url::parse(&url).unwrap();
+    let token = url
+        .path()
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap();
+    assert!(!state.preview_token_allows_subresources(token));
+    assert_eq!(
+        crate::file_server::resolve_tokenized_file_path(&state, url.path()).unwrap(),
+        canonical
+    );
+    assert!(
+        crate::file_server::resolve_tokenized_file_path(
+            &state,
+            &format!("/{token}{}", outside.display())
+        )
+        .is_err()
+    );
+    {
+        let mut model = state.inner.model.lock().unwrap();
+        model.groups.get_mut("group-1").unwrap().remote = Some(crate::workspace::RemoteRef {
+            id: "remote".into(),
+            label: "Remote".into(),
+            host: "example.test".into(),
+            multiplexer: crate::workspace::RemoteMultiplexer::Tmux,
+            qmux_cli: None,
+            workspace_root: None,
+        });
+    }
+    assert!(
+        state
+            .research_local_file_path(tree, node, "report#final.html", false)
+            .is_err()
+    );
+    assert!(crate::file_server::resolve_tokenized_file_path(&state, url.path()).is_err());
+    {
+        let mut model = state.inner.model.lock().unwrap();
+        model.groups.get_mut("group-1").unwrap().remote = None;
+        model
+            .groups
+            .get_mut("group-1")
+            .unwrap()
+            .imported_research_archive_id = Some("archive".into());
+    }
+    assert!(crate::file_server::resolve_tokenized_file_path(&state, url.path()).is_err());
+    assert!(
+        state
+            .research_local_file_path(tree, node, "report#final.html", false)
+            .is_err()
+    );
+    {
+        let mut model = state.inner.model.lock().unwrap();
+        model
+            .groups
+            .get_mut("group-1")
+            .unwrap()
+            .imported_research_archive_id = None;
+        model.research_nodes.get_mut(node).unwrap().origin =
+            Some(ResearchNodeOrigin::TerminalExport);
+    }
+    assert!(
+        state
+            .research_local_file_path(tree, node, "report#final.html", false)
+            .is_err()
+    );
+    state
+        .inner
+        .model
+        .lock()
+        .unwrap()
+        .research_nodes
+        .remove(node);
+    assert!(crate::file_server::resolve_tokenized_file_path(&state, url.path()).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn temp_workspace() -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
