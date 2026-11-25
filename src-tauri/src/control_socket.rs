@@ -1601,32 +1601,42 @@ pub(crate) fn resolve_browser_target(
     };
 
     let roots = state.pane_file_roots(authed_pane);
-    let (canonical, visualization_reference) =
-        if let Some(path) = crate::file_server::resolve_under_roots(&requested, &roots) {
-            (path, false)
-        } else {
-            // Empty roots also identify remote panes: never interpret their
-            // paths against the local workspace directory.
-            if roots.is_empty() {
-                return Err(format!("'{target}' was not found"));
-            }
-            let path = crate::file_server::resolve_codex_visualization_reference(
-                &state.config().workspace_root,
-                &roots,
-                &requested,
-            )
-            .map_err(|_| format!("'{target}' was not found"))?;
-            (path, true)
-        };
+    let grants = state.pane_file_preview_grants(authed_pane);
+    // Exact grants are independently authorized (including uploaded remote
+    // snapshots). Remote panes intentionally have no local directory roots.
+    let granted = crate::file_server::resolve_exact_file(&requested, &grants);
+    let strict_snapshot = granted.as_ref().is_some_and(|path| {
+        crate::remote_files::resolve_staged_file(&state.config().workspace_root, path).is_some()
+    });
+    let (canonical, visualization_reference) = if let Some(path) = granted {
+        (path, false)
+    } else if let Some(path) = crate::file_server::resolve_under_roots(&requested, &roots) {
+        (path, false)
+    } else {
+        // Empty roots also identify remote panes: never interpret their
+        // paths against the local workspace directory.
+        if roots.is_empty() {
+            return Err(format!("'{target}' was not found"));
+        }
+        let path = crate::file_server::resolve_codex_visualization_reference(
+            &state.config().workspace_root,
+            &roots,
+            &requested,
+        )
+        .map_err(|_| format!("'{target}' was not found"))?;
+        (path, true)
+    };
     let port = state
         .file_server_port()
         .ok_or_else(|| "the file server is not running".to_string())?;
-    let token =
-        if visualization_reference || crate::file_server::is_executable_preview_path(&canonical) {
-            state.exact_file_preview_token(authed_pane, &canonical)?
-        } else {
-            state.pane_file_token(authed_pane)?
-        };
+    let token = if strict_snapshot {
+        state.strict_file_preview_token(authed_pane, &canonical)?
+    } else if visualization_reference || crate::file_server::is_executable_preview_path(&canonical)
+    {
+        state.exact_file_preview_token(authed_pane, &canonical)?
+    } else {
+        state.pane_file_token(authed_pane)?
+    };
     Ok(ResolvedBrowserTarget {
         url: crate::file_server::file_url(port, &token, &canonical),
         sandbox: true,
@@ -2820,6 +2830,30 @@ mod tests {
                 .all(|root| { !grants[0].starts_with(root) })
         );
         assert!(state.list_artifacts().unwrap().is_empty());
+
+        let reopened =
+            resolve_browser_target(&state, "pane-remote", grants[0].to_str().unwrap(), None)
+                .unwrap();
+        assert_eq!(reopened.path.as_ref(), Some(&grants[0]));
+        assert!(reopened.sandbox);
+        let url = url::Url::parse(&reopened.url).unwrap();
+        let preview_token = url
+            .path()
+            .trim_start_matches('/')
+            .split('/')
+            .next()
+            .unwrap();
+        assert!(!state.preview_token_allows_subresources(preview_token));
+        let sibling = grants[0].with_file_name("other.html");
+        fs::write(&sibling, "private snapshot").unwrap();
+        assert!(
+            resolve_browser_target(&state, "pane-remote", sibling.to_str().unwrap(), None).is_err()
+        );
+        insert_remote_shell(&state, "pane-other");
+        assert!(
+            resolve_browser_target(&state, "pane-other", grants[0].to_str().unwrap(), None)
+                .is_err()
+        );
 
         handle.join().unwrap();
         fs::remove_dir_all(&state.config().workspace_root).unwrap();
