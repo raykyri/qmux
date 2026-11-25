@@ -1,0 +1,162 @@
+/* SettingsRow.tsx: labels and hints on the left, controls aligned right. */
+
+.settings-group-block + .settings-group-block {
+  margin-top: 22px;
+}
+
+/* Hide groups with no matching search results. */
+.settings-group-block:not(:has(.settings-row, .settings-searchable)) {
+  display: none;
+}
+
+.settings-group-title {
+  margin: 0 2px 7px;
+  color: var(--text-tertiary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.settings-group {
+  border: 1px solid var(--surface-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--settings-group-bg);
+}
+
+.settings-group.is-bare {
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  min-height: 46px;
+  padding: 10px 14px;
+}
+
+.settings-group > .settings-row + .settings-row {
+  border-top: 1px solid var(--surface-border-subtle);
+}
+
+/* Indent options controlled by a preset. */
+.settings-row.is-indented {
+  padding-left: 32px;
+}
+
+.settings-row-text {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.settings-row-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.settings-row-label {
+  color: var(--text-primary);
+  font-size: var(--fs-base);
+}
+
+label.settings-row-label {
+  cursor: pointer;
+}
+
+.settings-row-hint {
+  max-width: 62ch;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.settings-row-control {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.settings-row.is-stacked .settings-row-control {
+  flex: 1 1 100%;
+  margin-left: 0;
+}
+
+.settings-row.is-stacked .settings-row-control > * {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-row.is-disabled .settings-row-label,
+.settings-row.is-disabled .settings-row-hint {
+  color: var(--text-faint);
+}
+
+/* Emphasize commands, paths, and config keys within hints. */
+.settings-literal {
+  color: var(--text-secondary);
+}
+
+.settings-match {
+  border-radius: 2px;
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+  color: inherit;
+}
+
+.settings-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.settings-status-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+
+.settings-status.is-ok .settings-status-dot {
+  background: var(--status-success-fg);
+}
+
+.settings-status.is-warning .settings-status-dot {
+  background: var(--status-warning-fg);
+}
+
+.settings-status.is-attention .settings-status-dot {
+  background: var(--status-attention-fg);
+}
+
+.keycaps {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.keycap {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--control-border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-strong);
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+  line-height: 1;
+}

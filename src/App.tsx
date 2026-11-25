@@ -146,11 +146,30 @@ import {
   Input,
   Menu,
   MenuItem,
+  Keycaps,
   NativeSelect,
   PopoverPortal,
+  SegmentedControl,
+  SettingsGroup,
+  SettingsLiteral,
+  SettingsRow,
+  SettingsScope,
+  SettingsSearchable,
+  SettingsSearchProvider,
+  SettingsStatus,
+  Switch,
   Textarea,
+  classNames,
+  settingsQueryTokens,
   useAnchoredPopover,
 } from "./components/ui";
+import {
+  SETTINGS_PAGE_ID,
+  SETTINGS_SECTIONS,
+  SettingsSidebar,
+  settingsSectionInfo,
+} from "./components/settings/SettingsNav";
+import type { SettingsSectionId } from "./components/settings/SettingsNav";
 import {
   ThreadGraphRequestTracker,
   uniqueResolvedThreadIds,
@@ -2581,9 +2600,10 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     () => lastUserInputSeqRef.current > lastWindowFocusSeqRef.current,
     [],
   );
-  const [settingsTab, setSettingsTab] = useState<
-    "basic" | "agents" | "remotes" | "theme" | "mouseCursor"
-  >("basic");
+  const [settingsTab, setSettingsTab] = useState<SettingsSectionId>("general");
+  const [settingsQuery, setSettingsQuery] = useState("");
+  const settingsSearchRef = useRef<HTMLInputElement | null>(null);
+  const settingsScrollRef = useRef<HTMLDivElement | null>(null);
   const [expandedSettingsAgentIds, setExpandedSettingsAgentIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -12961,6 +12981,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     resolvingClose,
     quitting,
     settingsOpen,
+    settingsQuery,
     themePickerOpen,
     error,
   });
@@ -12982,6 +13003,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       resolvingClose,
       quitting,
       settingsOpen,
+      settingsQuery,
       themePickerOpen,
       error,
     };
@@ -13103,7 +13125,13 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       if (overlays.settingsOpen) {
         stopPropagation = true;
         event.preventDefault();
-        setSettingsOpen(false);
+        // The first Escape clears an active settings search; the next closes.
+        if (overlays.settingsQuery) {
+          setSettingsQuery("");
+          requestAnimationFrame(() => settingsSearchRef.current?.focus());
+        } else {
+          setSettingsOpen(false);
+        }
       }
       // The workspace error banner is lowest priority: it only takes Escape
       // when nothing above it (menus, dialogs, a rename editor) wanted it.
@@ -13436,14 +13464,21 @@ function MainApp({ onReady }: { onReady?: () => void }) {
   // controls when it closes. Keep settingsTab so reopening returns to the same
   // section.
   useEffect(() => {
-    if (!settingsOpen || settingsTab !== "theme") {
+    if (!settingsOpen || settingsTab !== "terminal" || settingsQuery.trim()) {
       closeThemePicker();
     }
     if (!settingsOpen) {
       setOpenRouterKeyVisible(false);
       setShowHideShortcutCapturing(false);
+      setSettingsQuery("");
     }
-  }, [closeThemePicker, settingsOpen, settingsTab]);
+  }, [closeThemePicker, settingsOpen, settingsQuery, settingsTab]);
+
+  // Scroll to the top when switching sections or entering or leaving search.
+  const settingsSearchActive = settingsQuery.trim().length > 0;
+  useEffect(() => {
+    settingsScrollRef.current?.scrollTo({ top: 0 });
+  }, [settingsSearchActive, settingsTab]);
 
   // Focus and select the name when the rename dialog opens, so the user can type
   // a new name straight away.
@@ -15421,6 +15456,1527 @@ function MainApp({ onReady }: { onReady?: () => void }) {
         }
       : null;
 
+  // Search renders all sections. SettingsRow filters rows by the query.
+  const settingsSearching = settingsQueryTokens(settingsQuery).length > 0;
+  const settingsAttention: Partial<Record<SettingsSectionId, "warning" | "attention">> = {};
+  if (showHideShortcutMessage || globalTaskLauncherHotkeyMessage) {
+    settingsAttention.general = "attention";
+  }
+  if (
+    (config?.adapters ?? []).some(
+      (adapter) =>
+        adapter.readiness === "needsAuth" ||
+        adapter.readiness === "unsupportedVersion" ||
+        adapter.readiness === "error",
+    )
+  ) {
+    settingsAttention.agents = "warning";
+  }
+
+  function renderSettingsTerminalPreview() {
+    const theme =
+      themeCatalog?.find((candidate) => candidate.name === terminalThemeName) ?? effectiveTheme;
+    const color = (hex: string | undefined, fallback: string) =>
+      (hex ? themeCssColor(hex) : null) ?? fallback;
+    const palette = theme?.palette ?? [];
+    const red = color(palette[1], "var(--status-attention-fg)");
+    const green = color(palette[2], "var(--status-success-fg)");
+    const yellow = color(palette[3], "var(--status-warning-fg)");
+    const blue = color(palette[4], "var(--status-info-fg)");
+    const cyan = color(palette[6], "var(--accent-color)");
+    const prompt = (
+      <>
+        <span style={{ color: blue }}>~/code/qmux</span>{" "}
+        <span style={{ color: cyan }}>main</span> ❯{" "}
+      </>
+    );
+    return (
+      <div
+        className="settings-terminal-preview"
+        role="img"
+        aria-label="Terminal preview"
+        style={{
+          background: color(theme?.background, "var(--terminal-pane-bg)"),
+          color: color(theme?.foreground, "var(--terminal-pane-fg)"),
+          fontFamily: terminalFontFamily,
+          fontSize: `${terminalFontSize}px`,
+          lineHeight: settings.lineHeight,
+        }}
+      >
+        {prompt}cargo test{"\n"}
+        {"   "}
+        <span style={{ color: green }}>Compiling</span> qmux-core v0.1.0{"\n"}
+        {"    "}
+        <span style={{ color: green }}>Finished</span> test profile in 4.21s{"\n"}
+        test result: <span style={{ color: green }}>ok</span>. 214 passed;{" "}
+        <span style={{ color: red }}>0 failed</span>;{" "}
+        <span style={{ color: yellow }}>2 ignored</span>
+        {"\n"}
+        {prompt}
+        <span
+          className={classNames(
+            "settings-terminal-cursor",
+            `is-${settings.cursorStyle}`,
+            settings.cursorBlink && "is-blinking",
+          )}
+        />
+      </div>
+    );
+  }
+
+  function renderSettingsSection(section: SettingsSectionId) {
+    switch (section) {
+      case "general":
+        return (
+          <>
+            <SettingsGroup title="Shortcuts">
+              <SettingsRow
+                label="Show and hide qmux"
+                labelFor="settings-show-hide-shortcut"
+                hintId="settings-show-hide-shortcut-hint"
+                searchText="hotkey global keyboard toggle window"
+                hint={
+                  showHideShortcutSaving ? (
+                    "Saving shortcut…"
+                  ) : showHideShortcutMessage ? (
+                    <span className="settings-hint-error">{showHideShortcutMessage}</span>
+                  ) : showHideShortcutConflictLabel ? (
+                    <span className="settings-hint-warning">
+                      {`qmux also uses this shortcut to ${showHideShortcutConflictLabel}. This setting makes it show and hide qmux instead.`}
+                    </span>
+                  ) : showHideShortcutSetting.captureActive ? (
+                    "Press a shortcut that includes a modifier such as ⌥ or ⌘."
+                  ) : (
+                    "Works from any app."
+                  )
+                }
+              >
+                <div
+                  className={classNames(
+                    "settings-shortcut-field",
+                    showHideShortcutSetting.captureActive && "is-capturing",
+                  )}
+                >
+                  <Input
+                    id="settings-show-hide-shortcut"
+                    className="settings-shortcut-input"
+                    data-shortcut-capture="show-hide"
+                    value={showHideShortcutValue}
+                    placeholder="Record shortcut"
+                    readOnly
+                    aria-invalid={showHideShortcutMessage ? true : undefined}
+                    aria-describedby="settings-show-hide-shortcut-hint"
+                    onPointerDown={() => setShowHideShortcutCapturing(true)}
+                    onFocus={() => setShowHideShortcutCapturing(true)}
+                    onBlur={() => setShowHideShortcutCapturing(false)}
+                    onKeyDown={captureShowHideShortcut}
+                  />
+                  <span className="settings-shortcut-display" aria-hidden="true">
+                    {showHideShortcutSetting.captureActive ? (
+                      <span className="settings-shortcut-prompt">Press keys…</span>
+                    ) : showHideShortcutValue ? (
+                      <Keycaps accelerator={showHideShortcutValue} />
+                    ) : (
+                      <span className="settings-shortcut-placeholder">Record shortcut</span>
+                    )}
+                  </span>
+                  {showHideShortcutValue && !showHideShortcutSetting.captureActive ? (
+                    <button
+                      type="button"
+                      className="settings-shortcut-clear"
+                      aria-label="Clear show and hide shortcut"
+                      title="Clear"
+                      disabled={showHideShortcutSaving}
+                      onClick={clearShowHideShortcut}
+                    >
+                      <X size={13} aria-hidden="true" />
+                    </button>
+                  ) : null}
+                </div>
+              </SettingsRow>
+              <SettingsRow
+                label="Open task launcher"
+                labelFor="settings-global-task-launcher-hotkey"
+                hintId="settings-global-task-launcher-hotkey-hint"
+                searchText="quick launch hotkey global keyboard"
+                hint={
+                  globalTaskLauncherHotkeySaving ? (
+                    "Saving hotkey…"
+                  ) : globalTaskLauncherHotkeyMessage ? (
+                    <span className="settings-hint-error">{globalTaskLauncherHotkeyMessage}</span>
+                  ) : (
+                    "Starts a new agent task from any app."
+                  )
+                }
+              >
+                <NativeSelect
+                  id="settings-global-task-launcher-hotkey"
+                  className="settings-select"
+                  value={globalTaskLauncherSetting.hotkey ?? ""}
+                  disabled={globalTaskLauncherHotkeySaving}
+                  aria-invalid={globalTaskLauncherHotkeyMessage ? true : undefined}
+                  aria-describedby="settings-global-task-launcher-hotkey-hint"
+                  onChange={(event) =>
+                    void updateGlobalTaskLauncherHotkey(
+                      event.currentTarget.value
+                        ? (event.currentTarget.value as GlobalTaskLauncherHotkey)
+                        : null,
+                    )
+                  }
+                >
+                  <option value="">Off</option>
+                  {GLOBAL_TASK_LAUNCHER_HOTKEY_OPTIONS.map((option) => (
+                    <option
+                      key={option.value}
+                      value={option.value}
+                      disabled={Boolean(
+                        option.accelerator && option.accelerator === showHideShortcutValue,
+                      )}
+                    >
+                      {option.label}
+                      {option.accelerator === showHideShortcutValue
+                        ? " (used by show and hide)"
+                        : ""}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </SettingsRow>
+            </SettingsGroup>
+
+            <SettingsGroup title="System">
+              <SettingsRow
+                label="Show menu bar icon"
+                labelFor="settings-menu-bar-icon"
+                searchText="tray status"
+              >
+                <Switch
+                  id="settings-menu-bar-icon"
+                  checked={settings.showMenuBarIcon}
+                  onChange={(showMenuBarIcon) =>
+                    setSettings((current) => ({ ...current, showMenuBarIcon }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Keep Mac awake while agents run"
+                labelFor="settings-prevent-sleep"
+                hint="Only while the battery is above 10%."
+                searchText="sleep caffeinate power"
+              >
+                <Switch
+                  id="settings-prevent-sleep"
+                  checked={settings.preventSleep}
+                  onChange={(preventSleep) =>
+                    setSettings((current) => ({ ...current, preventSleep }))
+                  }
+                />
+              </SettingsRow>
+            </SettingsGroup>
+
+            <SettingsGroup title="Alerts">
+              <SettingsRow
+                label="Completion sound"
+                labelFor="settings-completion-sound"
+                hint="Plays when an agent finishes its queued work."
+                searchText="audio chime done"
+              >
+                <NativeSelect
+                  id="settings-completion-sound"
+                  className="settings-select settings-completion-sound-select"
+                  value={settings.completionSound}
+                  onChange={(event) => {
+                    const completionSound = event.currentTarget.value as CompletionSoundId;
+                    setSettings((current) => ({ ...current, completionSound }));
+                    void testCompletionSound(completionSound);
+                  }}
+                >
+                  {COMPLETION_SOUND_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </NativeSelect>
+                <button
+                  type="button"
+                  className="control-button settings-icon-button"
+                  aria-label="Play completion sound"
+                  title="Play"
+                  onClick={() => void testCompletionSound(settings.completionSound)}
+                >
+                  <Volume2 size={14} aria-hidden="true" />
+                </button>
+              </SettingsRow>
+              <SettingsRow
+                label="Notifications"
+                searchText="native alerts permission system settings qmux send"
+                status={
+                  notificationPermission === null ? (
+                    <SettingsStatus tone="neutral">Checking…</SettingsStatus>
+                  ) : !notificationPermission.supported ? (
+                    <SettingsStatus tone="neutral">Unavailable</SettingsStatus>
+                  ) : notificationPermission.status === "Authorized" ||
+                    notificationPermission.status === "Provisional" ||
+                    notificationPermission.status === "Ephemeral" ? (
+                    <SettingsStatus tone="ok">Allowed</SettingsStatus>
+                  ) : notificationPermission.status === "Denied" ? (
+                    <SettingsStatus tone="attention">Off in System Settings</SettingsStatus>
+                  ) : (
+                    <SettingsStatus tone="neutral">Not enabled</SettingsStatus>
+                  )
+                }
+                hint={
+                  <>
+                    Shows notifications from <SettingsLiteral>qmux send</SettingsLiteral> while
+                    qmux is in the background.
+                    {notificationPermission?.supported &&
+                    notificationPermission.status === "Denied"
+                      ? " Enable notifications for qmux in System Settings › Notifications."
+                      : null}
+                  </>
+                }
+              >
+                {notificationPermission?.supported &&
+                notificationPermission.status !== "Denied" &&
+                notificationPermission.status !== "Authorized" &&
+                notificationPermission.status !== "Provisional" &&
+                notificationPermission.status !== "Ephemeral" ? (
+                  <button
+                    type="button"
+                    className="control-button"
+                    disabled={notificationPermissionBusy}
+                    onClick={() => void enableNativeNotifications()}
+                  >
+                    {notificationPermissionBusy ? "Enabling…" : "Enable"}
+                  </button>
+                ) : null}
+              </SettingsRow>
+            </SettingsGroup>
+          </>
+        );
+
+      case "workspace":
+        return (
+          <>
+            <SettingsGroup title="Code mode">
+              <SettingsRow
+                label="Code mode"
+                labelFor="settings-code-mode"
+                hint="Enables worktrees and shell controls. Also turns the three options below on or off."
+                searchText="coding developer preset"
+              >
+                <Switch
+                  id="settings-code-mode"
+                  checked={settings.codeMode}
+                  onChange={(codeMode) =>
+                    setSettings((current) => ({
+                      ...current,
+                      codeMode,
+                      showTabDirectories: codeMode,
+                      showToolCalls: codeMode,
+                      requireCmdEnterToSend: codeMode,
+                    }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow
+                indent
+                label="Show tab directories"
+                labelFor="settings-show-tab-directories"
+                disabled={!settings.codeMode}
+                hint={settings.codeMode ? undefined : "Requires Code mode."}
+                searchText="cwd path folder"
+              >
+                <Switch
+                  id="settings-show-tab-directories"
+                  checked={settings.showTabDirectories}
+                  disabled={!settings.codeMode}
+                  onChange={(showTabDirectories) =>
+                    setSettings((current) => ({ ...current, showTabDirectories }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow
+                indent
+                label="Show tool calls in transcripts"
+                labelFor="settings-show-tool-calls"
+              >
+                <Switch
+                  id="settings-show-tool-calls"
+                  checked={settings.showToolCalls}
+                  onChange={(showToolCalls) =>
+                    setSettings((current) => ({ ...current, showToolCalls }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow
+                indent
+                label="Require ⌘↵ to send"
+                labelFor="settings-require-cmd-enter"
+                hint="When on, ↵ adds a new line."
+                searchText="enter return submit composer command"
+              >
+                <Switch
+                  id="settings-require-cmd-enter"
+                  checked={settings.requireCmdEnterToSend}
+                  onChange={(requireCmdEnterToSend) =>
+                    setSettings((current) => ({ ...current, requireCmdEnterToSend }))
+                  }
+                />
+              </SettingsRow>
+            </SettingsGroup>
+
+            <SettingsGroup title="Transcripts">
+              <SettingsRow
+                label="Show assistant message timestamps"
+                labelFor="settings-assistant-timestamps"
+                searchText="time"
+              >
+                <Switch
+                  id="settings-assistant-timestamps"
+                  checked={settings.showAssistantTimestamps}
+                  onChange={(showAssistantTimestamps) =>
+                    setSettings((current) => ({ ...current, showAssistantTimestamps }))
+                  }
+                />
+              </SettingsRow>
+            </SettingsGroup>
+
+            <SettingsGroup title="Worktrees">
+              <SettingsRow
+                label="Worktree location"
+                labelFor="settings-worktree-location"
+                searchText="git branch checkout folder stored"
+                hint={
+                  settings.worktreeLocation === "localQmux" ? (
+                    <>
+                      Stored in{" "}
+                      <SettingsLiteral>{"<project>/.qmux/worktrees/<name>"}</SettingsLiteral>.
+                    </>
+                  ) : settings.worktreeLocation === "localClaude" ? (
+                    <>
+                      Stored in{" "}
+                      <SettingsLiteral>{"<project>/.claude/worktrees/<name>"}</SettingsLiteral>.
+                    </>
+                  ) : (
+                    "Stored in qmux’s global workspace directory."
+                  )
+                }
+              >
+                <NativeSelect
+                  id="settings-worktree-location"
+                  className="settings-select"
+                  value={settings.worktreeLocation}
+                  onChange={(event) => {
+                    const worktreeLocation =
+                      event.currentTarget.value as AppSettings["worktreeLocation"];
+                    setSettings((current) => ({ ...current, worktreeLocation }));
+                  }}
+                >
+                  {WORKTREE_LOCATION_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </SettingsRow>
+            </SettingsGroup>
+
+            <SettingsGroup title="Tab titles">
+              <SettingsRow
+                label="Generate tab titles with"
+                labelFor="settings-tab-title-provider"
+                searchText="name summarize model openrouter apple"
+                hint={
+                  settings.tabTitleProvider === "openRouter"
+                    ? "Sends the first message of each new tab to OpenRouter."
+                    : settings.tabTitleProvider === "appleFoundationModels"
+                      ? "Runs on this Mac."
+                      : appleFoundationTitleAvailable
+                        ? undefined
+                        : "Apple Foundation Models are not available in this build."
+                }
+              >
+                <NativeSelect
+                  id="settings-tab-title-provider"
+                  className="settings-select"
+                  value={settings.tabTitleProvider}
+                  onChange={(event) => {
+                    const tabTitleProvider =
+                      event.currentTarget.value as AppSettings["tabTitleProvider"];
+                    setSettings((current) => ({ ...current, tabTitleProvider }));
+                  }}
+                >
+                  {TAB_TITLE_PROVIDER_OPTIONS.map((option) => (
+                    <option
+                      key={option.id}
+                      value={option.id}
+                      disabled={
+                        option.id === "appleFoundationModels" && !appleFoundationTitleAvailable
+                      }
+                    >
+                      {option.id === "appleFoundationModels" && !appleFoundationTitleAvailable
+                        ? `${option.label} (unavailable)`
+                        : option.id === "disabled"
+                          ? "Off"
+                          : option.label}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </SettingsRow>
+              {settings.tabTitleProvider === "openRouter" ? (
+                <>
+                  <SettingsRow
+                    label="OpenRouter key"
+                    labelFor="settings-openrouter-key"
+                    searchText="api token secret"
+                  >
+                    <div className="settings-secret-input">
+                      <Input
+                        id="settings-openrouter-key"
+                        className="settings-input"
+                        type={openRouterKeyVisible ? "text" : "password"}
+                        value={settings.openRouterKey}
+                        placeholder="sk-or-v1-…"
+                        autoComplete="off"
+                        spellCheck={false}
+                        onChange={(event) => {
+                          const openRouterKey = event.currentTarget.value;
+                          setSettings((current) => ({ ...current, openRouterKey }));
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="control-button settings-secret-toggle"
+                        aria-label={
+                          openRouterKeyVisible ? "Hide OpenRouter key" : "Show OpenRouter key"
+                        }
+                        aria-pressed={openRouterKeyVisible}
+                        onClick={() => setOpenRouterKeyVisible((visible) => !visible)}
+                      >
+                        {openRouterKeyVisible ? (
+                          <EyeOff size={14} aria-hidden="true" />
+                        ) : (
+                          <Eye size={14} aria-hidden="true" />
+                        )}
+                      </button>
+                    </div>
+                  </SettingsRow>
+                  <SettingsRow
+                    label="OpenRouter model"
+                    labelFor="settings-openrouter-model"
+                    searchText="llm"
+                  >
+                    <Input
+                      id="settings-openrouter-model"
+                      className="settings-input"
+                      type="text"
+                      value={settings.openRouterModel}
+                      placeholder="google/gemma-4-31b-it:free"
+                      autoComplete="off"
+                      spellCheck={false}
+                      onChange={(event) => {
+                        const openRouterModel = event.currentTarget.value;
+                        setSettings((current) => ({ ...current, openRouterModel }));
+                      }}
+                    />
+                  </SettingsRow>
+                </>
+              ) : null}
+              {titleGenerationTestVisible ? (
+                <SettingsRow
+                  label="Test title generation"
+                  hintId="settings-title-test-message"
+                  hint={
+                    titleGenerationTest ? (
+                      <span
+                        className={classNames(
+                          "settings-title-test-message",
+                          `is-${titleGenerationTest.status}`,
+                        )}
+                      >
+                        {titleGenerationTest.status === "running"
+                          ? `${titleGenerationTest.providerLabel} is generating a title…`
+                          : titleGenerationTest.status === "success"
+                            ? `${titleGenerationTest.providerLabel}: “${titleGenerationTest.title}”`
+                            : `${titleGenerationTest.providerLabel}: ${titleGenerationTest.message}`}
+                      </span>
+                    ) : (
+                      "Generates a sample title using these settings."
+                    )
+                  }
+                >
+                  <button
+                    type="button"
+                    className="control-button settings-test-button"
+                    disabled={titleGenerationTestRunning}
+                    aria-describedby="settings-title-test-message"
+                    onClick={() => void testFirstMessageTitleGeneration()}
+                  >
+                    {titleGenerationTestRunning ? (
+                      <LoaderCircle className="settings-test-spinner" size={14} aria-hidden="true" />
+                    ) : (
+                      <MessageSquareText size={14} aria-hidden="true" />
+                    )}
+                    {titleGenerationTestRunning ? "Testing…" : "Test title"}
+                  </button>
+                </SettingsRow>
+              ) : null}
+            </SettingsGroup>
+          </>
+        );
+
+      case "research":
+        return (
+          <SettingsGroup>
+            <SettingsRow
+              stacked
+              label="Research instructions"
+              labelFor="settings-research-instructions"
+              hint="Included in every research task."
+              searchText="prompt default"
+            >
+              <Textarea
+                id="settings-research-instructions"
+                className="settings-input settings-textarea"
+                rows={3}
+                placeholder={DEFAULT_RESEARCH_LAUNCH_INSTRUCTION}
+                value={settings.researchLaunchInstruction}
+                onChange={(event) => {
+                  const researchLaunchInstruction = clampResearchLaunchInstruction(
+                    event.currentTarget.value,
+                  );
+                  setSettings((current) => ({ ...current, researchLaunchInstruction }));
+                }}
+              />
+            </SettingsRow>
+            <SettingsRow
+              label="Run Claude research without a terminal"
+              labelFor="settings-research-sdk-harness"
+              searchText="sdk headless background tui"
+            >
+              <Switch
+                id="settings-research-sdk-harness"
+                checked={settings.researchSdkHarness}
+                onChange={(researchSdkHarness) =>
+                  setSettings((current) => ({ ...current, researchSdkHarness }))
+                }
+              />
+            </SettingsRow>
+          </SettingsGroup>
+        );
+
+      case "agents":
+        return (
+          <SettingsGroup bare>
+            <SettingsSearchable
+              searchText={`agent providers cli binary version install sign in login update ${(
+                config?.adapters ?? []
+              )
+                .map((adapter) => adapter.label)
+                .join(" ")}`}
+            >
+              <div className="settings-list-bar">
+                <p>qmux uses your coding agent subscriptions.</p>
+                <button
+                  type="button"
+                  className="control-button"
+                  disabled={adapterProbeLoading}
+                  onClick={() =>
+                    void refreshAdapterReadiness({ force: true }).catch(() => undefined)
+                  }
+                >
+                  <RefreshCw
+                    size={13}
+                    className={adapterProbeLoading ? "is-spinning" : undefined}
+                    aria-hidden="true"
+                  />
+                  {adapterProbeLoading ? "Checking…" : "Check again"}
+                </button>
+              </div>
+              {adapterProbeError ? (
+                <p className="settings-agent-error" role="alert">
+                  {adapterProbeError}
+                </p>
+              ) : null}
+              <div className="settings-agent-list">
+                {readyAdaptersFirst(config?.adapters ?? []).map((adapter) => {
+                  const isExpanded = expandedSettingsAgentIds.has(adapter.instanceId);
+                  const researchSummary = settingsAgentResearchSummary(adapter);
+                  const safeInstanceId = encodeURIComponent(adapter.instanceId);
+                  const summaryId = `settings-agent-summary-${safeInstanceId}`;
+                  const detailsId = `settings-agent-details-${safeInstanceId}`;
+                  return (
+                    <section
+                      className="settings-agent-card"
+                      key={adapter.instanceId}
+                      title={`${adapter.target.label} · ${adapter.instanceId}`}
+                    >
+                      <button
+                        id={summaryId}
+                        type="button"
+                        className="settings-agent-summary"
+                        aria-expanded={isExpanded}
+                        aria-controls={detailsId}
+                        onClick={() => {
+                          setExpandedSettingsAgentIds((current) => {
+                            const next = new Set(current);
+                            if (next.has(adapter.instanceId)) {
+                              next.delete(adapter.instanceId);
+                            } else {
+                              next.add(adapter.instanceId);
+                            }
+                            return next;
+                          });
+                        }}
+                      >
+                        <ChevronDown
+                          size={13}
+                          className={`settings-agent-chevron${isExpanded ? " is-open" : ""}`}
+                          aria-hidden="true"
+                        />
+                        <img
+                          src={ADAPTER_ICON_BY_ID[adapter.id]}
+                          className={`settings-agent-icon ${adapterIconClassName(adapter.id)}`}
+                          alt=""
+                          aria-hidden="true"
+                        />
+                        <span className="settings-agent-identity">
+                          <strong>{adapter.label}</strong>
+                          <span className="settings-agent-summary-meta">
+                            {adapter.version ?? (adapter.resolvedBinary ? "Checking…" : "Not found")}
+                            {researchSummary ? ` · ${researchSummary}` : null}
+                          </span>
+                        </span>
+                        <SettingsStatus
+                          tone={
+                            adapter.readiness === "ready"
+                              ? "ok"
+                              : adapter.readiness === "missing"
+                                ? "neutral"
+                                : "warning"
+                          }
+                        >
+                          {adapterReadinessLabel(adapter)}
+                        </SettingsStatus>
+                      </button>
+                      {isExpanded ? (
+                        <div
+                          id={detailsId}
+                          className="settings-agent-detail"
+                          role="region"
+                          aria-labelledby={summaryId}
+                        >
+                          <dl className="settings-agent-details">
+                            <div>
+                              <dt>Binary</dt>
+                              <dd title={adapter.resolvedBinary ?? adapter.configuredBinary}>
+                                {adapter.resolvedBinary ?? adapter.configuredBinary}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>Checked</dt>
+                              <dd>
+                                {adapter.checkedAt
+                                  ? new Date(adapter.checkedAt).toLocaleTimeString([], {
+                                      hour: "numeric",
+                                      minute: "2-digit",
+                                    })
+                                  : "Not yet"}
+                              </dd>
+                            </div>
+                          </dl>
+                          {adapter.message ? (
+                            <p className="settings-agent-message">{adapter.message}</p>
+                          ) : null}
+                          <div className="settings-agent-actions">
+                            {adapter.updateCommand &&
+                            (adapter.readiness === "unsupportedVersion" ||
+                              adapter.researchReadiness === "unsupportedVersion") ? (
+                              <button
+                                type="button"
+                                className="control-button"
+                                onClick={() => {
+                                  void writeClipboardText(adapter.updateCommand ?? "");
+                                  showAppToast("Update command copied");
+                                }}
+                              >
+                                Copy update command
+                              </button>
+                            ) : null}
+                            {adapter.loginCommand && adapter.readiness === "needsAuth" ? (
+                              <button
+                                type="button"
+                                className="control-button"
+                                onClick={() => {
+                                  void writeClipboardText(adapter.loginCommand ?? "");
+                                  showAppToast("Sign-in command copied");
+                                }}
+                              >
+                                Copy sign-in command
+                              </button>
+                            ) : null}
+                            {adapter.installUrl ? (
+                              <button
+                                type="button"
+                                className="control-button"
+                                onClick={() => {
+                                  void openExternalUrl(adapter.installUrl ?? "").catch((err) => {
+                                    setAdapterProbeError(unknownErrorMessage(err));
+                                  });
+                                }}
+                              >
+                                {adapter.readiness === "missing" ? "Install guide" : "Docs"}
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
+                    </section>
+                  );
+                })}
+              </div>
+              <p className="settings-list-foot">
+                Set custom executable paths under{" "}
+                <SettingsLiteral>adapters.*.binary</SettingsLiteral> in{" "}
+                <SettingsLiteral>qmux.config.json</SettingsLiteral>.
+              </p>
+            </SettingsSearchable>
+          </SettingsGroup>
+        );
+
+      case "remotes":
+        return (
+          <SettingsGroup bare>
+            <SettingsSearchable
+              searchText={`remote machines ssh host server tmux connection add ${(
+                config?.remotes ?? []
+              )
+                .map((remote) => `${remote.label} ${remote.host}`)
+                .join(" ")}`}
+            >
+              <div className="settings-list-bar">
+                <p>Add a machine from your SSH config or by host name.</p>
+                <div className="settings-remote-add-group" ref={remoteAddMenuRef}>
+                  <button
+                    type="button"
+                    className="control-button settings-remote-add settings-remote-add-main"
+                    disabled={remoteSettingsSaving || remoteSettingsDraftIsNew}
+                    onClick={() => {
+                      setRemoteAddMenuOpen(false);
+                      beginAddingRemote();
+                    }}
+                  >
+                    <Plus size={13} aria-hidden="true" />
+                    Add remote
+                  </button>
+                  <button
+                    ref={remoteAddMenuButtonRef}
+                    type="button"
+                    className="control-button settings-remote-add settings-remote-add-menu-button"
+                    disabled={remoteSettingsSaving || remoteSettingsDraftIsNew}
+                    aria-label="Add remote options"
+                    aria-haspopup="menu"
+                    aria-expanded={remoteAddMenuOpen}
+                    aria-controls="settings-remote-add-menu"
+                    onClick={() => {
+                      const opening = !remoteAddMenuOpen;
+                      setRemoteAddMenuOpen(opening);
+                      if (opening && !sshConfigAliasesLoading) {
+                        void refreshSshConfigAliases();
+                      }
+                    }}
+                  >
+                    <ChevronDown size={13} aria-hidden="true" />
+                  </button>
+                  {remoteAddMenuOpen ? (
+                    <div
+                      id="settings-remote-add-menu"
+                      className="popover-surface popover-surface--context settings-remote-add-menu"
+                      role="menu"
+                      aria-label="Add remote options"
+                    >
+                      <div className="group-context-actions">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="control-button"
+                          autoFocus
+                          onClick={() => {
+                            setRemoteAddMenuOpen(false);
+                            beginAddingRemote();
+                          }}
+                        >
+                          <Plus size={13} aria-hidden="true" />
+                          <span>Add manually</span>
+                        </button>
+                        <div className="context-menu-divider" role="separator" />
+                        <div className="settings-remote-add-menu-label" role="presentation">
+                          From SSH config
+                        </div>
+                        <div
+                          className="settings-remote-add-menu-aliases"
+                          role="group"
+                          aria-label="From SSH config"
+                        >
+                          {availableSshConfigAliases.map((alias) => (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="control-button"
+                              key={alias}
+                              onClick={() => {
+                                setRemoteAddMenuOpen(false);
+                                beginAddingRemoteFromSshAlias(alias);
+                              }}
+                            >
+                              <Globe size={13} aria-hidden="true" />
+                              <span title={alias}>{alias}</span>
+                            </button>
+                          ))}
+                          {availableSshConfigAliases.length === 0 ? (
+                            <div
+                              className="settings-remote-add-menu-empty"
+                              role="menuitem"
+                              aria-disabled="true"
+                              aria-live="polite"
+                              title={sshConfigAliasesError ?? undefined}
+                            >
+                              {sshConfigAliasesLoading
+                                ? "Loading SSH hosts…"
+                                : sshConfigAliasesError
+                                  ? "Couldn’t load SSH config"
+                                  : sshConfigAliases.length > 0
+                                    ? "All SSH hosts are already added"
+                                    : "No SSH hosts found"}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              <div className="settings-agent-list settings-remote-list">
+                {remoteSettingsDraftIsNew && remoteSettingsDraftState ? (
+                  <section className="settings-agent-card settings-remote-card">
+                    <div className="settings-remote-new-heading">
+                      <Globe size={16} aria-hidden="true" />
+                      <strong>New remote</strong>
+                    </div>
+                    <RemoteSettingsForm
+                      controller={remoteSettings}
+                      remotes={config?.remotes ?? []}
+                      sshConfigAliases={sshConfigAliases}
+                    />
+                  </section>
+                ) : null}
+                {(config?.remotes ?? []).map((remote) => {
+                  const isExpanded = expandedSettingsRemoteId === remote.id;
+                  const safeRemoteId = encodeURIComponent(remote.id);
+                  const summaryId = `settings-remote-summary-${safeRemoteId}`;
+                  const detailsId = `settings-remote-details-${safeRemoteId}`;
+                  return (
+                    <section className="settings-agent-card settings-remote-card" key={remote.id}>
+                      <button
+                        id={summaryId}
+                        type="button"
+                        className="settings-agent-summary settings-remote-summary"
+                        aria-expanded={isExpanded}
+                        aria-controls={detailsId}
+                        onClick={() => toggleRemoteSettings(remote)}
+                      >
+                        <ChevronDown
+                          size={13}
+                          className={`settings-agent-chevron${isExpanded ? " is-open" : ""}`}
+                          aria-hidden="true"
+                        />
+                        <Globe size={16} className="settings-remote-icon" aria-hidden="true" />
+                        <span className="settings-agent-identity">
+                          <strong>{remote.label}</strong>
+                          <span className="settings-agent-summary-meta">{remote.host}</span>
+                        </span>
+                        <span className="settings-remote-source">
+                          {remote.source === "config" ? "Config file" : "Saved"}
+                        </span>
+                      </button>
+                      {isExpanded ? (
+                        <div id={detailsId} role="region" aria-labelledby={summaryId}>
+                          {remote.source === "preferences" ? (
+                            <RemoteSettingsForm
+                              controller={remoteSettings}
+                              remotes={config?.remotes ?? []}
+                              sshConfigAliases={sshConfigAliases}
+                            />
+                          ) : (
+                            <div className="settings-remote-detail settings-remote-readonly">
+                              <dl className="settings-agent-details">
+                                <div>
+                                  <dt>ID</dt>
+                                  <dd>{remote.id}</dd>
+                                </div>
+                                <div>
+                                  <dt>Multiplexer</dt>
+                                  <dd>{remote.multiplexer}</dd>
+                                </div>
+                                <div>
+                                  <dt>Workspace root</dt>
+                                  <dd>{remote.workspaceRoot ?? "Default"}</dd>
+                                </div>
+                                <div>
+                                  <dt>qmux CLI</dt>
+                                  <dd>{remote.qmuxCli ?? "qmux-cli"}</dd>
+                                </div>
+                              </dl>
+                              {remoteSettingsError ? (
+                                <p className="settings-agent-error" role="alert">
+                                  {remoteSettingsError}
+                                </p>
+                              ) : null}
+                              <RemoteProbeStatus controller={remoteSettings} probeKey={remote.id} />
+                              <div className="settings-remote-actions">
+                                <button
+                                  type="button"
+                                  className="control-button settings-remote-test"
+                                  disabled={remoteProbeLoadingId === remote.id}
+                                  onClick={() => void testRemoteSettings(remoteSettingsDraft(remote))}
+                                >
+                                  {remoteProbeLoadingId === remote.id ? "Testing…" : "Test connection"}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="control-button"
+                                  disabled={remoteProbeLoadingId === remote.id}
+                                  onClick={() => beginCopyingRemote(remote)}
+                                >
+                                  Copy to my remotes
+                                </button>
+                              </div>
+                              <p className="settings-hint">
+                                This remote is configured in{" "}
+                                <SettingsLiteral>qmux.config.json</SettingsLiteral>. Edit the file
+                                to change it, or save a copy to edit here.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
+                    </section>
+                  );
+                })}
+                {(config?.remotes?.length ?? 0) === 0 && !remoteSettingsDraftIsNew ? (
+                  <div className="settings-remote-empty">
+                    <Globe size={22} aria-hidden="true" />
+                    <span>Add a remote machine to open tabs on it.</span>
+                  </div>
+                ) : null}
+              </div>
+            </SettingsSearchable>
+          </SettingsGroup>
+        );
+
+      case "appearance":
+        return (
+          <>
+            <SettingsGroup title="Theme">
+              <SettingsRow
+                label="Color theme"
+                labelId="settings-color-theme-label"
+                hint="Sets the background and accent colors."
+                searchText="cool warm accent palette"
+              >
+                <SegmentedControl
+                  name="settings-color-theme"
+                  className="settings-segmented"
+                  aria-labelledby="settings-color-theme-label"
+                  value={settings.colorTheme}
+                  options={COLOR_THEME_OPTIONS.map((option) => ({
+                    value: option.id,
+                    label: option.label,
+                  }))}
+                  onChange={(colorTheme) => setSettings((current) => ({ ...current, colorTheme }))}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Appearance"
+                labelId="settings-appearance-label"
+                searchText="dark mode light mode"
+              >
+                <SegmentedControl
+                  name="settings-appearance"
+                  className="settings-segmented"
+                  aria-labelledby="settings-appearance-label"
+                  value={settings.appearance}
+                  options={APPEARANCE_OPTIONS.map((option) => ({
+                    value: option.id,
+                    label: option.label,
+                  }))}
+                  onChange={(appearance) => setSettings((current) => ({ ...current, appearance }))}
+                />
+              </SettingsRow>
+            </SettingsGroup>
+
+            <SettingsGroup title="Interface">
+              <SettingsRow
+                label="Interface font"
+                labelFor="settings-body-font"
+                searchText="body typeface"
+              >
+                <NativeSelect
+                  id="settings-body-font"
+                  className="settings-select"
+                  value={availableBodyFonts === null ? "" : settings.bodyFontId}
+                  disabled={availableBodyFonts === null}
+                  onChange={(event) => {
+                    const bodyFontId = event.currentTarget.value;
+                    setSettings((current) => ({ ...current, bodyFontId }));
+                  }}
+                >
+                  {availableBodyFonts === null ? (
+                    <option value="">Detecting installed fonts…</option>
+                  ) : (
+                    availableBodyFonts.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))
+                  )}
+                </NativeSelect>
+              </SettingsRow>
+              <SettingsRow
+                label="Show shortcut hints"
+                labelFor="settings-shortcut-hints"
+                hint="Shows sidebar shortcuts while you hold ⌘."
+                searchText="keyboard command badges"
+              >
+                <Switch
+                  id="settings-shortcut-hints"
+                  checked={settings.showShortcutHints}
+                  onChange={(showShortcutHints) =>
+                    setSettings((current) => ({ ...current, showShortcutHints }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Reduce motion"
+                labelFor="settings-reduce-motion"
+                searchText="animation accessibility"
+              >
+                <Switch
+                  id="settings-reduce-motion"
+                  checked={settings.reduceMotion}
+                  onChange={(reduceMotion) =>
+                    setSettings((current) => ({ ...current, reduceMotion }))
+                  }
+                />
+              </SettingsRow>
+            </SettingsGroup>
+          </>
+        );
+
+      case "terminal":
+        return (
+          <>
+            <SettingsGroup bare>
+              <SettingsSearchable searchText="preview">
+                {renderSettingsTerminalPreview()}
+              </SettingsSearchable>
+            </SettingsGroup>
+
+            <SettingsGroup title="Theme">
+              <SettingsRow
+                label="Terminal theme"
+                labelFor="settings-theme"
+                searchText="ghostty colors palette"
+                hint={`Applies in ${settings.appearance === "light" ? "light" : "dark"} mode. The qmux theme uses your app colors. Other themes use their own colors.`}
+              >
+                <div
+                  className="settings-theme-field"
+                  ref={themePickerRef}
+                  onBlur={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget)) {
+                      closeThemePicker();
+                    }
+                  }}
+                >
+                  <Button
+                    id="settings-theme"
+                    ref={themePickerTriggerRef}
+                    variant="unstyled"
+                    type="button"
+                    className="form-field settings-select settings-theme-trigger"
+                    role="combobox"
+                    aria-haspopup="listbox"
+                    aria-expanded={themePickerOpen}
+                    aria-controls={themePickerOpen ? "settings-theme-options" : undefined}
+                    onClick={() => {
+                      if (themePickerOpen) {
+                        closeThemePicker();
+                      } else {
+                        openThemePicker();
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (
+                        !themePickerOpen &&
+                        (event.key === "ArrowDown" || event.key === "ArrowUp")
+                      ) {
+                        event.preventDefault();
+                        openThemePicker();
+                      }
+                    }}
+                  >
+                    <span>
+                      {activeThemeId === DEFAULT_THEME_ID ? "qmux (default)" : activeThemeId}
+                    </span>
+                  </Button>
+                  {themePickerOpen ? (
+                    <div
+                      id="settings-theme-options"
+                      className="settings-theme-options"
+                      role="listbox"
+                      aria-label="Terminal themes"
+                      onMouseLeave={() => setPreviewThemeId(null)}
+                    >
+                      {renderThemeOption(
+                        DEFAULT_THEME_ID,
+                        "qmux (default)",
+                        themeCatalog?.find((theme) => theme.name === DEFAULT_THEME_ID) ?? null,
+                      )}
+                      {selectedTheme === null && activeThemeId !== DEFAULT_THEME_ID
+                        ? // A stored theme the catalog doesn't have (or the catalog
+                          // is still loading): keep it available without silently
+                          // jumping the visible selection to the default.
+                          renderThemeOption(activeThemeId, activeThemeId, null)
+                        : null}
+                      {themeGroups.dark.length > 0 ? (
+                        <div role="group" aria-labelledby="settings-theme-dark-label">
+                          <div
+                            id="settings-theme-dark-label"
+                            className="settings-theme-group-label"
+                          >
+                            Dark
+                          </div>
+                          {themeGroups.dark.map((theme) =>
+                            renderThemeOption(theme.name, theme.name, theme),
+                          )}
+                        </div>
+                      ) : null}
+                      {themeGroups.light.length > 0 ? (
+                        <div role="group" aria-labelledby="settings-theme-light-label">
+                          <div
+                            id="settings-theme-light-label"
+                            className="settings-theme-group-label"
+                          >
+                            Light
+                          </div>
+                          {themeGroups.light.map((theme) =>
+                            renderThemeOption(theme.name, theme.name, theme),
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              </SettingsRow>
+            </SettingsGroup>
+
+            <SettingsGroup title="Text">
+              <SettingsRow label="Font" labelFor="settings-font" searchText="typeface monospace">
+                <NativeSelect
+                  id="settings-font"
+                  className="settings-select"
+                  value={settings.fontId}
+                  onChange={(event) => {
+                    // Read the value synchronously: the setSettings updater runs
+                    // during render, by which point React has reset currentTarget
+                    // to null, so it must close over the value, not the event.
+                    const fontId = event.currentTarget.value;
+                    setSettings((current) => ({ ...current, fontId }));
+                  }}
+                >
+                  {FONT_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </SettingsRow>
+              <SettingsRow label="Font size" labelId="settings-font-size-label" searchText="zoom">
+                <div
+                  className="settings-stepper"
+                  role="group"
+                  aria-labelledby="settings-font-size-label"
+                >
+                  <button
+                    className="control-button"
+                    type="button"
+                    aria-label="Decrease font size"
+                    disabled={settings.fontSize <= TERMINAL_FONT_SIZE_MIN}
+                    onClick={() =>
+                      setSettings((current) => ({
+                        ...current,
+                        fontSize: clampFontSize(current.fontSize - 1),
+                      }))
+                    }
+                  >
+                    <Minus size={14} aria-hidden="true" />
+                  </button>
+                  <span className="settings-stepper-value" aria-live="polite">
+                    {settings.fontSize}px
+                  </span>
+                  <button
+                    className="control-button"
+                    type="button"
+                    aria-label="Increase font size"
+                    disabled={settings.fontSize >= TERMINAL_FONT_SIZE_MAX}
+                    onClick={() =>
+                      setSettings((current) => ({
+                        ...current,
+                        fontSize: clampFontSize(current.fontSize + 1),
+                      }))
+                    }
+                  >
+                    <Plus size={14} aria-hidden="true" />
+                  </button>
+                </div>
+              </SettingsRow>
+              <SettingsRow
+                label="Line height"
+                labelId="settings-line-height-label"
+                searchText="spacing leading"
+              >
+                <div
+                  className="settings-stepper"
+                  role="group"
+                  aria-labelledby="settings-line-height-label"
+                >
+                  <button
+                    className="control-button"
+                    type="button"
+                    aria-label="Decrease line height"
+                    disabled={settings.lineHeight <= LINE_HEIGHT_MIN}
+                    onClick={() =>
+                      setSettings((current) => ({
+                        ...current,
+                        lineHeight: clampLineHeight(current.lineHeight - LINE_HEIGHT_STEP),
+                      }))
+                    }
+                  >
+                    <Minus size={14} aria-hidden="true" />
+                  </button>
+                  <span className="settings-stepper-value" aria-live="polite">
+                    {settings.lineHeight.toFixed(1)}×
+                  </span>
+                  <button
+                    className="control-button"
+                    type="button"
+                    aria-label="Increase line height"
+                    disabled={settings.lineHeight >= LINE_HEIGHT_MAX}
+                    onClick={() =>
+                      setSettings((current) => ({
+                        ...current,
+                        lineHeight: clampLineHeight(current.lineHeight + LINE_HEIGHT_STEP),
+                      }))
+                    }
+                  >
+                    <Plus size={14} aria-hidden="true" />
+                  </button>
+                </div>
+              </SettingsRow>
+            </SettingsGroup>
+
+            <SettingsGroup title="Cursor">
+              <SettingsRow
+                label="Cursor style"
+                labelId="settings-cursor-style-label"
+                searchText="caret shape block bar underline"
+              >
+                <SegmentedControl
+                  name="settings-cursor-style"
+                  className="settings-segmented"
+                  aria-labelledby="settings-cursor-style-label"
+                  value={settings.cursorStyle}
+                  options={CURSOR_STYLE_OPTIONS.map((option) => ({
+                    value: option.id,
+                    label: option.label,
+                  }))}
+                  onChange={(cursorStyle) =>
+                    setSettings((current) => ({ ...current, cursorStyle }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow label="Blink cursor" labelFor="settings-cursor-blink" searchText="caret">
+                <Switch
+                  id="settings-cursor-blink"
+                  checked={settings.cursorBlink}
+                  onChange={(cursorBlink) =>
+                    setSettings((current) => ({ ...current, cursorBlink }))
+                  }
+                />
+              </SettingsRow>
+            </SettingsGroup>
+
+            <SettingsGroup title="Scrolling">
+              <SettingsRow
+                label="Scrollback lines"
+                labelFor="settings-scrollback-rows"
+                hint="Applies to new tabs."
+                searchText="history buffer rows"
+              >
+                <Input
+                  id="settings-scrollback-rows"
+                  className="settings-input settings-number-input"
+                  type="number"
+                  min={SCROLLBACK_ROWS_MIN}
+                  max={SCROLLBACK_ROWS_MAX}
+                  step={1000}
+                  value={settings.scrollbackRows}
+                  onChange={(event) => {
+                    const scrollbackRows = clampScrollbackRows(Number(event.currentTarget.value));
+                    setSettings((current) => ({ ...current, scrollbackRows }));
+                  }}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Jump to bottom when typing"
+                labelFor="settings-scroll-on-input"
+                searchText="scroll on user input"
+              >
+                <Switch
+                  id="settings-scroll-on-input"
+                  checked={settings.scrollOnUserInput}
+                  onChange={(scrollOnUserInput) =>
+                    setSettings((current) => ({ ...current, scrollOnUserInput }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Mouse wheel sensitivity"
+                labelFor="settings-mouse-wheel-sensitivity"
+                searchText="scroll speed"
+              >
+                <NativeSelect
+                  id="settings-mouse-wheel-sensitivity"
+                  className="settings-select"
+                  value={settings.mouseWheelSensitivity}
+                  onChange={(event) => {
+                    const mouseWheelSensitivity = event.currentTarget
+                      .value as AppSettings["mouseWheelSensitivity"];
+                    setSettings((current) => ({ ...current, mouseWheelSensitivity }));
+                  }}
+                >
+                  {MOUSE_WHEEL_SENSITIVITY_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </SettingsRow>
+            </SettingsGroup>
+
+            <SettingsGroup title="Copy and paste">
+              <SettingsRow
+                label="Copy on select"
+                labelFor="settings-copy-on-select"
+                searchText="clipboard selection"
+              >
+                <Switch
+                  id="settings-copy-on-select"
+                  checked={settings.copyOnSelect}
+                  onChange={(copyOnSelect) =>
+                    setSettings((current) => ({ ...current, copyOnSelect }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Clear selection after copying"
+                labelFor="settings-selection-clear-on-copy"
+                searchText="clipboard"
+              >
+                <Switch
+                  id="settings-selection-clear-on-copy"
+                  checked={settings.selectionClearOnCopy}
+                  onChange={(selectionClearOnCopy) =>
+                    setSettings((current) => ({ ...current, selectionClearOnCopy }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Confirm multi-line paste"
+                labelFor="settings-confirm-multi-line-paste"
+                searchText="clipboard"
+              >
+                <Switch
+                  id="settings-confirm-multi-line-paste"
+                  checked={settings.confirmMultiLinePaste}
+                  onChange={(confirmMultiLinePaste) =>
+                    setSettings((current) => ({ ...current, confirmMultiLinePaste }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Confirm pastes over this many characters"
+                labelFor="settings-confirm-paste-over"
+                searchText="clipboard large paste chars"
+              >
+                <Input
+                  id="settings-confirm-paste-over"
+                  className="settings-input settings-number-input"
+                  type="number"
+                  min={CONFIRM_PASTE_OVER_CHARS_MIN}
+                  max={CONFIRM_PASTE_OVER_CHARS_MAX}
+                  step={1000}
+                  value={settings.confirmPasteOverChars}
+                  onChange={(event) => {
+                    const confirmPasteOverChars = clampConfirmPasteOverChars(
+                      Number(event.currentTarget.value),
+                    );
+                    setSettings((current) => ({ ...current, confirmPasteOverChars }));
+                  }}
+                />
+              </SettingsRow>
+            </SettingsGroup>
+
+            <SettingsGroup title="Shell">
+              <SettingsRow
+                label="Use login shell"
+                labelFor="settings-login-shell"
+                hint="Loads your shell profile in new tabs."
+                searchText="zsh bash profile"
+              >
+                <Switch
+                  id="settings-login-shell"
+                  checked={settings.useLoginShell}
+                  onChange={(useLoginShell) =>
+                    setSettings((current) => ({ ...current, useLoginShell }))
+                  }
+                />
+              </SettingsRow>
+            </SettingsGroup>
+          </>
+        );
+
+      case "advanced":
+        return (
+          <SettingsGroup>
+            <SettingsRow
+              label="Show debug panel"
+              labelFor="settings-debug-panel"
+              searchText="diagnostics developer logs"
+            >
+              <Switch
+                id="settings-debug-panel"
+                checked={settings.showDebugPanel}
+                onChange={(showDebugPanel) =>
+                  setSettings((current) => ({ ...current, showDebugPanel }))
+                }
+              />
+            </SettingsRow>
+          </SettingsGroup>
+        );
+    }
+  }
+
   return (
     <main
       ref={appRef}
@@ -16525,1424 +18081,83 @@ function MainApp({ onReady }: { onReady?: () => void }) {
             className="settings-panel"
             role="dialog"
             aria-modal="true"
-            aria-labelledby="settings-title"
+            aria-label="Settings"
           >
-            <div className="settings-header">
-              <h2 id="settings-title">Settings</h2>
-              <button
-                type="button"
-                className="control-button settings-close"
-                aria-label="Close settings"
-                onClick={() => setSettingsOpen(false)}
-              >
-                <X size={16} aria-hidden="true" />
-              </button>
-            </div>
-
-            <div
-              className="settings-tabs"
-              role="tablist"
-              aria-label="Settings sections"
+            <SettingsSidebar
+              ref={settingsSearchRef}
+              section={settingsTab}
+              searching={settingsSearching}
+              query={settingsQuery}
+              onQueryChange={setSettingsQuery}
+              onSectionChange={(section) => {
+                setSettingsQuery("");
+                setSettingsTab(section);
+              }}
+              attention={settingsAttention}
+            />
+            <section
+              id={SETTINGS_PAGE_ID}
+              className="settings-page"
+              role="tabpanel"
+              aria-labelledby="settings-title"
             >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={settingsTab === "basic"}
-                className={`control-button${settingsTab === "basic" ? " is-active" : ""}`}
-                onClick={() => setSettingsTab("basic")}
-              >
-                Basic
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={settingsTab === "agents"}
-                className={`control-button${settingsTab === "agents" ? " is-active" : ""}`}
-                onClick={() => setSettingsTab("agents")}
-              >
-                Agents
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={settingsTab === "remotes"}
-                className={`control-button${settingsTab === "remotes" ? " is-active" : ""}`}
-                onClick={() => setSettingsTab("remotes")}
-              >
-                Remotes
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={settingsTab === "theme"}
-                className={`control-button${settingsTab === "theme" ? " is-active" : ""}`}
-                onClick={() => setSettingsTab("theme")}
-              >
-                Display
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={settingsTab === "mouseCursor"}
-                className={`control-button${settingsTab === "mouseCursor" ? " is-active" : ""}`}
-                onClick={() => setSettingsTab("mouseCursor")}
-              >
-                Cursor
-              </button>
-            </div>
-
-            {settingsTab === "agents" ? (
-              <div className="settings-content settings-agents" role="tabpanel">
-                <div className="settings-agents-heading">
-                  <div>
-                    <h3>Agent providers</h3>
-                    <p className="settings-hint">
-                      qmux uses your existing coding agent subscriptions.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    className="control-button settings-agent-refresh"
-                    disabled={adapterProbeLoading}
-                    aria-label={adapterProbeLoading ? "Checking agent providers" : "Check again"}
-                    title={adapterProbeLoading ? "Checking agent providers" : "Check again"}
-                    onClick={() =>
-                      void refreshAdapterReadiness({ force: true }).catch(() => undefined)
-                    }
-                  >
-                    <RefreshCw
-                      size={13}
-                      className={adapterProbeLoading ? "is-spinning" : undefined}
-                      aria-hidden="true"
-                    />
-                  </button>
-                </div>
-                {adapterProbeError ? (
-                  <p className="settings-agent-error" role="alert">
-                    {adapterProbeError}
+              <header className="settings-page-header">
+                <div>
+                  <h2 id="settings-title">
+                    {settingsSearching ? "Search results" : settingsSectionInfo(settingsTab).label}
+                  </h2>
+                  <p>
+                    {settingsSearching
+                      ? `Settings matching “${settingsQuery.trim()}”.`
+                      : settingsSectionInfo(settingsTab).description}
                   </p>
-                ) : null}
-                <div className="settings-agent-list">
-                  {readyAdaptersFirst(config?.adapters ?? []).map((adapter) => {
-                    const isExpanded = expandedSettingsAgentIds.has(adapter.instanceId);
-                    const researchSummary = settingsAgentResearchSummary(adapter);
-                    const safeInstanceId = encodeURIComponent(adapter.instanceId);
-                    const summaryId = `settings-agent-summary-${safeInstanceId}`;
-                    const detailsId = `settings-agent-details-${safeInstanceId}`;
-                    return (
-                      <section
-                        className="settings-agent-card"
-                        key={adapter.instanceId}
-                        title={`${adapter.target.label} · ${adapter.instanceId}`}
-                      >
-                        <button
-                          id={summaryId}
-                          type="button"
-                          className="settings-agent-summary"
-                          aria-expanded={isExpanded}
-                          aria-controls={detailsId}
-                          onClick={() => {
-                            setExpandedSettingsAgentIds((current) => {
-                              const next = new Set(current);
-                              if (next.has(adapter.instanceId)) {
-                                next.delete(adapter.instanceId);
-                              } else {
-                                next.add(adapter.instanceId);
-                              }
-                              return next;
-                            });
-                          }}
-                        >
-                          <img
-                            src={ADAPTER_ICON_BY_ID[adapter.id]}
-                            className={`settings-agent-icon ${adapterIconClassName(adapter.id)}`}
-                            alt=""
-                            aria-hidden="true"
-                          />
-                          <span className="settings-agent-identity">
-                            <strong>{adapter.label}</strong>
-                            <span className="settings-agent-summary-meta">
-                              {adapter.version ?? (adapter.resolvedBinary ? "Checking…" : "—")}
-                              {researchSummary ? ` · ${researchSummary}` : null}
-                            </span>
-                          </span>
-                          <span className={`settings-agent-status is-${adapter.readiness}`}>
-                            {adapterReadinessLabel(adapter)}
-                          </span>
-                          <ChevronDown
-                            size={13}
-                            className={`settings-agent-chevron${isExpanded ? " is-open" : ""}`}
-                            aria-hidden="true"
-                          />
-                        </button>
-                        {isExpanded ? (
-                          <div
-                            id={detailsId}
-                            className="settings-agent-detail"
-                            role="region"
-                            aria-labelledby={summaryId}
-                          >
-                            <dl className="settings-agent-details">
-                              <div>
-                                <dt>Binary</dt>
-                                <dd title={adapter.resolvedBinary ?? adapter.configuredBinary}>
-                                  {adapter.resolvedBinary ?? adapter.configuredBinary}
-                                </dd>
-                              </div>
-                              <div>
-                                <dt>Checked</dt>
-                                <dd>
-                                  {adapter.checkedAt
-                                    ? new Date(adapter.checkedAt).toLocaleTimeString([], {
-                                        hour: "numeric",
-                                        minute: "2-digit",
-                                      })
-                                    : "Not yet"}
-                                </dd>
-                              </div>
-                            </dl>
-                            {adapter.message ? (
-                              <p className="settings-agent-message">{adapter.message}</p>
-                            ) : null}
-                            <div className="settings-agent-actions">
-                              {adapter.updateCommand &&
-                              (adapter.readiness === "unsupportedVersion" ||
-                                adapter.researchReadiness === "unsupportedVersion") ? (
+                </div>
+                <button
+                  type="button"
+                  className="control-button settings-close"
+                  aria-label="Close settings"
+                  onClick={() => setSettingsOpen(false)}
+                >
+                  <X size={16} aria-hidden="true" />
+                </button>
+              </header>
+              <div className="settings-page-scroll" ref={settingsScrollRef}>
+                <SettingsSearchProvider query={settingsQuery}>
+                  {settingsSearching ? (
+                    <>
+                      {SETTINGS_SECTIONS.map((section) => {
+                        const SectionIcon = section.icon;
+                        return (
+                          <SettingsScope key={section.id} text={section.label}>
+                            <div className="settings-result-section">
+                              <h3 className="settings-result-heading">
                                 <button
                                   type="button"
-                                  className="control-button"
                                   onClick={() => {
-                                    void writeClipboardText(adapter.updateCommand ?? "");
-                                    showAppToast("Update command copied");
+                                    setSettingsQuery("");
+                                    setSettingsTab(section.id);
                                   }}
                                 >
-                                  Copy update command
+                                  <SectionIcon size={14} aria-hidden="true" />
+                                  {section.label}
                                 </button>
-                              ) : null}
-                              {adapter.loginCommand && adapter.readiness === "needsAuth" ? (
-                                <button
-                                  type="button"
-                                  className="control-button"
-                                  onClick={() => {
-                                    void writeClipboardText(adapter.loginCommand ?? "");
-                                    showAppToast("Sign-in command copied");
-                                  }}
-                                >
-                                  Copy sign-in command
-                                </button>
-                              ) : null}
-                              {adapter.installUrl ? (
-                                <button
-                                  type="button"
-                                  className="control-button"
-                                  onClick={() => {
-                                    void openExternalUrl(adapter.installUrl ?? "").catch((err) => {
-                                      setAdapterProbeError(unknownErrorMessage(err));
-                                    });
-                                  }}
-                                >
-                                  {adapter.readiness === "missing" ? "Install guide" : "Docs"}
-                                </button>
-                              ) : null}
+                              </h3>
+                              {renderSettingsSection(section.id)}
                             </div>
-                          </div>
-                        ) : null}
-                      </section>
-                    );
-                  })}
-                </div>
-                <p className="settings-hint">
-                  Custom executable paths can be set under <code>adapters.*.binary</code> in
-                  <code> qmux.config.json</code>.
-                </p>
-              </div>
-            ) : settingsTab === "remotes" ? (
-              <div className="settings-content settings-remotes" role="tabpanel">
-                <div className="settings-agents-heading">
-                  <div>
-                    <h3>Remote machines</h3>
-                  </div>
-                  <div className="settings-remote-add-group" ref={remoteAddMenuRef}>
-                    <button
-                      type="button"
-                      className="control-button settings-remote-add settings-remote-add-main"
-                      disabled={remoteSettingsSaving || remoteSettingsDraftIsNew}
-                      onClick={() => {
-                        setRemoteAddMenuOpen(false);
-                        beginAddingRemote();
-                      }}
-                    >
-                      <Plus size={13} aria-hidden="true" />
-                      Add
-                    </button>
-                    <button
-                      ref={remoteAddMenuButtonRef}
-                      type="button"
-                      className="control-button settings-remote-add settings-remote-add-menu-button"
-                      disabled={remoteSettingsSaving || remoteSettingsDraftIsNew}
-                      aria-label="Add remote options"
-                      aria-haspopup="menu"
-                      aria-expanded={remoteAddMenuOpen}
-                      aria-controls="settings-remote-add-menu"
-                      onClick={() => {
-                        const opening = !remoteAddMenuOpen;
-                        setRemoteAddMenuOpen(opening);
-                        if (opening && !sshConfigAliasesLoading) {
-                          void refreshSshConfigAliases();
-                        }
-                      }}
-                    >
-                      <ChevronDown size={13} aria-hidden="true" />
-                    </button>
-                    {remoteAddMenuOpen ? (
-                      <div
-                        id="settings-remote-add-menu"
-                        className="popover-surface popover-surface--context settings-remote-add-menu"
-                        role="menu"
-                        aria-label="Add remote options"
-                      >
-                        <div className="group-context-actions">
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="control-button"
-                            autoFocus
-                            onClick={() => {
-                              setRemoteAddMenuOpen(false);
-                              beginAddingRemote();
-                            }}
-                          >
-                            <Plus size={13} aria-hidden="true" />
-                            <span>Add manually</span>
-                          </button>
-                          <div className="context-menu-divider" role="separator" />
-                          <div className="settings-remote-add-menu-label" role="presentation">
-                            From SSH config
-                          </div>
-                          <div
-                            className="settings-remote-add-menu-aliases"
-                            role="group"
-                            aria-label="From SSH config"
-                          >
-                            {availableSshConfigAliases.map((alias) => (
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="control-button"
-                                key={alias}
-                                onClick={() => {
-                                  setRemoteAddMenuOpen(false);
-                                  beginAddingRemoteFromSshAlias(alias);
-                                }}
-                              >
-                                <Globe size={13} aria-hidden="true" />
-                                <span title={alias}>{alias}</span>
-                              </button>
-                            ))}
-                            {availableSshConfigAliases.length === 0 ? (
-                              <div
-                                className="settings-remote-add-menu-empty"
-                                role="menuitem"
-                                aria-disabled="true"
-                                aria-live="polite"
-                                title={sshConfigAliasesError ?? undefined}
-                              >
-                                {sshConfigAliasesLoading
-                                  ? "Loading SSH hosts…"
-                                  : sshConfigAliasesError
-                                    ? "Couldn’t load SSH config"
-                                    : sshConfigAliases.length > 0
-                                      ? "All SSH hosts are already added"
-                                      : "No SSH hosts found"}
-                              </div>
-                            ) : null}
-                          </div>
-                        </div>
+                          </SettingsScope>
+                        );
+                      })}
+                      <div className="settings-no-results" role="status">
+                        <strong>No settings found</strong>
+                        <span>Try “font” or “shortcut”.</span>
                       </div>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="settings-agent-list settings-remote-list">
-                  {remoteSettingsDraftIsNew && remoteSettingsDraftState ? (
-                    <section className="settings-agent-card settings-remote-card">
-                      <div className="settings-remote-new-heading">
-                        <Globe size={16} aria-hidden="true" />
-                        <strong>New remote</strong>
-                      </div>
-                      <RemoteSettingsForm
-                        controller={remoteSettings}
-                        remotes={config?.remotes ?? []}
-                        sshConfigAliases={sshConfigAliases}
-                      />
-                    </section>
-                  ) : null}
-                  {(config?.remotes ?? []).map((remote) => {
-                    const isExpanded = expandedSettingsRemoteId === remote.id;
-                    const safeRemoteId = encodeURIComponent(remote.id);
-                    const summaryId = `settings-remote-summary-${safeRemoteId}`;
-                    const detailsId = `settings-remote-details-${safeRemoteId}`;
-                    return (
-                      <section className="settings-agent-card settings-remote-card" key={remote.id}>
-                        <button
-                          id={summaryId}
-                          type="button"
-                          className="settings-agent-summary settings-remote-summary"
-                          aria-expanded={isExpanded}
-                          aria-controls={detailsId}
-                          onClick={() => toggleRemoteSettings(remote)}
-                        >
-                          <Globe size={16} className="settings-remote-icon" aria-hidden="true" />
-                          <span className="settings-agent-identity">
-                            <strong>{remote.label}</strong>
-                            <span className="settings-agent-summary-meta">{remote.host}</span>
-                          </span>
-                          <span className="settings-remote-source">
-                            {remote.source === "config" ? "Config file" : "Saved"}
-                          </span>
-                          <ChevronDown
-                            size={13}
-                            className={`settings-agent-chevron${isExpanded ? " is-open" : ""}`}
-                            aria-hidden="true"
-                          />
-                        </button>
-                        {isExpanded ? (
-                          <div id={detailsId} role="region" aria-labelledby={summaryId}>
-                            {remote.source === "preferences" ? (
-                              <RemoteSettingsForm
-                                controller={remoteSettings}
-                                remotes={config?.remotes ?? []}
-                                sshConfigAliases={sshConfigAliases}
-                              />
-                            ) : (
-                              <div className="settings-remote-detail settings-remote-readonly">
-                                <dl className="settings-agent-details">
-                                  <div>
-                                    <dt>ID</dt>
-                                    <dd>{remote.id}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>Multiplexer</dt>
-                                    <dd>{remote.multiplexer}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>Workspace root</dt>
-                                    <dd>{remote.workspaceRoot ?? "Default"}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>qmux CLI</dt>
-                                    <dd>{remote.qmuxCli ?? "qmux-cli"}</dd>
-                                  </div>
-                                </dl>
-                                {remoteSettingsError ? (
-                                  <p className="settings-agent-error" role="alert">
-                                    {remoteSettingsError}
-                                  </p>
-                                ) : null}
-                                <RemoteProbeStatus controller={remoteSettings} probeKey={remote.id} />
-                                <div className="settings-remote-actions">
-                                  <button
-                                    type="button"
-                                    className="control-button settings-remote-test"
-                                    disabled={remoteProbeLoadingId === remote.id}
-                                    onClick={() => void testRemoteSettings(remoteSettingsDraft(remote))}
-                                  >
-                                    {remoteProbeLoadingId === remote.id ? "Testing…" : "Test connection"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="control-button"
-                                    disabled={remoteProbeLoadingId === remote.id}
-                                    onClick={() => beginCopyingRemote(remote)}
-                                  >
-                                    Copy to my remotes
-                                  </button>
-                                </div>
-                                <p className="settings-hint">
-                                  This remote is declared in <code>qmux.config.json</code>. Edit the
-                                  file to change it, or copy it into an editable saved remote.
-                                </p>
-                              </div>
-                            )}
-                          </div>
-                        ) : null}
-                      </section>
-                    );
-                  })}
-                  {(config?.remotes?.length ?? 0) === 0 && !remoteSettingsDraftIsNew ? (
-                    <div className="settings-remote-empty">
-                      <Globe size={22} aria-hidden="true" />
-                      <span>No remote machines saved yet.</span>
-                    </div>
-                  ) : null}
-                </div>
+                    </>
+                  ) : (
+                    renderSettingsSection(settingsTab)
+                  )}
+                </SettingsSearchProvider>
               </div>
-            ) : settingsTab === "basic" || settingsTab === "theme" ? (
-              <div className="settings-content" role="tabpanel">
-            {settingsTab === "theme" ? (
-              <>
-            <div className="settings-row">
-              <label htmlFor="settings-color-theme" className="settings-label">
-                Color theme
-              </label>
-              <NativeSelect
-                id="settings-color-theme"
-                className="settings-select"
-                value={settings.colorTheme}
-                onChange={(event) => {
-                  const colorTheme = event.currentTarget.value as AppSettings["colorTheme"];
-                  setSettings((current) => ({ ...current, colorTheme }));
-                }}
-              >
-                {COLOR_THEME_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </NativeSelect>
-            </div>
-
-            <div className="settings-row">
-              <label htmlFor="settings-appearance" className="settings-label">
-                Appearance
-              </label>
-              <NativeSelect
-                id="settings-appearance"
-                className="settings-select"
-                value={settings.appearance}
-                onChange={(event) => {
-                  const appearance = event.currentTarget.value as AppSettings["appearance"];
-                  setSettings((current) => ({ ...current, appearance }));
-                }}
-              >
-                {APPEARANCE_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </NativeSelect>
-            </div>
-
-            <div className="settings-row">
-              <label htmlFor="settings-theme" className="settings-label">
-                Terminal theme
-              </label>
-              <div
-                className="settings-theme-field"
-                ref={themePickerRef}
-                onBlur={(event) => {
-                  if (!event.currentTarget.contains(event.relatedTarget)) {
-                    closeThemePicker();
-                  }
-                }}
-              >
-                <Button
-                  id="settings-theme"
-                  ref={themePickerTriggerRef}
-                  variant="unstyled"
-                  type="button"
-                  className="form-field settings-select settings-theme-trigger"
-                  role="combobox"
-                  aria-haspopup="listbox"
-                  aria-expanded={themePickerOpen}
-                  aria-controls={themePickerOpen ? "settings-theme-options" : undefined}
-                  onClick={() => {
-                    if (themePickerOpen) {
-                      closeThemePicker();
-                    } else {
-                      openThemePicker();
-                    }
-                  }}
-                  onKeyDown={(event) => {
-                    if (
-                      !themePickerOpen &&
-                      (event.key === "ArrowDown" || event.key === "ArrowUp")
-                    ) {
-                      event.preventDefault();
-                      openThemePicker();
-                    }
-                  }}
-                >
-                  <span>
-                    {activeThemeId === DEFAULT_THEME_ID
-                      ? "qmux (default)"
-                      : activeThemeId}
-                  </span>
-                </Button>
-                {themePickerOpen ? (
-                  <div
-                    id="settings-theme-options"
-                    className="settings-theme-options"
-                    role="listbox"
-                    aria-label="Terminal themes"
-                    onMouseLeave={() => setPreviewThemeId(null)}
-                  >
-                    {renderThemeOption(
-                      DEFAULT_THEME_ID,
-                      "qmux (default)",
-                      themeCatalog?.find((theme) => theme.name === DEFAULT_THEME_ID) ?? null,
-                    )}
-                    {selectedTheme === null && activeThemeId !== DEFAULT_THEME_ID
-                      ? // A stored theme the catalog doesn't have (or the catalog
-                        // is still loading): keep it available without silently
-                        // jumping the visible selection to the default.
-                        renderThemeOption(activeThemeId, activeThemeId, null)
-                      : null}
-                    {themeGroups.dark.length > 0 ? (
-                      <div role="group" aria-labelledby="settings-theme-dark-label">
-                        <div
-                          id="settings-theme-dark-label"
-                          className="settings-theme-group-label"
-                        >
-                          Dark
-                        </div>
-                        {themeGroups.dark.map((theme) =>
-                          renderThemeOption(theme.name, theme.name, theme),
-                        )}
-                      </div>
-                    ) : null}
-                    {themeGroups.light.length > 0 ? (
-                      <div role="group" aria-labelledby="settings-theme-light-label">
-                        <div
-                          id="settings-theme-light-label"
-                          className="settings-theme-group-label"
-                        >
-                          Light
-                        </div>
-                        {themeGroups.light.map((theme) =>
-                          renderThemeOption(theme.name, theme.name, theme),
-                        )}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-                {effectiveTheme ? (
-                  <span className="settings-theme-preview" aria-hidden="true">
-                    {themePreviewColors(effectiveTheme).map((color, index) => (
-                      <span key={index} style={{ background: color }} />
-                    ))}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="settings-row">
-              <label htmlFor="settings-body-font" className="settings-label">
-                Body font
-              </label>
-              <NativeSelect
-                id="settings-body-font"
-                className="settings-select"
-                value={availableBodyFonts === null ? "" : settings.bodyFontId}
-                disabled={availableBodyFonts === null}
-                onChange={(event) => {
-                  const bodyFontId = event.currentTarget.value;
-                  setSettings((current) => ({ ...current, bodyFontId }));
-                }}
-              >
-                {availableBodyFonts === null ? (
-                  <option value="">Detecting installed fonts…</option>
-                ) : (
-                  availableBodyFonts.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label}
-                    </option>
-                  ))
-                )}
-              </NativeSelect>
-            </div>
-
-            <div className="settings-row">
-              <label htmlFor="settings-font" className="settings-label">
-                Terminal font
-              </label>
-              <NativeSelect
-                id="settings-font"
-                className="settings-select"
-                value={settings.fontId}
-                onChange={(event) => {
-                  // Read the value synchronously: the setSettings updater runs
-                  // during render, by which point React has reset currentTarget
-                  // to null, so it must close over the value, not the event.
-                  const fontId = event.currentTarget.value;
-                  setSettings((current) => ({ ...current, fontId }));
-                }}
-              >
-                {FONT_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </NativeSelect>
-            </div>
-
-            <div className="settings-row">
-              <span className="settings-label">Font size</span>
-              <div className="settings-stepper" role="group" aria-label="Font size">
-                <button className="control-button"
-                  type="button"
-                  aria-label="Decrease font size"
-                  disabled={settings.fontSize <= TERMINAL_FONT_SIZE_MIN}
-                  onClick={() =>
-                    setSettings((current) => ({
-                      ...current,
-                      fontSize: clampFontSize(current.fontSize - 1),
-                    }))
-                  }
-                >
-                  <Minus size={14} aria-hidden="true" />
-                </button>
-                <span className="settings-stepper-value">{settings.fontSize}px</span>
-                <button className="control-button"
-                  type="button"
-                  aria-label="Increase font size"
-                  disabled={settings.fontSize >= TERMINAL_FONT_SIZE_MAX}
-                  onClick={() =>
-                    setSettings((current) => ({
-                      ...current,
-                      fontSize: clampFontSize(current.fontSize + 1),
-                    }))
-                  }
-                >
-                  <Plus size={14} aria-hidden="true" />
-                </button>
-              </div>
-            </div>
-
-            <label className="settings-row settings-toggle">
-              <span className="settings-label">Show keyboard shortcut hints</span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.showShortcutHints}
-                onChange={(event) => {
-                  const showShortcutHints = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, showShortcutHints }));
-                }}
-              />
-            </label>
-
-            <label className="settings-row settings-toggle">
-              <span className="settings-label">Reduce motion</span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.reduceMotion}
-                onChange={(event) => {
-                  const reduceMotion = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, reduceMotion }));
-                }}
-              />
-            </label>
-
-            <div className="settings-divider" role="separator" />
-
-            <div className="settings-row">
-              <label htmlFor="settings-tab-title-provider" className="settings-label">
-                Generate tab titles
-              </label>
-              <NativeSelect
-                id="settings-tab-title-provider"
-                className="settings-select"
-                value={settings.tabTitleProvider}
-                onChange={(event) => {
-                  const tabTitleProvider =
-                    event.currentTarget.value as AppSettings["tabTitleProvider"];
-                  setSettings((current) => ({ ...current, tabTitleProvider }));
-                }}
-              >
-                {TAB_TITLE_PROVIDER_OPTIONS.map((option) => (
-                  <option
-                    key={option.id}
-                    value={option.id}
-                    disabled={
-                      option.id === "appleFoundationModels" && !appleFoundationTitleAvailable
-                    }
-                  >
-                    {option.id === "appleFoundationModels" && !appleFoundationTitleAvailable
-                      ? `${option.label} (unavailable)`
-                      : option.label}
-                  </option>
-                ))}
-              </NativeSelect>
-            </div>
-            {!appleFoundationTitleAvailable ? (
-              <p className="settings-hint">
-                Apple Foundation Models are not available in this build.
-              </p>
-            ) : null}
-            {settings.tabTitleProvider === "openRouter" ? (
-              <>
-                <p className="settings-hint">
-                  Sends the first message of each new tab to OpenRouter to summarize a title.
-                </p>
-
-                <div className="settings-row">
-                  <label htmlFor="settings-openrouter-key" className="settings-label">
-                    OpenRouter key
-                  </label>
-                  <div className="settings-secret-input">
-                    <Input
-                      id="settings-openrouter-key"
-                      className="settings-input"
-                      type={openRouterKeyVisible ? "text" : "password"}
-                      value={settings.openRouterKey}
-                      placeholder="sk-or-v1-..."
-                      autoComplete="off"
-                      spellCheck={false}
-                      onChange={(event) => {
-                        const openRouterKey = event.currentTarget.value;
-                        setSettings((current) => ({ ...current, openRouterKey }));
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="control-button settings-secret-toggle"
-                      aria-label={
-                        openRouterKeyVisible ? "Hide OpenRouter key" : "Show OpenRouter key"
-                      }
-                      aria-pressed={openRouterKeyVisible}
-                      onClick={() => setOpenRouterKeyVisible((visible) => !visible)}
-                    >
-                      {openRouterKeyVisible ? (
-                        <EyeOff size={14} aria-hidden="true" />
-                      ) : (
-                        <Eye size={14} aria-hidden="true" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="settings-row">
-                  <label htmlFor="settings-openrouter-model" className="settings-label">
-                    OpenRouter model
-                  </label>
-                  <Input
-                    id="settings-openrouter-model"
-                    className="settings-input"
-                    type="text"
-                    value={settings.openRouterModel}
-                    placeholder="google/gemma-4-31b-it:free"
-                    autoComplete="off"
-                    spellCheck={false}
-                    onChange={(event) => {
-                      const openRouterModel = event.currentTarget.value;
-                      setSettings((current) => ({ ...current, openRouterModel }));
-                    }}
-                  />
-                </div>
-              </>
-            ) : null}
-            {titleGenerationTestVisible ? (
-              <div className="settings-title-test">
-                <div className="settings-row">
-                  <span className="settings-label">Test title generation</span>
-                  <button
-                    type="button"
-                    className="control-button settings-test-button"
-                    disabled={titleGenerationTestRunning}
-                    aria-describedby={
-                      titleGenerationTest ? "settings-title-test-message" : undefined
-                    }
-                    onClick={() => void testFirstMessageTitleGeneration()}
-                  >
-                    {titleGenerationTestRunning ? (
-                      <LoaderCircle
-                        className="settings-test-spinner"
-                        size={14}
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <MessageSquareText size={14} aria-hidden="true" />
-                    )}
-                    {titleGenerationTestRunning ? "Testing..." : "Test title"}
-                  </button>
-                </div>
-                {titleGenerationTest ? (
-                  <p
-                    id="settings-title-test-message"
-                    className={`settings-hint settings-title-test-message is-${titleGenerationTest.status}`}
-                  >
-                    {titleGenerationTest.status === "running"
-                      ? `${titleGenerationTest.providerLabel} is generating a title...`
-                      : titleGenerationTest.status === "success"
-                        ? `${titleGenerationTest.providerLabel}: "${titleGenerationTest.title}"`
-                        : `${titleGenerationTest.providerLabel}: ${titleGenerationTest.message}`}
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
-
-            <div className="settings-divider" role="separator" />
-
-            <label className="settings-row settings-toggle">
-              <span className="settings-label">Show debug panel</span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.showDebugPanel}
-                onChange={(event) => {
-                  const showDebugPanel = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, showDebugPanel }));
-                }}
-              />
-            </label>
-              </>
-            ) : (
-              <>
-            <label className="settings-row settings-toggle">
-              <span className="settings-label">
-                Code mode (enables worktrees, extra shell UI, etc.)
-              </span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.codeMode}
-                onChange={(event) => {
-                  const codeMode = event.currentTarget.checked;
-                  setSettings((current) => ({
-                    ...current,
-                    codeMode,
-                    showTabDirectories: codeMode,
-                    showToolCalls: codeMode,
-                    requireCmdEnterToSend: codeMode,
-                  }));
-                }}
-              />
-            </label>
-
-            <label className="settings-row settings-toggle">
-              <span className="settings-label settings-label-indented">Show tab directories</span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.showTabDirectories}
-                onChange={(event) => {
-                  const showTabDirectories = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, showTabDirectories }));
-                }}
-              />
-            </label>
-
-            <label className="settings-row settings-toggle">
-              <span className="settings-label settings-label-indented">Show tool calls</span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.showToolCalls}
-                onChange={(event) => {
-                  const showToolCalls = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, showToolCalls }));
-                }}
-              />
-            </label>
-
-            <label className="settings-row settings-toggle">
-              <span className="settings-label settings-label-indented">
-                Show assistant message timestamps
-              </span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.showAssistantTimestamps}
-                onChange={(event) => {
-                  const showAssistantTimestamps = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, showAssistantTimestamps }));
-                }}
-              />
-            </label>
-
-            <label className="settings-row settings-toggle">
-              <span className="settings-label settings-label-indented">
-                Require ⌘↵ to send
-              </span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.requireCmdEnterToSend}
-                onChange={(event) => {
-                  const requireCmdEnterToSend = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, requireCmdEnterToSend }));
-                }}
-              />
-            </label>
-
-            <div className="settings-row">
-              <label htmlFor="settings-completion-sound" className="settings-label">
-                Completion sound
-              </label>
-              <div className="settings-completion-sound-controls">
-                <NativeSelect
-                  id="settings-completion-sound"
-                  className="settings-select settings-completion-sound-select"
-                  value={settings.completionSound}
-                  onChange={(event) => {
-                    const completionSound = event.currentTarget.value as CompletionSoundId;
-                    setSettings((current) => ({ ...current, completionSound }));
-                    void testCompletionSound(completionSound);
-                  }}
-                >
-                  {COMPLETION_SOUND_OPTIONS.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label}
-                    </option>
-                  ))}
-                </NativeSelect>
-                <button
-                  type="button"
-                  className="control-button settings-completion-sound-test"
-                  onClick={() => void testCompletionSound(settings.completionSound)}
-                >
-                  <Volume2 size={14} aria-hidden="true" />
-                  Test
-                </button>
-              </div>
-            </div>
-
-            <div className="settings-row">
-              <div className="settings-label-stack">
-                <span className="settings-label">Native notifications</span>
-                <p className="settings-hint settings-hint-weak">
-                  Used by <code>qmux send</code> while qmux is in the background.
-                </p>
-              </div>
-              {notificationPermission === null ? (
-                <span className="settings-hint">Checking…</span>
-              ) : notificationPermission.supported &&
-                (notificationPermission.status === "Authorized" ||
-                  notificationPermission.status === "Provisional" ||
-                  notificationPermission.status === "Ephemeral") ? (
-                <span className="settings-hint">Enabled</span>
-              ) : notificationPermission.supported &&
-                notificationPermission.status !== "Denied" ? (
-                <button
-                  type="button"
-                  className="control-button"
-                  disabled={notificationPermissionBusy}
-                  onClick={() => void enableNativeNotifications()}
-                >
-                  {notificationPermissionBusy ? "Enabling…" : "Enable"}
-                </button>
-              ) : (
-                <span className="settings-hint">
-                  {notificationPermission.status === "Denied"
-                    ? "Denied in System Settings"
-                    : "Unavailable"}
-                </span>
-              )}
-            </div>
-
-            <div className="settings-row">
-              <div className="settings-label-stack">
-                <label htmlFor="settings-worktree-location" className="settings-label">
-                  Worktree location
-                </label>
-                <p className="settings-hint settings-hint-weak">
-                  {settings.worktreeLocation === "localQmux"
-                    ? "New worktrees stored in <project>/.qmux/worktrees/<name>."
-                    : settings.worktreeLocation === "localClaude"
-                      ? "New worktrees stored in <project>/.claude/worktrees/<name>."
-                      : "New worktrees stored in qmux’s global workspace directory."}
-                </p>
-              </div>
-              <NativeSelect
-                id="settings-worktree-location"
-                className="settings-select"
-                value={settings.worktreeLocation}
-                onChange={(event) => {
-                  const worktreeLocation =
-                    event.currentTarget.value as AppSettings["worktreeLocation"];
-                  setSettings((current) => ({ ...current, worktreeLocation }));
-                }}
-              >
-                {WORKTREE_LOCATION_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </NativeSelect>
-            </div>
-
-            <div className="settings-row settings-research-instructions-row">
-              <div className="settings-label-stack">
-                <label htmlFor="settings-research-instructions" className="settings-label">
-                  Research instructions
-                </label>
-                <p className="settings-hint settings-hint-weak">
-                  Sent with every research launch
-                </p>
-              </div>
-              <Textarea
-                id="settings-research-instructions"
-                className="settings-input settings-textarea"
-                rows={1}
-                placeholder={DEFAULT_RESEARCH_LAUNCH_INSTRUCTION}
-                value={settings.researchLaunchInstruction}
-                onChange={(event) => {
-                  const researchLaunchInstruction = clampResearchLaunchInstruction(
-                    event.currentTarget.value,
-                  );
-                  setSettings((current) => ({ ...current, researchLaunchInstruction }));
-                }}
-              />
-            </div>
-
-            <div className="settings-row">
-              <div className="settings-label-stack">
-                <label htmlFor="settings-research-sdk-harness" className="settings-label">
-                  Headless Claude research
-                </label>
-                <p className="settings-hint settings-hint-weak">
-                  Run Claude research without a hidden terminal. Off falls back to the pane TUI.
-                </p>
-              </div>
-              <input
-                id="settings-research-sdk-harness"
-                type="checkbox"
-                checked={settings.researchSdkHarness}
-                onChange={(event) => {
-                  const researchSdkHarness = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, researchSdkHarness }));
-                }}
-              />
-            </div>
-
-            <div className="settings-row settings-shortcut-row">
-              <label htmlFor="settings-global-task-launcher-hotkey" className="settings-label">
-                Global quick launch hotkey
-              </label>
-              <NativeSelect
-                id="settings-global-task-launcher-hotkey"
-                className="settings-select"
-                value={globalTaskLauncherSetting.hotkey ?? ""}
-                disabled={globalTaskLauncherHotkeySaving}
-                aria-invalid={globalTaskLauncherHotkeyMessage ? true : undefined}
-                aria-describedby={
-                  globalTaskLauncherHotkeyMessage
-                    ? "settings-global-task-launcher-hotkey-message"
-                    : undefined
-                }
-                onChange={(event) =>
-                  void updateGlobalTaskLauncherHotkey(
-                    event.currentTarget.value
-                      ? (event.currentTarget.value as GlobalTaskLauncherHotkey)
-                      : null,
-                  )
-                }
-              >
-                <option value="">Disabled</option>
-                {GLOBAL_TASK_LAUNCHER_HOTKEY_OPTIONS.map((option) => (
-                  <option
-                    key={option.value}
-                    value={option.value}
-                    disabled={Boolean(
-                      option.accelerator && option.accelerator === showHideShortcutValue,
-                    )}
-                  >
-                    {option.label}
-                    {option.accelerator === showHideShortcutValue ? " (used by Show/hide)" : ""}
-                  </option>
-                ))}
-              </NativeSelect>
-            </div>
-            {globalTaskLauncherHotkeyMessage || globalTaskLauncherHotkeySaving ? (
-              <p
-                id="settings-global-task-launcher-hotkey-message"
-                className={`settings-hint settings-shortcut-message${
-                  globalTaskLauncherHotkeyMessage ? " is-error" : ""
-                }`}
-              >
-                {globalTaskLauncherHotkeySaving
-                  ? "Saving hotkey..."
-                  : globalTaskLauncherHotkeyMessage}
-              </p>
-            ) : null}
-
-            <div className="settings-row settings-shortcut-row">
-              <div className="settings-label">
-                <label htmlFor="settings-show-hide-shortcut">Show/hide app shortcut</label>
-                {showHideShortcutValue ? (
-                  <>
-                    {" "}
-                    <button
-                      type="button"
-                      className="settings-link-button settings-inline-link-button"
-                      disabled={showHideShortcutSaving}
-                      onClick={clearShowHideShortcut}
-                    >
-                      Clear
-                    </button>
-                  </>
-                ) : null}
-              </div>
-              <Input
-                id="settings-show-hide-shortcut"
-                className="settings-input settings-shortcut-input"
-                data-shortcut-capture="show-hide"
-                value={showHideShortcutValue}
-                placeholder="e.g. Option+Space"
-                readOnly
-                aria-invalid={showHideShortcutMessage ? true : undefined}
-                aria-describedby={
-                  showHideShortcutMessage ? "settings-show-hide-shortcut-message" : undefined
-                }
-                onPointerDown={() => setShowHideShortcutCapturing(true)}
-                onFocus={() => setShowHideShortcutCapturing(true)}
-                onBlur={() => setShowHideShortcutCapturing(false)}
-                onKeyDown={captureShowHideShortcut}
-              />
-            </div>
-            {showHideShortcutMessage || showHideShortcutSaving ? (
-              <p
-                id="settings-show-hide-shortcut-message"
-                className={`settings-hint settings-shortcut-message${
-                  showHideShortcutMessage ? " is-error" : ""
-                }`}
-              >
-                {showHideShortcutSaving ? "Saving shortcut..." : showHideShortcutMessage}
-              </p>
-            ) : null}
-            {showHideShortcutConflictLabel ? (
-              <p className="settings-hint settings-shortcut-message">
-                {`qmux also uses this shortcut to ${showHideShortcutConflictLabel}; while registered system-wide, it will show/hide the app instead.`}
-              </p>
-            ) : null}
-
-            <label className="settings-row settings-toggle">
-              <span className="settings-label">Keep awake while agents run (&gt;10% battery)</span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.preventSleep}
-                onChange={(event) => {
-                  // See the font select above: capture before the updater, which
-                  // runs after currentTarget has been nulled out.
-                  const preventSleep = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, preventSleep }));
-                }}
-              />
-            </label>
-
-            <label className="settings-row settings-toggle">
-              <span className="settings-label">Show menu bar icon</span>
-              <input
-                type="checkbox"
-                className="settings-checkbox"
-                checked={settings.showMenuBarIcon}
-                onChange={(event) => {
-                  const showMenuBarIcon = event.currentTarget.checked;
-                  setSettings((current) => ({ ...current, showMenuBarIcon }));
-                }}
-              />
-            </label>
-              </>
-            )}
-              </div>
-            ) : settingsTab === "mouseCursor" ? (
-              <div className="settings-content" role="tabpanel">
-                <label className="settings-row settings-toggle">
-                  <span className="settings-label">Use login shell</span>
-                  <input
-                    type="checkbox"
-                    className="settings-checkbox"
-                    checked={settings.useLoginShell}
-                    onChange={(event) => {
-                      const useLoginShell = event.currentTarget.checked;
-                      setSettings((current) => ({ ...current, useLoginShell }));
-                    }}
-                  />
-                </label>
-
-                <div className="settings-divider" role="separator" />
-
-                <label className="settings-row settings-toggle">
-                  <span className="settings-label">Cursor blink</span>
-                  <input
-                    type="checkbox"
-                    className="settings-checkbox"
-                    checked={settings.cursorBlink}
-                    onChange={(event) => {
-                      const cursorBlink = event.currentTarget.checked;
-                      setSettings((current) => ({ ...current, cursorBlink }));
-                    }}
-                  />
-                </label>
-
-                <div className="settings-row">
-                  <label htmlFor="settings-cursor-style" className="settings-label">
-                    Cursor style
-                  </label>
-                  <NativeSelect
-                    id="settings-cursor-style"
-                    className="settings-select"
-                    value={settings.cursorStyle}
-                    onChange={(event) => {
-                      const cursorStyle = event.currentTarget.value as AppSettings["cursorStyle"];
-                      setSettings((current) => ({ ...current, cursorStyle }));
-                    }}
-                  >
-                    {CURSOR_STYLE_OPTIONS.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </NativeSelect>
-                </div>
-
-                <div className="settings-row">
-                  <label htmlFor="settings-scrollback-rows" className="settings-label">
-                    Scrollback rows (new tabs)
-                  </label>
-                  <Input
-                    id="settings-scrollback-rows"
-                    className="settings-input settings-number-input"
-                    type="number"
-                    min={SCROLLBACK_ROWS_MIN}
-                    max={SCROLLBACK_ROWS_MAX}
-                    step={1000}
-                    value={settings.scrollbackRows}
-                    onChange={(event) => {
-                      const scrollbackRows = clampScrollbackRows(
-                        Number(event.currentTarget.value),
-                      );
-                      setSettings((current) => ({ ...current, scrollbackRows }));
-                    }}
-                  />
-                </div>
-
-                <label className="settings-row settings-toggle">
-                  <span className="settings-label">Scroll on user input</span>
-                  <input
-                    type="checkbox"
-                    className="settings-checkbox"
-                    checked={settings.scrollOnUserInput}
-                    onChange={(event) => {
-                      const scrollOnUserInput = event.currentTarget.checked;
-                      setSettings((current) => ({ ...current, scrollOnUserInput }));
-                    }}
-                  />
-                </label>
-
-                <div className="settings-row">
-                  <label htmlFor="settings-mouse-wheel-sensitivity" className="settings-label">
-                    Mouse wheel sensitivity
-                  </label>
-                  <NativeSelect
-                    id="settings-mouse-wheel-sensitivity"
-                    className="settings-select"
-                    value={settings.mouseWheelSensitivity}
-                    onChange={(event) => {
-                      const mouseWheelSensitivity = event.currentTarget
-                        .value as AppSettings["mouseWheelSensitivity"];
-                      setSettings((current) => ({ ...current, mouseWheelSensitivity }));
-                    }}
-                  >
-                    {MOUSE_WHEEL_SENSITIVITY_OPTIONS.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </NativeSelect>
-                </div>
-
-                <div className="settings-row">
-                  <span className="settings-label">Line height</span>
-                  <div className="settings-stepper" role="group" aria-label="Line height">
-                    <button className="control-button"
-                      type="button"
-                      aria-label="Decrease line height"
-                      disabled={settings.lineHeight <= LINE_HEIGHT_MIN}
-                      onClick={() =>
-                        setSettings((current) => ({
-                          ...current,
-                          lineHeight: clampLineHeight(current.lineHeight - LINE_HEIGHT_STEP),
-                        }))
-                      }
-                    >
-                      <Minus size={14} aria-hidden="true" />
-                    </button>
-                    <span className="settings-stepper-value">
-                      {settings.lineHeight.toFixed(1)}x
-                    </span>
-                    <button className="control-button"
-                      type="button"
-                      aria-label="Increase line height"
-                      disabled={settings.lineHeight >= LINE_HEIGHT_MAX}
-                      onClick={() =>
-                        setSettings((current) => ({
-                          ...current,
-                          lineHeight: clampLineHeight(current.lineHeight + LINE_HEIGHT_STEP),
-                        }))
-                      }
-                    >
-                      <Plus size={14} aria-hidden="true" />
-                    </button>
-                  </div>
-                </div>
-
-                <label className="settings-row settings-toggle">
-                  <span className="settings-label">Copy on select</span>
-                  <input
-                    type="checkbox"
-                    className="settings-checkbox"
-                    checked={settings.copyOnSelect}
-                    onChange={(event) => {
-                      const copyOnSelect = event.currentTarget.checked;
-                      setSettings((current) => ({ ...current, copyOnSelect }));
-                    }}
-                  />
-                </label>
-
-                <label className="settings-row settings-toggle">
-                  <span className="settings-label">Selection clear on copy</span>
-                  <input
-                    type="checkbox"
-                    className="settings-checkbox"
-                    checked={settings.selectionClearOnCopy}
-                    onChange={(event) => {
-                      const selectionClearOnCopy = event.currentTarget.checked;
-                      setSettings((current) => ({ ...current, selectionClearOnCopy }));
-                    }}
-                  />
-                </label>
-
-                <div className="settings-divider" role="separator" />
-
-                <label className="settings-row settings-toggle">
-                  <span className="settings-label">Confirm multi-line paste</span>
-                  <input
-                    type="checkbox"
-                    className="settings-checkbox"
-                    checked={settings.confirmMultiLinePaste}
-                    onChange={(event) => {
-                      const confirmMultiLinePaste = event.currentTarget.checked;
-                      setSettings((current) => ({ ...current, confirmMultiLinePaste }));
-                    }}
-                  />
-                </label>
-
-                <div className="settings-row">
-                  <label htmlFor="settings-confirm-paste-over" className="settings-label">
-                    Confirm paste over chars
-                  </label>
-                  <Input
-                    id="settings-confirm-paste-over"
-                    className="settings-input settings-number-input"
-                    type="number"
-                    min={CONFIRM_PASTE_OVER_CHARS_MIN}
-                    max={CONFIRM_PASTE_OVER_CHARS_MAX}
-                    step={1000}
-                    value={settings.confirmPasteOverChars}
-                    onChange={(event) => {
-                      const confirmPasteOverChars = clampConfirmPasteOverChars(
-                        Number(event.currentTarget.value),
-                      );
-                      setSettings((current) => ({ ...current, confirmPasteOverChars }));
-                    }}
-                  />
-                </div>
-
-              </div>
-            ) : null}
+            </section>
           </div>
         </div>
       ) : null}

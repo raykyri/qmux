@@ -23,6 +23,21 @@ export type { PopoverProps } from "./Popover";
 export { default as SegmentedControl } from "./SegmentedControl";
 export type { SegmentedControlOption, SegmentedControlProps } from "./SegmentedControl";
 export { default as Select } from "./Select";
+export { default as Switch } from "./Switch";
+export type { SwitchProps } from "./Switch";
+export { default as Keycaps, acceleratorKeys } from "./Keycaps";
+export type { KeycapsProps } from "./Keycaps";
+export {
+  SettingsGroup,
+  SettingsLiteral,
+  SettingsRow,
+  SettingsScope,
+  SettingsSearchable,
+  SettingsSearchProvider,
+  SettingsStatus,
+  settingsQueryTokens,
+} from "./SettingsRow";
+export type { SettingsGroupProps, SettingsRowProps, SettingsStatusTone } from "./SettingsRow";
 export type { SelectOption, SelectProps } from "./Select";
 export { classNames } from "./classNames";
 export { useAnchoredPopover } from "./hooks/useAnchoredPopover";

@@ -301,6 +301,14 @@
   --control-fg: var(--text-strong);
   --control-fg-muted: #b9c0bc;
 
+  /* Settings surfaces and the on/off switch. */
+  --settings-group-bg: var(--surface-fill-faint);
+  --settings-sidebar-bg: rgba(0, 0, 0, 0.16);
+  --switch-off-bg: #3a3f42;
+  --switch-thumb-bg: #f1f0e8;
+  --switch-thumb-on-bg: #ffffff;
+  --switch-thumb-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+
   /* Amber split-focus indicators are deliberately theme-independent so the
      active-pane cue reads the same across themes. */
   --split-border-hover: rgba(215, 168, 79, 0.65);
@@ -478,6 +486,7 @@
   --chrome-control-bg-disabled: rgba(31, 29, 26, 0.65);
 
   --settings-tab-active-bg: #322f2b;
+  --switch-off-bg: #3f3d3a;
   --home-cascade-card-border: #34312d;
   --home-cascade-current-bg: #201e1a;
   --prompt-library-item-menu-bg: #393531;
@@ -632,6 +641,12 @@
   --dialog-backdrop-bg: rgba(40, 44, 46, 0.42);
 
   --control-fg-muted: #4e5754;
+  --settings-group-bg: var(--field-bg);
+  --settings-sidebar-bg: rgba(0, 0, 0, 0.035);
+  --switch-off-bg: #cfd5d2;
+  --switch-thumb-bg: #ffffff;
+  --switch-thumb-on-bg: #ffffff;
+  --switch-thumb-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
 
   --split-border-hover: rgba(154, 107, 18, 0.65);
   --split-border-active: rgba(154, 107, 18, 0.85);
@@ -771,6 +786,7 @@
   --chrome-control-bg-disabled: rgba(244, 242, 239, 0.65);
 
   --settings-tab-active-bg: #e6e1da;
+  --switch-off-bg: #d3cdc5;
   --home-cascade-card-border: #d8d2ca;
   --home-cascade-current-bg: #f2efeb;
   --prompt-library-item-menu-bg: #ebe7e1;

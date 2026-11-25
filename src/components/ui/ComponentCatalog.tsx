@@ -10,9 +10,16 @@ import {
   Input,
   Menu,
   MenuItem,
+  Keycaps,
   NativeSelect,
   SegmentedControl,
   Select,
+  SettingsGroup,
+  SettingsLiteral,
+  SettingsRow,
+  SettingsSearchProvider,
+  SettingsStatus,
+  Switch,
   Textarea,
 } from "./index";
 import { LauncherSelect } from "../LauncherSelect";
@@ -37,6 +44,9 @@ export default function ComponentCatalog() {
   const [nativeOpen, setNativeOpen] = useState(false);
   const [segment, setSegment] = useState<"ssh" | "sftp" | "rsync">("ssh");
   const [checkboxOn, setCheckboxOn] = useState(true);
+  const [switchOn, setSwitchOn] = useState(true);
+  const [presetOn, setPresetOn] = useState(true);
+  const [settingsQuery, setSettingsQuery] = useState("");
   const [launcherModel, setLauncherModel] = useState("fable");
   const [launcherEffort, setLauncherEffort] = useState("medium");
   // The catalog renders instead of <App/>, so nothing else sets the root
@@ -192,6 +202,80 @@ export default function ComponentCatalog() {
               { value: "sftp", label: "SFTP" },
             ]}
           />
+        </section>
+        <section style={sectionStyle}>
+          <h2 style={{ margin: 0 }}>Switch</h2>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14 }}>
+            <Switch aria-label="On" checked={switchOn} onChange={setSwitchOn} />
+            <Switch aria-label="Off" checked={false} onChange={() => undefined} />
+            <Switch aria-label="Disabled on" checked disabled onChange={() => undefined} />
+            <Switch aria-label="Disabled off" checked={false} disabled onChange={() => undefined} />
+            <Keycaps accelerator="Option+Space" />
+            <Keycaps accelerator="Control+Shift+Command+K" />
+          </div>
+        </section>
+        <section style={sectionStyle}>
+          <h2 style={{ margin: 0 }}>Settings rows</h2>
+          <Input
+            aria-label="Filter settings rows"
+            placeholder="Filter rows, e.g. “sound” or “code”"
+            value={settingsQuery}
+            onChange={(event) => setSettingsQuery(event.currentTarget.value)}
+          />
+          <SettingsSearchProvider query={settingsQuery}>
+            <SettingsGroup title="Alerts">
+              <SettingsRow
+                label="Completion sound"
+                labelFor="catalog-sound"
+                hint="Plays when an agent finishes its queued work."
+              >
+                <NativeSelect id="catalog-sound" defaultValue="default">
+                  <option value="default">Default</option>
+                  <option value="chime">Chime</option>
+                </NativeSelect>
+              </SettingsRow>
+              <SettingsRow
+                label="Notifications"
+                status={<SettingsStatus tone="attention">Off in System Settings</SettingsStatus>}
+                hint={
+                  <>
+                    Shows notifications from <SettingsLiteral>qmux send</SettingsLiteral> in the background.
+                  </>
+                }
+              />
+            </SettingsGroup>
+            <SettingsGroup title="Code mode">
+              <SettingsRow
+                label="Code mode"
+                labelFor="catalog-code-mode"
+                hint="Also sets the indented options below."
+              >
+                <Switch id="catalog-code-mode" checked={presetOn} onChange={setPresetOn} />
+              </SettingsRow>
+              <SettingsRow indent label="Show tool calls" labelFor="catalog-tool-calls">
+                <Switch id="catalog-tool-calls" checked={presetOn} onChange={setPresetOn} />
+              </SettingsRow>
+              <SettingsRow
+                indent
+                disabled
+                label="Show tab directories"
+                labelFor="catalog-tab-dirs"
+                hint="Disabled row."
+              >
+                <Switch id="catalog-tab-dirs" checked={false} disabled onChange={() => undefined} />
+              </SettingsRow>
+            </SettingsGroup>
+            <SettingsGroup title="Research">
+              <SettingsRow
+                stacked
+                label="Research instructions"
+                labelFor="catalog-instructions"
+                hint="Stacked row: the control spans the full width."
+              >
+                <Textarea id="catalog-instructions" rows={2} />
+              </SettingsRow>
+            </SettingsGroup>
+          </SettingsSearchProvider>
         </section>
         <section style={sectionStyle}>
           <h2 style={{ margin: 0 }}>Checkbox</h2>

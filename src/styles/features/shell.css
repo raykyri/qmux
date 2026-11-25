@@ -21,6 +21,7 @@
 }
 
 .startup-content h1 { margin: 0 0 8px; font-size: calc(18px + var(--font-ui-size-offset)); font-weight: 500; }
+
 .startup-content p { margin: 0; color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .startup-status {
@@ -1457,6 +1458,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   box-shadow: inset 0 1px 0 var(--surface-highlight);
   overflow: hidden;
 }
+
 .repository-browser-dialog {
   width: min(720px, 100%);
   max-height: min(760px, calc(100vh - 36px));
@@ -1881,30 +1883,405 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   background: transparent;
 }
 
+/* Fixed size, so switching sections never resizes the dialog. */
 .settings-panel {
   display: flex;
-  flex-direction: column;
-  width: min(500px, 100%);
-  min-height: min(800px, 95vh);
-  max-height: min(960px, 95vh);
-  gap: 14px;
+  width: min(800px, 100%);
+  height: min(620px, 100%);
+  overflow: hidden;
   border: 1px solid var(--dialog-border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--panel-bg);
   box-shadow: var(--dialog-shadow);
-  padding: 16px 16px 20px;
 }
 
-.settings-header {
+.settings-sidebar {
+  display: flex;
+  flex: 0 0 212px;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 14px 10px 10px;
+  border-right: 1px solid var(--surface-border-subtle);
+  background: var(--settings-sidebar-bg);
+}
+
+.settings-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.settings-search-icon {
+  position: absolute;
+  left: 9px;
+  color: var(--text-subtle);
+  pointer-events: none;
+}
+
+.settings-search-input {
+  width: 100%;
+  min-height: var(--control-h-sm);
+  height: 28px;
+  padding: 0 28px 0 29px;
+  outline: none;
+}
+
+.settings-search-input::placeholder {
+  color: var(--placeholder-color);
+}
+
+.settings-search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.settings-search-input:focus {
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
+.settings-search-clear {
+  position: absolute;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.settings-search-clear:hover {
+  background: var(--surface-fill-hover);
+  color: var(--text-strong);
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-nav-item svg {
+  flex: none;
+  color: var(--text-subtle);
+}
+
+.settings-nav-item:hover {
+  background: var(--surface-fill-hover);
+  color: var(--text-strong);
+}
+
+.settings-nav-item.is-selected {
+  background: var(--settings-tab-active-bg);
+  color: var(--text-max);
+}
+
+.settings-nav-item.is-selected svg {
+  color: var(--accent-color);
+}
+
+.settings-nav-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.settings-nav-dot {
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--status-warning-fg);
+}
+
+.settings-nav-dot.is-attention {
+  background: var(--status-attention-fg);
+}
+
+.settings-page {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.settings-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 14px 12px 28px;
+}
+
+.settings-page-header h2 {
+  margin: 0;
+  color: var(--text-heading);
+  font-size: calc(17px + var(--font-ui-size-offset));
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.settings-page-header p {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.settings-page-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 28px 28px;
+  scrollbar-gutter: stable;
+}
+
+.settings-result-section + .settings-result-section {
+  margin-top: 26px;
+}
+
+.settings-result-section:not(:has(.settings-row, .settings-searchable)) {
+  display: none;
+}
+
+.settings-result-heading {
+  margin: 0 0 10px;
+  font-size: var(--fs-base);
+}
+
+.settings-result-heading button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-heading);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.settings-result-heading button:hover {
+  color: var(--accent-color);
+}
+
+.settings-no-results {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 64px 20px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.settings-no-results strong {
+  color: var(--text-primary);
+  font-size: var(--fs-base);
+  font-weight: 500;
+}
+
+.settings-page-scroll:has(.settings-row, .settings-searchable) .settings-no-results {
+  display: none;
+}
+
+/* Description and action above agent and remote lists. */
+.settings-list-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
 }
 
-.settings-header h2 {
+.settings-list-bar p {
   margin: 0;
-  font-size: calc(15px + var(--font-ui-size-offset));
-  color: var(--text-heading);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.settings-list-bar > .control-button {
+  min-height: 28px;
+  gap: 6px;
+  font-size: var(--fs-sm);
+}
+
+.settings-list-bar .is-spinning {
+  animation: spinner-spin 0.9s linear infinite;
+}
+
+.settings-list-foot {
+  margin: 10px 2px 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.settings-hint-error {
+  color: var(--danger-fg-message);
+}
+
+.settings-hint-warning {
+  color: var(--status-warning-muted-fg);
+}
+
+.settings-icon-button {
+  width: var(--control-h-md);
+  padding: 0;
+}
+
+.settings-segmented .segmented-control-option {
+  min-height: 24px;
+  padding: 0 12px;
+}
+
+/* The read-only input receives focus and keystrokes. Keycaps overlay it. */
+.settings-shortcut-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 190px;
+}
+
+.settings-shortcut-input {
+  width: 100%;
+  padding: 0 30px 0 8px;
+  color: transparent;
+  caret-color: transparent;
+  cursor: pointer;
+  outline: none;
+}
+
+.settings-shortcut-input::placeholder {
+  color: transparent;
+}
+
+.settings-shortcut-input:hover {
+  border-color: var(--control-border-hover);
+}
+
+.settings-shortcut-field.is-capturing .settings-shortcut-input {
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
+.settings-shortcut-display {
+  position: absolute;
+  left: 6px;
+  right: 30px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.settings-shortcut-placeholder,
+.settings-shortcut-prompt {
+  padding-left: 3px;
+  color: var(--placeholder-color);
+  font-size: var(--fs-sm);
+}
+
+.settings-shortcut-prompt {
+  color: var(--accent-color);
+}
+
+.settings-shortcut-clear {
+  position: absolute;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-subtle);
+  cursor: pointer;
+}
+
+.settings-shortcut-clear:hover:not(:disabled) {
+  background: var(--surface-fill-hover);
+  color: var(--text-strong);
+}
+
+/* Preview changes to the terminal theme, font, size, line height, and cursor. */
+.settings-terminal-preview {
+  margin: 0;
+  overflow: hidden;
+  padding: 12px 14px;
+  border: 1px solid var(--surface-border-default);
+  border-radius: var(--radius-lg);
+  white-space: pre;
+}
+
+.settings-terminal-cursor {
+  display: inline-block;
+  width: 0.6em;
+  height: 1.15em;
+  vertical-align: -0.22em;
+}
+
+.settings-terminal-cursor.is-block {
+  background: currentColor;
+}
+
+.settings-terminal-cursor.is-bar {
+  border-left: 2px solid currentColor;
+}
+
+.settings-terminal-cursor.is-underline {
+  border-bottom: 2px solid currentColor;
+}
+
+.settings-terminal-cursor.is-blinking {
+  animation: settings-cursor-blink 1.1s steps(1) infinite;
+}
+
+@keyframes settings-cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-terminal-cursor.is-blinking {
+    animation: none;
+  }
+}
+
+.app-shell.reduce-motion .settings-terminal-cursor.is-blinking {
+  animation: none;
 }
 
 .settings-close {
@@ -1925,55 +2302,6 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   color: var(--text-primary);
 }
 
-.settings-tabs {
-  display: grid;
-  flex: 0 0 auto;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  overflow: hidden;
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-md);
-  background: var(--field-bg);
-}
-
-.settings-tabs button {
-  min-height: var(--control-h-md);
-  padding: 0 10px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--control-fg-muted);
-  font-size: var(--fs-base);
-}
-
-.settings-tabs button + button {
-  border-left: 1px solid var(--control-border);
-}
-
-.settings-tabs button:hover {
-  background: var(--control-bg-hover);
-  color: var(--text-primary);
-}
-
-.settings-tabs button.is-active {
-  background: var(--settings-tab-active-bg);
-  color: var(--text-heading);
-}
-
-.settings-content {
-  display: flex;
-  flex: 1 1 auto;
-  min-height: 0;
-  flex-direction: column;
-  gap: 14px;
-  overflow-y: auto;
-  padding-right: 2px;
-}
-
-.settings-agents {
-  gap: 12px;
-}
-
-.settings-agents-heading,
 .settings-agent-actions {
   display: flex;
   align-items: center;
@@ -1981,13 +2309,6 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   gap: 10px;
 }
 
-.settings-agents-heading h3 {
-  margin: 0 0 4px;
-  color: var(--text-heading);
-  font-size: var(--fs-base);
-}
-
-.settings-agent-refresh,
 .settings-agent-actions .control-button {
   display: inline-flex;
   align-items: center;
@@ -1999,20 +2320,6 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   color: var(--control-fg-muted);
   background: var(--control-bg);
   font-size: var(--fs-sm);
-}
-
-.settings-agent-refresh .is-spinning {
-  animation: spin 0.9s linear infinite;
-}
-
-.settings-agent-refresh {
-  justify-content: center;
-  width: 27px;
-  padding: 0;
-}
-
-.settings-remotes {
-  gap: 12px;
 }
 
 .settings-remote-add,
@@ -2102,7 +2409,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
 }
 
 .settings-remote-summary {
-  grid-template-columns: 16px minmax(0, 1fr) auto 13px;
+  grid-template-columns: 13px 16px minmax(0, 1fr) auto;
 }
 
 .settings-remote-icon {
@@ -2547,8 +2854,8 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
 .settings-agent-list {
   overflow: hidden;
   border: 1px solid var(--surface-border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--field-bg);
+  border-radius: var(--radius-lg);
+  background: var(--settings-group-bg);
 }
 
 .settings-agent-card {
@@ -2561,12 +2868,12 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
 
 .settings-agent-summary {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto 13px;
+  grid-template-columns: 13px 16px minmax(0, 1fr) auto;
   align-items: center;
   width: 100%;
-  min-height: 48px;
-  gap: 8px;
-  padding: 6px 10px;
+  min-height: 50px;
+  gap: 9px;
+  padding: 6px 14px 6px 12px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -2615,19 +2922,6 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   filter: brightness(0) invert(1);
 }
 
-.settings-agent-status {
-  color: var(--status-success-fg);
-  font-size: var(--fs-sm);
-  white-space: nowrap;
-}
-
-.settings-agent-status.is-missing,
-.settings-agent-status.is-needsAuth,
-.settings-agent-status.is-unsupportedVersion,
-.settings-agent-status.is-error {
-  color: var(--status-attention-fg);
-}
-
 .settings-agent-chevron {
   color: var(--text-faint);
   transform: rotate(-90deg);
@@ -2639,7 +2933,7 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
 }
 
 .settings-agent-detail {
-  padding: 0 10px 10px 34px;
+  padding: 0 14px 12px 59px;
   background: var(--surface-fill-subtle);
 }
 
@@ -2688,22 +2982,6 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   display: none;
 }
 
-.settings-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.settings-label {
-  color: var(--control-fg-muted);
-  font-size: var(--fs-base);
-}
-
-.settings-label-indented {
-  padding-left: 18px;
-}
-
 /* Small explanatory note under a setting (e.g. a privacy disclosure). */
 .settings-hint {
   margin: -4px 0 0;
@@ -2711,15 +2989,6 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   font-size: var(--fs-sm);
   line-height: 1.4;
   opacity: 0.85;
-}
-
-.settings-hint-indented {
-  padding-left: 18px;
-}
-
-/* A dimmer variant for incidental notes (e.g. the worktree storage path). */
-.settings-hint-weak {
-  color: var(--text-faint);
 }
 
 .settings-title-test {
@@ -2736,47 +3005,20 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   animation: spinner-spin 0.9s linear infinite;
 }
 
-.settings-title-test-message {
-  margin-left: auto;
-  max-width: 260px;
-  text-align: right;
+.settings-title-test-message.is-running {
+  color: var(--text-secondary);
 }
 
 .settings-title-test-message.is-success {
-  color: var(--status-success-fg-soft);
-  opacity: 1;
+  color: var(--status-success-fg);
 }
 
 .settings-title-test-message.is-error {
   color: var(--danger-fg-message);
-  opacity: 1;
-}
-
-.settings-completion-sound-controls {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 8px;
 }
 
 .settings-completion-sound-select {
-  width: 118px;
-}
-
-.settings-completion-sound-test {
-  min-width: 68px;
-}
-
-.settings-divider {
-  height: 1px;
-  margin: 2px 0;
-  background: var(--surface-border-strong);
-}
-
-/* A whole-row label whose checkbox sits at the trailing edge. */
-.settings-toggle {
-  cursor: pointer;
-  user-select: none;
+  width: 150px;
 }
 
 /* Dropdown styled to match the launcher's option selects. `flex: none` (not a
@@ -2905,24 +3147,6 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   visibility: visible;
 }
 
-/* Swatch strip previewing the selected theme: background, foreground, then
-   the primary ANSI accents. Sits under the dropdown and wraps rather than
-   widening the row. */
-.settings-theme-preview {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 3px;
-}
-
-.settings-theme-preview > span {
-  width: 12px;
-  height: 12px;
-  border-radius: 3px;
-  border: 1px solid var(--surface-border-overlay-strong);
-}
-
 .settings-input {
   flex: 0 0 190px;
   width: 190px;
@@ -2948,31 +3172,15 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
 }
 
 .settings-number-input {
+  flex-basis: 120px;
+  width: 120px;
   color-scheme: dark;
   font-variant-numeric: tabular-nums;
 }
 
-/* The research-instructions row: multi-line text against a top-aligned label. */
-.settings-research-instructions-row {
-  align-items: flex-start;
-}
-
-.settings-label-stack {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.settings-label-stack .settings-hint {
-  margin: 0;
-}
-
 .settings-textarea {
-  /* Match .settings-input width so the column of controls lines up. */
-  flex: 0 0 190px;
-  width: 190px;
+  flex: 1 1 auto;
+  width: 100%;
   height: auto;
   min-height: 44px;
   padding: 8px 10px;
@@ -2980,56 +3188,13 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   line-height: 1.4;
 }
 
-.settings-shortcut-row {
-  align-items: flex-start;
-}
-
 .settings-shortcut-input {
   cursor: default;
 }
 
-.settings-link-button {
-  appearance: none;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--control-fg-muted);
-  font: inherit;
-  font-size: var(--fs-sm);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-
-.settings-link-button:hover:not(:disabled),
-.settings-link-button:focus-visible:not(:disabled) {
-  color: var(--text-primary);
-}
-
-.settings-link-button:disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-
-.settings-inline-link-button {
-  font-size: var(--fs-sm);
-  opacity: 0.85;
-}
-
-.settings-shortcut-message {
-  margin-left: auto;
-  max-width: 260px;
-  text-align: right;
-}
-
-.settings-shortcut-message.is-error {
-  color: var(--danger-fg-message);
-  opacity: 1;
-}
-
 .settings-secret-input {
   display: flex;
-  flex: 0 1 190px;
+  flex: 0 1 240px;
   min-width: 0;
 }
 
@@ -3419,4 +3584,8 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   margin-top: 4px;
   white-space: pre-line;
   color: var(--text-secondary);
+}
+
+.settings-agent-list:empty {
+  display: none;
 }

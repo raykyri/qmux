@@ -81,16 +81,14 @@ test("completion sound settings round-trip and reject unknown ids", () => {
   assert.equal(loadSettings().completionSound, "default");
 });
 
-test("Basic settings preview completion sounds above Worktree location", () => {
-  const basicSettingsStart = appSource.indexOf(
-    "Code mode (enables worktrees, extra shell UI, etc.)",
-  );
+test("General settings preview completion sounds when the selection changes", () => {
+  const generalSectionStart = appSource.indexOf('case "general":');
+  const workspaceSectionStart = appSource.indexOf('case "workspace":');
   const completionSoundSelect = appSource.indexOf('id="settings-completion-sound"');
-  const worktreeLocationSelect = appSource.indexOf('id="settings-worktree-location"');
 
-  assert.notEqual(basicSettingsStart, -1);
-  assert.ok(completionSoundSelect > basicSettingsStart);
-  assert.ok(worktreeLocationSelect > completionSoundSelect);
+  assert.notEqual(generalSectionStart, -1);
+  assert.ok(completionSoundSelect > generalSectionStart);
+  assert.ok(workspaceSectionStart > completionSoundSelect);
   assert.match(
     appSource,
     /setSettings\(\(current\) => \(\{ \.\.\.current, completionSound \}\)\);\s+void testCompletionSound\(completionSound\);/,
