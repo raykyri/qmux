@@ -12,8 +12,25 @@ import {
   pathFromQmuxFileHref,
   resolveLocalLinkPath,
   safeHref,
+  safeTranscriptHref,
+  transcriptFileTarget,
   terminalLinkTarget,
 } from "../src/lib/links";
+
+test("file links preserve literal punctuation across repeated diagram sanitization", () => {
+  for (const path of ["/tmp/report#final.html", "/tmp/report?final.html", "/tmp/report%20final.html", "/tmp/report final.html"]) {
+    const fileUrl = `file://${encodeURI(path).replace(/#/gu, "%23").replace(/\?/gu, "%3F")}`;
+    for (const input of [path, fileUrl]) {
+      const href = safeHref(input)!;
+      assert.equal(safeHref(href), href);
+      assert.equal(transcriptFileTarget(href)?.path, path);
+      assert.equal(transcriptFileTarget(safeTranscriptHref(href)!)?.path, path);
+    }
+  }
+  const href = safeHref("file:///tmp/report%23final.html#section")!;
+  assert.equal(safeHref(href), href);
+  assert.deepEqual(transcriptFileTarget(href), { path: "/tmp/report#final.html", fragment: "#section" });
+});
 
 test("loopbackHtmlUrl recognizes only loopback HTML documents", () => {
   assert.equal(

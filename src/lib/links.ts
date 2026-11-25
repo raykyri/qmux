@@ -6,6 +6,10 @@
 // recognizes and routes through the token-scoped file server.
 export const QMUX_FILE_HREF_PREFIX = "qmux-file:";
 
+function localFileHref(path: string, fragment = ""): string {
+  return `${QMUX_FILE_HREF_PREFIX}${encodeURI(path).replace(/#/gu, "%23").replace(/\?/gu, "%3F")}${fragment}`;
+}
+
 // Transcript renderers and Ghostty commonly include display-only suffixes in a
 // detected path: source positions (`/path/to/file.ts:36`, `:36:8`, or a Devin
 // snippet range `:36-40`) and the sentence-ending period after a filename.
@@ -68,9 +72,17 @@ export function safeHref(href: unknown): string | undefined {
   if (typeof href !== "string") {
     return undefined;
   }
+  // Diagram links are sanitized both when rendered and when activated. Decode
+  // our sentinel before re-encoding so that pass is idempotent.
+  if (href.startsWith(QMUX_FILE_HREF_PREFIX)) {
+    const target = transcriptFileTarget(href);
+    return target && absoluteLocalFilePath(`${QMUX_FILE_HREF_PREFIX}${target.path}`)
+      ? localFileHref(target.path, target.fragment)
+      : undefined;
+  }
   const localPath = absoluteLocalFilePath(href);
   if (localPath) {
-    return `${QMUX_FILE_HREF_PREFIX}${localPath}`;
+    return localFileHref(localPath, href.startsWith("file:") ? new URL(href).hash : "");
   }
   let url: URL;
   try {
@@ -128,8 +140,7 @@ export function safeTranscriptHref(href: unknown): string | undefined {
   if (!target) return safeHref(href);
   // Encode the path separately so literal #, %, and ? in filenames cannot turn
   // into document fragments or be decoded twice on activation.
-  const path = encodeURI(target.path).replace(/#/gu, "%23").replace(/\?/gu, "%3F");
-  return `${QMUX_FILE_HREF_PREFIX}${path}${target.fragment}`;
+  return localFileHref(target.path, target.fragment);
 }
 
 // Portable path characters plus `/`. Spaces, URL punctuation, backslashes,

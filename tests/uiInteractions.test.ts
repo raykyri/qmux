@@ -188,6 +188,32 @@ test("link context menu focuses actions and restores focus on Escape", async () 
   assert.equal(document.activeElement, trigger);
 });
 
+test("local file menu dispatches reveal, default app, and copies the full CSR path", async () => {
+  const { transcriptFileTarget, safeTranscriptHref } = await import("../src/lib/links");
+  const { writeClipboardText } = await import("../src/lib/clipboard");
+  const path = "/Users/raymond/Downloads/AKA-Development-CI.Ro4SYd/AKA_Development_CI.csr";
+  const target = transcriptFileTarget(safeTranscriptHref(path)!)!.path;
+  let copied: unknown;
+  mockIPC((command, args) => {
+    if (command === "plugin:clipboard-manager|write_text") copied = args.text;
+  });
+  const actions: string[] = [];
+  await act(() => root.render(h(LinkContextMenu, {
+    x: 20, y: 30, canOpenInternal: false,
+    externalLabel: "Reveal in Finder", externalKind: "reveal",
+    onOpenInternal: () => { throw Error("CSR cannot be previewed"); },
+    onOpenExternal: () => { actions.push("reveal"); },
+    onOpenWithDefaultApp: () => { actions.push("default"); },
+    onCopy: () => { void writeClipboardText(target); },
+    onClose: () => { actions.push("close"); },
+  })));
+  const items = document.querySelectorAll("[role=menuitem]");
+  assert.equal(items.length, 3);
+  for (const item of items) await click(item);
+  assert.deepEqual(actions, ["close", "reveal", "close", "default", "close"]);
+  assert.equal(copied, path);
+});
+
 for (const kind of ["image", "diagram"] as const) {
   test(`${kind} lightbox traps focus, inerts the app, and restores focus on close`, async () => {
     await act(() => root.render(h(kind === "image" ? ImageLightbox : DiagramLightbox)));

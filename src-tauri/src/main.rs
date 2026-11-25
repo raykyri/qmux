@@ -774,11 +774,7 @@ fn prompt_library_reveal() -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn open_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|err| format!("failed to open {}: {err}", path.display()))
+    open_path_with_default_app(path)
 }
 
 #[cfg(target_os = "linux")]
@@ -896,17 +892,34 @@ fn browser_open_preview_external(
     open_in_os_browser(file_url.as_str())
 }
 
+enum LocalLinkTarget {
+    Reveal(std::path::PathBuf),
+    Preview(control_socket::ResolvedBrowserTarget),
+}
+
+fn local_link_needs_preview(source: &std::path::Path) -> bool {
+    source.is_file() && file_server::is_browser_previewable_path(source)
+}
+
 fn resolve_local_link_target(
     state: &AppState,
     pane_id: &str,
     path: &str,
-) -> Result<control_socket::ResolvedBrowserTarget, String> {
+) -> Result<LocalLinkTarget, String> {
     if !state.pane_exists(pane_id)? {
         return Err(format!("pane {pane_id} was not found"));
     }
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return Err("nothing to open".to_string());
+    }
+    // A user click on a directory or non-previewable file only reveals it.
+    // Resolve that action before asking for browser capabilities; Downloads
+    // and other local folders need no preview grant to be shown in Finder.
+    if let Ok(source) = resolve_local_os_action_path(state, pane_id, path)
+        && !local_link_needs_preview(&source)
+    {
+        return Ok(LocalLinkTarget::Reveal(source));
     }
     // Absolute paths resolve as-is. Relative local targets (transcript or
     // terminal) resolve against the pane's live cwd, then the same root
@@ -926,6 +939,7 @@ fn resolve_local_link_target(
         trimmed,
         cwd.as_deref().and_then(std::path::Path::to_str),
     )
+    .map(LocalLinkTarget::Preview)
 }
 
 #[tauri::command(async)]
@@ -1018,21 +1032,20 @@ fn grant_staged_artifact_to_pane(
 fn open_local_link(
     state: &AppState,
     pane_id: &str,
-    resolved: control_socket::ResolvedBrowserTarget,
+    resolved: LocalLinkTarget,
     artifact_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let source = resolved
-        .path
-        .as_deref()
-        .ok_or_else(|| "local path resolution returned no source file".to_string())?;
-    if !source.is_file() || !file_server::is_browser_previewable_path(source) {
-        reveal_path_in_file_manager(source)?;
-        return Ok(serde_json::json!({
-            "disposition": "revealed",
-            "url": null,
-            "sandbox": false,
-        }));
-    }
+    let resolved = match resolved {
+        LocalLinkTarget::Reveal(source) => {
+            reveal_path_in_file_manager(&source)?;
+            return Ok(serde_json::json!({
+                "disposition": "revealed",
+                "url": null,
+                "sandbox": false,
+            }));
+        }
+        LocalLinkTarget::Preview(resolved) => resolved,
+    };
     state.emit(events::QmuxEvent::new(
         "browser.open",
         Some(pane_id.to_string()),
@@ -1104,8 +1117,8 @@ fn browser_open_local_path(
 }
 
 /// Open a filesystem path activated from the native terminal. Relative paths
-/// resolve against the clicked pane's live cwd before the normal root
-/// confinement and safe preview/reveal disposition.
+/// resolve against the clicked pane's live cwd. Browser previews stay confined
+/// to approved roots; directories and non-previewable files are only revealed.
 #[tauri::command(async)]
 fn browser_open_terminal_path(
     state: tauri::State<'_, AppState>,
@@ -1116,19 +1129,51 @@ fn browser_open_terminal_path(
     open_local_link(&state, &pane_id, resolved, None)
 }
 
-/// Reveal a validated local link without opening or executing it.
+// Explicit OS actions do not serve file contents to a browser and must not
+// depend on preview roots, tokens, or a running preview server. Used for
+// context-menu actions and the reveal-only disposition of user-clicked links.
+fn resolve_local_os_action_path(
+    state: &AppState,
+    pane_id: &str,
+    path: &str,
+) -> Result<std::path::PathBuf, String> {
+    // Remote and missing panes have no local roots. Never interpret a remote
+    // host's path as a same-named local file.
+    if state.pane_file_roots(pane_id).is_empty() {
+        return Err("local file actions require a local pane".to_string());
+    }
+    let cwd = state.inheritable_pane_cwd(pane_id);
+    canonical_os_action_path(path, cwd.as_deref())
+}
+
+fn canonical_os_action_path(
+    path: &str,
+    cwd: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, String> {
+    if path.trim().is_empty() {
+        return Err("nothing to open".to_string());
+    }
+    let requested = std::path::Path::new(path);
+    let requested = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        cwd.ok_or_else(|| "cannot resolve a relative path without a working directory".to_string())?
+            .join(requested)
+    };
+    requested
+        .canonicalize()
+        .map_err(|err| format!("cannot access '{}': {err}", requested.display()))
+}
+
+/// Reveal a local link explicitly selected by the user, without executing it.
 #[tauri::command(async)]
 fn browser_reveal_local_path(
     state: tauri::State<'_, AppState>,
     pane_id: String,
     path: String,
 ) -> Result<(), String> {
-    let resolved = resolve_local_link_target(&state, &pane_id, &path)?;
-    let source = resolved
-        .path
-        .as_deref()
-        .ok_or_else(|| "local path resolution returned no source file".to_string())?;
-    reveal_path_in_file_manager(source)
+    let source = resolve_local_os_action_path(&state, &pane_id, &path)?;
+    reveal_path_in_file_manager(&source)
 }
 
 /// Deliberate context-menu action for handing a validated local link to its OS
@@ -1140,12 +1185,8 @@ fn browser_open_local_path_external(
     pane_id: String,
     path: String,
 ) -> Result<(), String> {
-    let resolved = resolve_local_link_target(&state, &pane_id, &path)?;
-    let source = resolved
-        .path
-        .as_deref()
-        .ok_or_else(|| "local path resolution returned no source file".to_string())?;
-    open_path_with_default_app(source)
+    let source = resolve_local_os_action_path(&state, &pane_id, &path)?;
+    open_path_with_default_app(&source)
 }
 
 #[tauri::command]
@@ -1256,11 +1297,34 @@ fn artifact_reveal(state: tauri::State<'_, AppState>, artifact_id: String) -> Re
 
 #[cfg(target_os = "macos")]
 fn open_path_with_default_app(path: &std::path::Path) -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|err| format!("failed to open {}: {err}", path.display()))
+    run_file_action(std::process::Command::new("open").arg(path), path, "open")
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn run_file_action(
+    command: &mut std::process::Command,
+    path: &std::path::Path,
+    action: &str,
+) -> Result<(), String> {
+    // `open` exits after handing the request to Launch Services, not after the
+    // application closes. Wait for that result so failures reach the error UI.
+    let output = command
+        .output()
+        .map_err(|err| format!("failed to {action} {}: {err}", path.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&output.stderr);
+    let detail = detail.trim();
+    Err(format!(
+        "failed to {action} {}: {}",
+        path.display(),
+        if detail.is_empty() {
+            output.status.to_string()
+        } else {
+            detail.to_string()
+        }
+    ))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1270,12 +1334,11 @@ fn open_path_with_default_app(path: &std::path::Path) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn reveal_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg("-R")
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|err| format!("failed to reveal {}: {err}", path.display()))
+    run_file_action(
+        std::process::Command::new("open").arg("-R").arg(path),
+        path,
+        "reveal",
+    )
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1529,7 +1592,7 @@ fn research_workspace_remove(
     remove_research_workspace(&state, &workspace_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn research_workspace_reveal(
     state: tauri::State<'_, AppState>,
     workspace_id: String,
@@ -4389,6 +4452,97 @@ mod remote_settings_tests {
         remote.workspace_root = Some("relative/workspaces".to_string());
         assert!(validate_ui_remote("devbox", &remote).is_err());
         assert!(validate_ui_remote("Dev Box", &SavedRemote::default()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod local_os_action_tests {
+    use super::{canonical_os_action_path, local_link_needs_preview, run_file_action};
+
+    #[cfg(unix)]
+    #[test]
+    fn file_actions_report_child_failures_including_stderr() {
+        let path = std::path::Path::new("/tmp/report.csr");
+        let error = run_file_action(
+            std::process::Command::new("/bin/sh")
+                .args(["-c", "echo 'No application can open this file' >&2; exit 1"]),
+            path,
+            "open",
+        )
+        .unwrap_err();
+        assert!(error.contains("/tmp/report.csr"));
+        assert!(error.contains("No application can open this file"));
+        assert!(
+            run_file_action(
+                std::process::Command::new("/bin/sh").args(["-c", "exit 0"]),
+                path,
+                "reveal"
+            )
+            .is_ok()
+        );
+        assert!(
+            run_file_action(
+                std::process::Command::new("/bin/sh").args(["-c", "exit 2"]),
+                path,
+                "reveal"
+            )
+            .unwrap_err()
+            .contains("exit status")
+        );
+        assert!(
+            run_file_action(
+                &mut std::process::Command::new("/nonexistent/qmux-opener"),
+                path,
+                "open"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_actions_resolve_files_outside_the_working_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "qmux-os-action-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cwd = root.join("project");
+        let downloads = root.join("Downloads/AKA-Development-CI.Ro4SYd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&downloads).unwrap();
+        let file = downloads.join("AKA_Development_CI.csr");
+        std::fs::write(&file, "test CSR").unwrap();
+        let expected = file.canonicalize().unwrap();
+        assert!(!local_link_needs_preview(&expected));
+        let html = downloads.join("preview.html");
+        std::fs::write(&html, "<p>preview</p>").unwrap();
+        assert!(local_link_needs_preview(&html));
+        let directory = downloads.join("directory.html");
+        std::fs::create_dir(&directory).unwrap();
+        assert!(!local_link_needs_preview(&directory));
+        assert_eq!(
+            canonical_os_action_path(file.to_str().unwrap(), Some(&cwd)).unwrap(),
+            expected
+        );
+        assert_eq!(
+            canonical_os_action_path(file.to_str().unwrap(), None).unwrap(),
+            expected
+        );
+        assert_eq!(
+            canonical_os_action_path(
+                "../Downloads/AKA-Development-CI.Ro4SYd/AKA_Development_CI.csr",
+                Some(&cwd)
+            )
+            .unwrap(),
+            expected
+        );
+        assert!(canonical_os_action_path("missing.csr", Some(&cwd)).is_err());
+        assert!(canonical_os_action_path("relative.csr", None).is_err());
+        assert!(canonical_os_action_path("", Some(&cwd)).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 
