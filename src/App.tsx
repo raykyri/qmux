@@ -1,4 +1,8 @@
-import { canExpandNativeTerminal, nativeTerminalBackstopRect } from "./lib/nativeTerminalLayout";
+import {
+  canExpandNativeTerminal,
+  nativeTerminalBackstopRect,
+  parseOpaqueHexColor,
+} from "./lib/nativeTerminalLayout";
 import { createPortal, flushSync } from "react-dom";
 import { ComposerDrafts } from "./lib/composerDrafts";
 import { afterStartupPaint, loadInitialWorkspace, reconcileStartupArtifacts, reconcileStartupDrafts, startupResearchPane } from "./lib/startupHydration";
@@ -655,6 +659,7 @@ import {
   setActiveTab,
   setGroupCollapsed,
   setCompletionSound,
+  setNativeChromeBackstop,
   setNativeTerminalBrowserOverlayOpen,
   setNativeTerminalKeyboardOwner,
   setNativeTerminalStageBackstop,
@@ -2725,6 +2730,23 @@ function MainApp({ onReady }: { onReady?: () => void }) {
       delete root.dataset.appearance;
     };
   }, [settings.appearance]);
+  // Match the native background to the workspace color. It covers the window's
+  // vibrancy outside the sidebar when the transparent webview has no frame to
+  // display. Run after the theme and appearance effects so --workspace-bg is current.
+  useLayoutEffect(() => {
+    if (!IS_MAC || !("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+    const color = parseOpaqueHexColor(
+      getComputedStyle(document.documentElement).getPropertyValue("--workspace-bg"),
+    );
+    if (!color) {
+      return;
+    }
+    void setNativeChromeBackstop({ sidebarWidth: effectiveSidebarWidth, ...color }).catch(
+      () => undefined,
+    );
+  }, [effectiveSidebarWidth, settings.appearance, settings.colorTheme]);
   const toggleAppearance = useCallback(() => {
     setSettings((current) => ({
       ...current,

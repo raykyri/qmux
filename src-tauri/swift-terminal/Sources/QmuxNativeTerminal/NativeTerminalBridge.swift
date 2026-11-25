@@ -229,6 +229,21 @@ public func qmuxNativeTerminalSetStageBackstop(
     }
 }
 
+@_cdecl("qmux_native_terminal_set_chrome_backstop")
+public func qmuxNativeTerminalSetChromeBackstop(
+    _ sidebarWidth: Double,
+    _ red: Double,
+    _ green: Double,
+    _ blue: Double
+) -> Int32 {
+    onTerminalMain {
+        NativeTerminalHost.shared.setChromeBackstop(
+            sidebarWidth: sidebarWidth,
+            color: CGColor(srgbRed: red, green: green, blue: blue, alpha: 1)
+        ) ? 1 : 0
+    }
+}
+
 @_cdecl("qmux_native_terminal_set_layout")
 public func qmuxNativeTerminalSetLayout(
     _ paneID: UnsafePointer<CChar>?,

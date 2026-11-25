@@ -21,6 +21,26 @@ export function nativeTerminalBackstopRect(
   return expanded ? { left: 0, top: 0, width: viewportWidth, height: viewportHeight } : stage;
 }
 
+export interface NativeBackstopColor {
+  red: number;
+  green: number;
+  blue: number;
+}
+
+/** Converts `#rgb` or `#rrggbb` to sRGB channels from 0 to 1.
+ * Returns null for other formats so the caller can keep the previous
+ * opaque background color. */
+export function parseOpaqueHexColor(value: string): NativeBackstopColor | null {
+  const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+  const digits = match[1];
+  const hex = digits.length === 3 ? [...digits].map((digit) => digit + digit).join("") : digits;
+  const channel = (offset: number) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255;
+  return { red: channel(0), green: channel(2), blue: channel(4) };
+}
+
 /**
  * Hidden terminal DOM nodes still follow the active tab's layout. Keep a
  * parked native surface at its last visible frame so another tab adding or

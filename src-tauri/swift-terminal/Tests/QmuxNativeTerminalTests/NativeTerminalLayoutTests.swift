@@ -588,6 +588,46 @@ final class NativeTerminalLayoutTests: XCTestCase {
     }
 
     @MainActor
+    func testChromeBackstopStaysBelowStageBackstopAndLeavesSidebarUncovered() async throws {
+        let color = CGColor(srgbRed: 0.1, green: 0.1, blue: 0.1, alpha: 1)
+        let stage = CGRect(x: 300, y: 40, width: 800, height: 700)
+        // Either backstop can be created first: the stage backstop appears with
+        // the first terminal stage, the chrome backstop with the first theme sync.
+        for chromeFirst in [true, false] {
+            try await Self.withPane { _, _ in
+                let host = NativeTerminalHost.shared
+                if chromeFirst {
+                    XCTAssertTrue(host.setChromeBackstop(sidebarWidth: 268, color: color))
+                    XCTAssertTrue(host.setStageBackstop(frame: stage))
+                } else {
+                    XCTAssertTrue(host.setStageBackstop(frame: stage))
+                    XCTAssertTrue(host.setChromeBackstop(sidebarWidth: 268, color: color))
+                }
+                let subviews = try XCTUnwrap(host.container?.subviews)
+                let chrome = try XCTUnwrap(subviews.first)
+                XCTAssertEqual(chrome.frame, CGRect(x: 268, y: 0, width: 932, height: 800))
+                XCTAssertEqual(chrome.layer?.backgroundColor, color)
+                XCTAssertEqual(subviews.dropFirst().first?.frame, stage)
+
+                XCTAssertTrue(host.setChromeBackstop(sidebarWidth: 0, color: color))
+                XCTAssertEqual(chrome.frame, CGRect(x: 0, y: 0, width: 1200, height: 800))
+                XCTAssertEqual(host.container?.subviews.first, chrome)
+            }
+        }
+    }
+
+    func testChromeBackstopFrameClampsSidebarToContainer() {
+        let bounds = CGRect(x: 0, y: 0, width: 400, height: 300)
+        XCTAssertEqual(
+            NativeTerminalHost.chromeBackstopFrame(sidebarWidth: 900, bounds: bounds),
+            CGRect(x: 400, y: 0, width: 0, height: 300)
+        )
+        XCTAssertEqual(
+            NativeTerminalHost.chromeBackstopFrame(sidebarWidth: -20, bounds: bounds),
+            bounds
+        )
+    }
+
     private static func withPane(
         _ body: (_ paneID: String, _ frame: CGRect) async throws -> Void
     ) async rethrows {

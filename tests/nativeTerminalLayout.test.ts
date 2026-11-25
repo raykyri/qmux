@@ -6,6 +6,7 @@ import {
   nativeTerminalCutout,
   canExpandNativeTerminal,
   nativeTerminalBackstopRect,
+  parseOpaqueHexColor,
   type NativeTerminalRect,
 } from "../src/lib/nativeTerminalLayout";
 
@@ -70,4 +71,20 @@ test("expanded backstop covers growth beyond the normal terminal stage during de
   assert.equal(nativeTerminalBackstopRect(stage, false, 1280, 800), stage);
   assert.deepEqual(nativeTerminalBackstopRect(stage, true, 1280, 800), rect(0, 0, 1280, 800));
   assert.deepEqual(nativeTerminalBackstopRect(stage, true, 1600, 1000), rect(0, 0, 1600, 1000));
+});
+
+test("the chrome backstop reads opaque hex tokens as sRGB channels", () => {
+  assert.deepEqual(parseOpaqueHexColor(" #ffffff "), { red: 1, green: 1, blue: 1 });
+  assert.deepEqual(parseOpaqueHexColor("#000"), { red: 0, green: 0, blue: 0 });
+  assert.deepEqual(parseOpaqueHexColor("#17191B"), {
+    red: 0x17 / 255,
+    green: 0x19 / 255,
+    blue: 0x1b / 255,
+  });
+});
+
+test("the chrome backstop ignores colors it cannot paint opaquely", () => {
+  assert.equal(parseOpaqueHexColor("rgba(14, 16, 17, 0.72)"), null);
+  assert.equal(parseOpaqueHexColor("#17191b80"), null);
+  assert.equal(parseOpaqueHexColor(""), null);
 });

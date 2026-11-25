@@ -41,6 +41,7 @@ final class NativeTerminalHost {
     private weak var humanBrowserWebView: WKWebView?
     private var panes: [String: NativeTerminalPane] = [:]
     private var backstop: NSView?
+    private var chromeBackstop: NSView?
     private var eventMonitor: Any?
     private var resignKeyObserver: NSObjectProtocol?
     private var becomeKeyObserver: NSObjectProtocol?
@@ -144,6 +145,9 @@ final class NativeTerminalHost {
 
         let webView = findWebView(in: suppliedView)
         appWebView = webView as? WKWebView
+        if let appWebView {
+            Self.disableWindowOcclusionDetection(for: appWebView)
+        }
         let parent = webView?.superview ?? suppliedView
         let container = NativeTerminalContainerView(
             frame: webView?.frame ?? parent.bounds
@@ -163,6 +167,62 @@ final class NativeTerminalHost {
         return true
     }
 
+    /// WebKit can discard web content surfaces when a window is fully covered
+    /// or on another Space. When switching back, the transparent webview then
+    /// exposes the window's vibrancy material until WebKit repaints. Disabling
+    /// occlusion detection retains the last frame while the window is covered.
+    /// Hidden and minimized windows still count as not visible. This uses a
+    /// private WebKit setter, checked at runtime in case it is unavailable.
+    private static func disableWindowOcclusionDetection(for webView: WKWebView) {
+        let selector = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+        guard webView.responds(to: selector),
+              let implementation = webView.method(for: selector)
+        else {
+            return
+        }
+        typealias Setter = @convention(c) (AnyObject, Selector, ObjCBool) -> Void
+        unsafeBitCast(implementation, to: Setter.self)(webView, selector, false)
+    }
+
+    /// Adds an opaque workspace background to the right of the sidebar, below
+    /// the stage backstop and panes. It covers the window's vibrancy material
+    /// when the webview has no frame to display, such as when restoring a hidden
+    /// window. The webview normally covers this background. The sidebar stays
+    /// uncovered so its vibrancy remains visible.
+    func setChromeBackstop(sidebarWidth: CGFloat, color: CGColor) -> Bool {
+        guard let container else { return false }
+        let view: NSView
+        if let chromeBackstop {
+            view = chromeBackstop
+        } else {
+            let created = NSView(frame: .zero)
+            created.wantsLayer = true
+            created.autoresizingMask = [.width, .height]
+            container.addSubview(created, positioned: .below, relativeTo: nil)
+            chromeBackstop = created
+            view = created
+        }
+        view.layer?.backgroundColor = color
+        let frame = Self.chromeBackstopFrame(
+            sidebarWidth: sidebarWidth,
+            bounds: container.bounds
+        )
+        if view.frame != frame {
+            view.frame = frame
+        }
+        return true
+    }
+
+    nonisolated static func chromeBackstopFrame(sidebarWidth: CGFloat, bounds: CGRect) -> CGRect {
+        let inset = min(max(sidebarWidth, 0), bounds.width)
+        return CGRect(
+            x: bounds.minX + inset,
+            y: bounds.minY,
+            width: bounds.width - inset,
+            height: bounds.height
+        )
+    }
+
     /// Keeps an opaque terminal-colored view under the webview's terminal stage
     /// rectangle, below every pane surface. The webview's stage pixels are fully
     /// transparent while panes are shown, and pane surfaces chase their DOM rects
@@ -180,7 +240,13 @@ final class NativeTerminalHost {
             created.layer?.backgroundColor = QmuxTerminalTheme.backgroundColor(
                 named: currentThemeName
             )
-            container.addSubview(created, positioned: .below, relativeTo: nil)
+            // Place the stage below the panes and above the chrome backstop
+            // so the terminal background color stays visible.
+            if let chromeBackstop {
+                container.addSubview(created, positioned: .above, relativeTo: chromeBackstop)
+            } else {
+                container.addSubview(created, positioned: .below, relativeTo: nil)
+            }
             backstop = created
             view = created
         }
@@ -796,6 +862,8 @@ final class NativeTerminalHost {
         windowLiveResizeActive = false
         backstop?.removeFromSuperview()
         backstop = nil
+        chromeBackstop?.removeFromSuperview()
+        chromeBackstop = nil
         container?.onLiveResizeChange = nil
         container?.removeFromSuperview()
         container = nil

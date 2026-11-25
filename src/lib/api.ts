@@ -1418,6 +1418,18 @@ export function setNativeTerminalStageBackstop(rect: {
   return invoke<void>("native_terminal_set_stage_backstop", rect);
 }
 
+/** Sets an opaque workspace background to the right of the sidebar, below the
+ * stage backstop and panes. It covers the window's vibrancy when the webview has
+ * no frame to display. Channels are sRGB values from 0 to 1. */
+export function setNativeChromeBackstop(backstop: {
+  sidebarWidth: number;
+  red: number;
+  green: number;
+  blue: number;
+}) {
+  return invoke<void>("native_terminal_set_chrome_backstop", backstop);
+}
+
 export function focusNativeTerminal(paneId: string) {
   return invoke<void>("native_terminal_focus", { paneId });
 }

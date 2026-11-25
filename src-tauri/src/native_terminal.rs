@@ -476,6 +476,12 @@ mod imp {
         fn qmux_native_terminal_is_ready_for_replay(pane_id: *const c_char) -> i32;
         fn qmux_native_terminal_remove(pane_id: *const c_char);
         fn qmux_native_terminal_set_stage_backstop(x: f64, y: f64, width: f64, height: f64) -> i32;
+        fn qmux_native_terminal_set_chrome_backstop(
+            sidebar_width: f64,
+            red: f64,
+            green: f64,
+            blue: f64,
+        ) -> i32;
         fn qmux_native_terminal_set_layout(
             pane_id: *const c_char,
             x: f64,
@@ -794,6 +800,33 @@ mod imp {
         }
         // SAFETY: scalar arguments are copied synchronously on the main actor.
         if unsafe { qmux_native_terminal_set_stage_backstop(x, y, width, height) } == 1 {
+            Ok(())
+        } else {
+            Err("native terminal host is not attached".to_string())
+        }
+    }
+
+    /// Sets an opaque workspace background to the right of the sidebar, below
+    /// the stage backstop and panes. This covers the window's vibrancy material
+    /// when the transparent webview has no frame to display.
+    pub fn set_chrome_backstop(
+        sidebar_width: f64,
+        red: f64,
+        green: f64,
+        blue: f64,
+    ) -> Result<(), String> {
+        if !sidebar_width.is_finite() || sidebar_width < 0.0 {
+            return Err("native chrome backstop has invalid geometry".to_string());
+        }
+        if [red, green, blue]
+            .iter()
+            .any(|channel| !(0.0..=1.0).contains(channel))
+        {
+            return Err("native chrome backstop has an invalid color".to_string());
+        }
+        // SAFETY: scalar arguments are copied synchronously on the main actor.
+        if unsafe { qmux_native_terminal_set_chrome_backstop(sidebar_width, red, green, blue) } == 1
+        {
             Ok(())
         } else {
             Err("native terminal host is not attached".to_string())
@@ -1299,6 +1332,15 @@ mod imp {
         Err("native terminals are only available on macOS".to_string())
     }
 
+    pub fn set_chrome_backstop(
+        _sidebar_width: f64,
+        _red: f64,
+        _green: f64,
+        _blue: f64,
+    ) -> Result<(), String> {
+        Err("native terminals are only available on macOS".to_string())
+    }
+
     pub fn set_layout(_layout: NativeTerminalLayout) -> Result<(), String> {
         Err("native terminals are only available on macOS".to_string())
     }
@@ -1409,9 +1451,9 @@ pub use imp::{
     create_host_managed, focus, human_browser_history_state, initialize, is_ready_for_replay,
     paste_approved_text, play_bundled_sound, play_system_sound, prepare_for_webview_reload,
     read_viewport_text, receive, remove, seed_settings, send_text, set_annotation_monitoring,
-    set_browser_overlay_open, set_human_browser_loading_background, set_human_browser_webview,
-    set_iframe_shortcut_fallback, set_layout, set_stage_backstop, set_web_overlay_region,
-    set_web_pointer_claimed, shutdown, submit, update_settings,
+    set_browser_overlay_open, set_chrome_backstop, set_human_browser_loading_background,
+    set_human_browser_webview, set_iframe_shortcut_fallback, set_layout, set_stage_backstop,
+    set_web_overlay_region, set_web_pointer_claimed, shutdown, submit, update_settings,
 };
 
 /// Runs `operation` against a clone of the registered state. The slot lock is
@@ -2008,6 +2050,16 @@ pub fn native_terminal_set_stage_backstop(
 }
 
 #[tauri::command]
+pub fn native_terminal_set_chrome_backstop(
+    sidebar_width: f64,
+    red: f64,
+    green: f64,
+    blue: f64,
+) -> Result<(), String> {
+    set_chrome_backstop(sidebar_width, red, green, blue)
+}
+
+#[tauri::command]
 pub fn native_terminal_focus(pane_id: String) -> Result<(), String> {
     focus(&pane_id)
 }
@@ -2345,6 +2397,18 @@ mod tests {
         assert_eq!(
             result.unwrap_err(),
             "native terminal layout contains invalid geometry"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_chrome_backstop_before_ffi() {
+        assert_eq!(
+            super::set_chrome_backstop(-1.0, 0.1, 0.1, 0.1).unwrap_err(),
+            "native chrome backstop has invalid geometry"
+        );
+        assert_eq!(
+            super::set_chrome_backstop(268.0, f64::NAN, 0.1, 0.1).unwrap_err(),
+            "native chrome backstop has an invalid color"
         );
     }
 
