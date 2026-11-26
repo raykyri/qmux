@@ -434,6 +434,7 @@ mod imp {
 
     unsafe extern "C" {
         fn qmux_native_application_is_active() -> i32;
+        fn qmux_native_application_activate() -> i32;
         fn qmux_native_completion_sound_play(system_name: *const c_char) -> i32;
         fn qmux_native_completion_sound_play_file(system_path: *const c_char) -> i32;
         fn qmux_native_completion_sound_play_data(
@@ -593,6 +594,19 @@ mod imp {
         // SAFETY: the function has no borrowed state and synchronously reads
         // NSApplication.isActive on the main actor.
         unsafe { qmux_native_application_is_active() == 1 }
+    }
+
+    pub fn activate_application() -> Result<(), String> {
+        // SAFETY: Swift performs activation on the main actor and retains any
+        // state needed by its asynchronous Launch Services recovery request.
+        if unsafe { qmux_native_application_activate() == 1 } {
+            Ok(())
+        } else {
+            Err(
+                "macOS rejected application activation and no app bundle is available for recovery"
+                    .to_string(),
+            )
+        }
     }
 
     pub fn play_system_sound(system_name: &str) -> Result<(), String> {
@@ -1291,6 +1305,10 @@ mod imp {
         false
     }
 
+    pub fn activate_application() -> Result<(), String> {
+        Err("native application activation is only available on macOS".to_string())
+    }
+
     pub fn play_system_sound(_system_name: &str) -> Result<(), String> {
         Err("completion sounds are only available on macOS".to_string())
     }
@@ -1447,13 +1465,14 @@ mod imp {
 
 #[allow(unused_imports)]
 pub use imp::{
-    action, annotation_selection_snapshot, application_is_active, apply_browser_surface, available,
-    create_host_managed, focus, human_browser_history_state, initialize, is_ready_for_replay,
-    paste_approved_text, play_bundled_sound, play_system_sound, prepare_for_webview_reload,
-    read_viewport_text, receive, remove, seed_settings, send_text, set_annotation_monitoring,
-    set_browser_overlay_open, set_chrome_backstop, set_human_browser_loading_background,
-    set_human_browser_webview, set_iframe_shortcut_fallback, set_layout, set_stage_backstop,
-    set_web_overlay_region, set_web_pointer_claimed, shutdown, submit, update_settings,
+    action, activate_application, annotation_selection_snapshot, application_is_active,
+    apply_browser_surface, available, create_host_managed, focus, human_browser_history_state,
+    initialize, is_ready_for_replay, paste_approved_text, play_bundled_sound, play_system_sound,
+    prepare_for_webview_reload, read_viewport_text, receive, remove, seed_settings, send_text,
+    set_annotation_monitoring, set_browser_overlay_open, set_chrome_backstop,
+    set_human_browser_loading_background, set_human_browser_webview, set_iframe_shortcut_fallback,
+    set_layout, set_stage_backstop, set_web_overlay_region, set_web_pointer_claimed, shutdown,
+    submit, update_settings,
 };
 
 /// Runs `operation` against a clone of the registered state. The slot lock is

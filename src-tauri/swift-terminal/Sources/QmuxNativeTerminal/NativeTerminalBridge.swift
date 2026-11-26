@@ -109,6 +109,13 @@ public func qmuxNativeApplicationIsActive() -> Int32 {
     }
 }
 
+@_cdecl("qmux_native_application_activate")
+public func qmuxNativeApplicationActivate() -> Int32 {
+    onTerminalMain {
+        ApplicationActivation.shared.activate() ? 1 : 0
+    }
+}
+
 @_cdecl("qmux_native_terminal_register_font")
 public func qmuxNativeTerminalRegisterFont(
     _ bytes: UnsafePointer<UInt8>?,

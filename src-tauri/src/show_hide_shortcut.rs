@@ -510,6 +510,12 @@ pub fn show_qmux_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     window.show()?;
     window.unminimize()?;
     window.set_focus()?;
+    // Tauri's focus request does not report a WindowServer activation refusal.
+    // Use Launch Services when still inactive to avoid reusing an expired
+    // hotkey activation context, preserving the main window selected above.
+    #[cfg(target_os = "macos")]
+    crate::native_terminal::activate_application()
+        .map_err(|err| tauri::Error::Io(std::io::Error::other(err)))?;
     Ok(())
 }
 

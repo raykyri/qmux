@@ -3787,10 +3787,8 @@ fn handle_startup_exit(app: &tauri::AppHandle) -> bool {
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+    if let Err(err) = show_hide_shortcut::show_qmux_window(app) {
+        eprintln!("qmux: failed to show main window: {err}");
     }
 }
 
