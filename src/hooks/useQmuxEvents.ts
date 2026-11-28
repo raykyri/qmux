@@ -156,9 +156,19 @@ function stringField(value: unknown, field: string): string | null {
   return typeof fieldValue === "string" ? fieldValue : null;
 }
 
-function agentPromptSubmittedText(payload: Record<string, unknown>): string | null {
+function nonEmptyStringField(value: unknown, field: string): string | null {
+  const fieldValue = stringField(value, field);
+  return fieldValue && fieldValue.trim().length > 0 ? fieldValue : null;
+}
+
+export function agentPromptSubmittedText(payload: Record<string, unknown>): string | null {
   const hookPayload = payload.payload;
-  return stringField(hookPayload, "prompt") ?? stringField(hookPayload, "input");
+  return (
+    nonEmptyStringField(payload, "prompt") ??
+    nonEmptyStringField(hookPayload, "prompt") ??
+    nonEmptyStringField(hookPayload, "input") ??
+    nonEmptyStringField(hookPayload, "lastUserInput")
+  );
 }
 
 export function useQmuxEvents(handlers: UseQmuxEventsHandlers) {

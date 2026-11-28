@@ -9,7 +9,7 @@ Object.defineProperty(globalThis, "window", { value: dom.window, configurable: t
 Object.defineProperty(globalThis, "document", { value: dom.window.document, configurable: true });
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const { createRoot } = await import("react-dom/client");
-const { useQmuxEvents } = await import("../src/hooks/useQmuxEvents");
+const { agentPromptSubmittedText, useQmuxEvents } = await import("../src/hooks/useQmuxEvents");
 const { listenToEvents } = await import("../src/lib/api");
 type Handlers = Parameters<typeof useQmuxEvents>[0];
 const internals = () => (window as any).__TAURI_INTERNALS__;
@@ -179,4 +179,91 @@ test("native ready failure arriving after disposal cannot schedule a retry", asy
   await act(async () => reject(new Error("late failure")));
   assert.equal(timers.size, 0);
   assert.equal(callbacks().size, 0);
+});
+
+test("agentPromptSubmittedText supports top-level prompts and Antigravity lastUserInput", () => {
+  assert.equal(
+    agentPromptSubmittedText({ payload: { prompt: "codex prompt" } }),
+    "codex prompt",
+  );
+  assert.equal(
+    agentPromptSubmittedText({ payload: { input: "codex input" } }),
+    "codex input",
+  );
+  assert.equal(
+    agentPromptSubmittedText({ payload: { lastUserInput: "antigravity prompt" } }),
+    "antigravity prompt",
+  );
+  assert.equal(
+    agentPromptSubmittedText({
+      prompt: "unwrapped transcript prompt",
+      payload: { lastUserInput: "<USER_REQUEST>wrapped</USER_REQUEST>" },
+    }),
+    "unwrapped transcript prompt",
+  );
+  assert.equal(
+    agentPromptSubmittedText({ payload: { prompt: "   ", lastUserInput: "fallback prompt" } }),
+    "fallback prompt",
+  );
+  assert.equal(
+    agentPromptSubmittedText({ payload: { lastUserInput: "   " } }),
+    null,
+  );
+});
+
+test("agent.prompt_submitted dispatches Antigravity lastUserInput to onAgentPromptSubmitted", async () => {
+  let handler = 0;
+  const submitted: Array<[string, string]> = [];
+  mockIPC((cmd, args: any) => {
+    if (cmd === "plugin:event|listen") {
+      handler = args.handler;
+      return args.handler;
+    }
+  });
+  const handlers = new Proxy(
+    {
+      onEventsReady: () => ready++,
+      onAgentPromptSubmitted: (agentId: string, prompt: string) => {
+        submitted.push([agentId, prompt]);
+      },
+    } as Partial<Handlers>,
+    {
+      get: (target, key) => (target as any)[key] ?? (() => {}),
+    },
+  ) as Handlers;
+  function Harness() {
+    useQmuxEvents(handlers);
+    return null;
+  }
+  await act(async () => root.render(h(Harness)));
+  await act(async () => {
+    internals().runCallback(handler, {
+      event: "qmux-event",
+      id: handler,
+      payload: {
+        type: "agent.prompt_submitted",
+        agentId: "agent-agy",
+        paneId: "pane-1",
+        payload: {
+          hookEvent: "PreInvocation",
+          payload: { lastUserInput: "investigate title generation" },
+        },
+      },
+    });
+    internals().runCallback(handler, {
+      event: "qmux-event",
+      id: handler,
+      payload: {
+        type: "agent.prompt_submitted",
+        agentId: "agent-agy",
+        paneId: "pane-1",
+        payload: {
+          hookEvent: "PreInvocation",
+          payload: { lastUserInput: "" },
+        },
+      },
+    });
+  });
+  await retry();
+  assert.deepEqual(submitted, [["agent-agy", "investigate title generation"]]);
 });

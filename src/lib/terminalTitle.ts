@@ -2,6 +2,16 @@ import { OPENCODE_ADAPTER_ID } from "../adapters/opencode";
 
 export const MAX_TERMINAL_TITLE_CHARS = 160;
 
+// Keep this list free of React UI adapter imports (e.g. codex.tsx imports UI
+// controls that create a module cycle when loaded from pure lib helpers).
+const SHELL_FIRST_MESSAGE_TITLE_ADAPTER_IDS = new Set(["codex", "antigravity"]);
+
+/** Adapters that rely on qmux's first-message title generation when launched
+ * inside an existing shell pane (instead of managing their own OSC titles). */
+export function usesShellFirstMessageTitle(adapterId: string): boolean {
+  return SHELL_FIRST_MESSAGE_TITLE_ADAPTER_IDS.has(adapterId);
+}
+
 /** Normalize an OSC title while removing known CLI branding. */
 export function sanitizeTerminalTitle(
   rawTitle: string,

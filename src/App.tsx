@@ -96,7 +96,6 @@ import {
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { agentUiAdapters, findAgentUiAdapter, getAgentUiAdapter } from "./adapters";
 import { CLAUDE_ADAPTER_ID } from "./adapters/claude";
-import { CODEX_ADAPTER_ID } from "./adapters/codex";
 import { ADAPTER_ICON_BY_ID, adapterIconClassName } from "./lib/adapterIcons";
 import { writeClipboardText } from "./lib/clipboard";
 import {
@@ -308,7 +307,7 @@ import {
   statusLabel,
   upsertThreadGraphs,
 } from "./lib/appHelpers";
-import { sanitizeTerminalTitle } from "./lib/terminalTitle";
+import { sanitizeTerminalTitle, usesShellFirstMessageTitle } from "./lib/terminalTitle";
 import {
   remoteSettingsDraft,
   unconfiguredSshAliases,
@@ -4517,12 +4516,12 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     pendingFirstTitleByAgentRef.current.delete(agentId);
   }
 
-  function registerShellCodexFirstMessageTitle(
+  function registerShellFirstMessageTitle(
     agent: AgentInfo,
     paneId: string | null,
     source: string | null,
   ) {
-    if (source !== "shell" || agent.adapter !== CODEX_ADAPTER_ID) {
+    if (source !== "shell" || !usesShellFirstMessageTitle(agent.adapter)) {
       return;
     }
     const resolvedPaneId = paneId ?? agent.paneId ?? null;
@@ -4548,7 +4547,7 @@ function MainApp({ onReady }: { onReady?: () => void }) {
     if (source === "research") {
       researchAgentIdsRef.current.add(agent.id);
     }
-    registerShellCodexFirstMessageTitle(agent, paneId, source);
+    registerShellFirstMessageTitle(agent, paneId, source);
   }
 
   function handleAgentPromptSubmitted(agentId: string, prompt: string) {

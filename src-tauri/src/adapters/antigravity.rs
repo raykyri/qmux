@@ -557,16 +557,22 @@ impl AntigravityAdapter {
             }
         };
 
-        let send_tracking = if notification.event == "PreInvocation" {
-            let prompt = super::string_field(&notification.payload, "prompt")
+        let resolved_prompt = if notification.event == "PreInvocation" {
+            super::string_field(&notification.payload, "prompt")
                 .or_else(|| super::string_field(&notification.payload, "lastUserInput"))
+                .map(|value| unwrap_user_request(&value).to_string())
+                .filter(|value| !value.is_empty())
                 .or_else(|| {
                     current_agent
                         .as_ref()
                         .and_then(|agent| agent.transcript_path.as_deref())
                         .and_then(latest_antigravity_user_prompt)
-                });
-            Some(state.match_agent_prompt_submit(&current.id, prompt.as_deref())?)
+                })
+        } else {
+            None
+        };
+        let send_tracking = if notification.event == "PreInvocation" {
+            Some(state.match_agent_prompt_submit(&current.id, resolved_prompt.as_deref())?)
         } else {
             None
         };
@@ -575,6 +581,9 @@ impl AntigravityAdapter {
             "agent": current_agent,
             "payload": notification.payload,
         });
+        if let (Some(prompt), Value::Object(payload)) = (resolved_prompt, &mut event_payload) {
+            payload.insert("prompt".to_string(), Value::String(prompt));
+        }
         if let (Some(send_tracking), Value::Object(payload)) = (send_tracking, &mut event_payload) {
             payload.insert(
                 "sendTracking".to_string(),
@@ -1753,6 +1762,7 @@ mod tests {
             .unwrap();
         let AdapterNotificationOutcome::Event(evt) = main_pre;
         assert_eq!(evt.event_type, "agent.prompt_submitted");
+        assert_eq!(evt.payload["prompt"], "main prompt");
         assert_eq!(
             state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
             Some("parent-conv")
@@ -1931,5 +1941,63 @@ mod tests {
             PathBuf::from("/Users/test/.gemini/antigravity-cli")
         );
         assert!(antigravity_home_from(None, None, None).is_err());
+    }
+
+    #[test]
+    fn pre_invocation_emits_unwrapped_prompt_and_falls_back_to_transcript() {
+        let state = AppState::new(test_config());
+        let adapter = AntigravityAdapter::new(&test_config());
+        let transcript_dir =
+            std::env::temp_dir().join(format!("qmux-agy-prompt-test-{}", std::process::id()));
+        fs::create_dir_all(&transcript_dir).unwrap();
+        let transcript = transcript_dir.join("transcript.jsonl");
+        fs::write(
+            &transcript,
+            "{\"type\":\"USER_INPUT\",\"content\":\"<USER_REQUEST>\\nfrom transcript\\n</USER_REQUEST>\"}\n",
+        )
+        .unwrap();
+
+        let mut agent = sample_agent();
+        agent.transcript_path = Some(transcript.display().to_string());
+        state.insert_agent(agent).unwrap();
+
+        let wrapped = adapter
+            .ingest_antigravity_notification(
+                &state,
+                AdapterNotification {
+                    adapter_id: Some("antigravity".to_string()),
+                    agent_id: Some("agent-1".to_string()),
+                    pane_id: None,
+                    event: "PreInvocation".to_string(),
+                    payload: json!({
+                        "conversationId": "conv-1",
+                        "lastUserInput": "<USER_REQUEST>\nwrapped prompt\n</USER_REQUEST>",
+                    }),
+                },
+            )
+            .unwrap();
+        let AdapterNotificationOutcome::Event(evt) = wrapped;
+        assert_eq!(evt.event_type, "agent.prompt_submitted");
+        assert_eq!(evt.payload["prompt"], "wrapped prompt");
+
+        let from_transcript = adapter
+            .ingest_antigravity_notification(
+                &state,
+                AdapterNotification {
+                    adapter_id: Some("antigravity".to_string()),
+                    agent_id: Some("agent-1".to_string()),
+                    pane_id: None,
+                    event: "PreInvocation".to_string(),
+                    payload: json!({
+                        "conversationId": "conv-1",
+                    }),
+                },
+            )
+            .unwrap();
+        let AdapterNotificationOutcome::Event(evt) = from_transcript;
+        assert_eq!(evt.event_type, "agent.prompt_submitted");
+        assert_eq!(evt.payload["prompt"], "from transcript");
+
+        let _ = fs::remove_dir_all(&transcript_dir);
     }
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sanitizeTerminalTitle } from "../src/lib/terminalTitle";
+import { sanitizeTerminalTitle, usesShellFirstMessageTitle } from "../src/lib/terminalTitle";
 
 test("sanitizes OpenCode's terminal title prefix", () => {
   assert.equal(sanitizeTerminalTitle("OC | Fix the build", "opencode"), "Fix the build");
@@ -22,4 +22,11 @@ test("only strips the OpenCode prefix at the beginning", () => {
 
 test("retains existing Grok title normalization", () => {
   assert.equal(sanitizeTerminalTitle("Fix the build - GROK", "grok"), "Fix the build");
+});
+
+test("enables shell first-message title generation for Codex and Antigravity", () => {
+  assert.equal(usesShellFirstMessageTitle("codex"), true);
+  assert.equal(usesShellFirstMessageTitle("antigravity"), true);
+  assert.equal(usesShellFirstMessageTitle("claude"), false);
+  assert.equal(usesShellFirstMessageTitle("opencode"), false);
 });
