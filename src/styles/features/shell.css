@@ -3510,6 +3510,9 @@ html[data-body-font="anthropic-sans-text"] .native-input textarea {
   min-width: 0;
   line-height: 1.4;
   text-align: left;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
 }
 
 .error-banner-dismiss {

@@ -2,7 +2,7 @@ import { CheckCircle2, CircleAlert, Info, TriangleAlert, X } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNativeWebOverlayRegion } from "../hooks/useNativeWebOverlayRegion";
-import { useBlockingDialogOpen } from "./ui";
+import { Button, useBlockingDialogOpen } from "./ui";
 
 export type UserNotificationTone = "info" | "success" | "warning" | "error";
 
@@ -116,6 +116,18 @@ function NotificationCard({
           </time>
         </span>
         <span className="user-notification-body">{notification.body}</span>
+        {notification.tone === "error" && notification.paneId ? (
+          <Button
+            variant="link"
+            className="user-notification-source"
+            onClick={() => {
+              onOpenPane(notification.paneId!);
+              beginDismiss();
+            }}
+          >
+            Open source pane
+          </Button>
+        ) : null}
       </span>
     </>
   );
@@ -128,7 +140,7 @@ function NotificationCard({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {notification.paneId ? (
+      {notification.paneId && notification.tone !== "error" ? (
         <button
           type="button"
           className="user-notification-open"

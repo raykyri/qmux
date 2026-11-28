@@ -100,6 +100,17 @@ button.user-notification-open:hover {
   line-height: 1.35;
 }
 
+.user-notification.is-error .user-notification-copy {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+
+.user-notification-source {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
 .user-notification-heading {
   display: flex;
   min-width: 0;
