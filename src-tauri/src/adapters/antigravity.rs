@@ -107,7 +107,8 @@ impl AntigravityAdapter {
         let args = build_antigravity_args(&cwd, request.model.as_deref(), prompt_opt);
 
         let pane_id = state.next_id("pane");
-        let envs = agent_pane_envs(state, &pane_id, &agent.id)?;
+        let mut envs = agent_pane_envs(state, &pane_id, &agent.id)?;
+        envs.push(("QMUX_ADAPTER_ID".to_string(), self.id().to_string()));
 
         attach_antigravity_agent_pane(state, &agent.id, pane_id.clone(), has_initial_prompt)?;
         let spawn_result = plan_to_spec(
@@ -168,7 +169,15 @@ impl AntigravityAdapter {
             agent.session_id.as_deref(),
         );
 
-        let envs = agent_pane_envs(state, &pane.id, &agent.id)?;
+        let mut envs = agent_pane_envs(state, &pane.id, &agent.id)?;
+        envs.push(("QMUX_ADAPTER_ID".to_string(), self.id().to_string()));
+        if let Some(session_id) = agent
+            .session_id
+            .as_deref()
+            .and_then(valid_antigravity_session_id)
+        {
+            envs.push(("QMUX_ROOT_SESSION_ID".to_string(), session_id.to_string()));
+        }
 
         let spec = plan_to_spec(
             state,
@@ -335,6 +344,7 @@ impl AntigravityAdapter {
         )?;
 
         let mut envs = agent_pane_envs(state, &request.pane_id, &agent.id)?;
+        envs.push(("QMUX_ADAPTER_ID".to_string(), self.id().to_string()));
         if let Some(session_id) = resume_session_id {
             envs.push(("QMUX_ROOT_SESSION_ID".to_string(), session_id));
         }
@@ -452,21 +462,60 @@ impl AntigravityAdapter {
             _ => None,
         };
 
+        // Antigravity runs subagents as separate conversations inside the same
+        // process, so their hooks inherit the pane's QMUX_* env vars and fire
+        // the same Stop/PreInvocation events (often with `fullyIdle: true`)
+        // under their own `conversationId`. Pin the pane to its main
+        // `conversationId` first-wins and treat foreign conversations as
+        // passive subagent activity so they can neither clobber `session_id`
+        // nor complete the parent pane early.
+        let mut ignored_subagent = qmux_proto::hook_payload_is_subagent(&notification.payload);
         let mut needs_tail = false;
-        let updated = state.mutate_agent(&current.id, |agent| {
-            if let Some(sid) = session_id {
-                agent.session_id = Some(sid);
-            }
-            if let Some(tp) = resolved_transcript_path {
-                if agent.transcript_path.as_deref() != Some(&tp) {
+        let updated = if ignored_subagent {
+            None
+        } else {
+            state.mutate_agent(&current.id, |agent| {
+                if matches!(
+                    (agent.session_id.as_deref(), session_id.as_deref()),
+                    (Some(main), Some(reported)) if main != reported
+                ) {
+                    ignored_subagent = true;
+                    return;
+                }
+                let can_bind = antigravity_hook_can_bind_session(
+                    &notification.event,
+                    &notification.payload,
+                );
+                if agent.session_id.is_none()
+                    && can_bind
+                    && let Some(sid) = session_id.clone()
+                {
+                    agent.session_id = Some(sid);
+                }
+                if (agent.session_id.is_some() || can_bind)
+                    && let Some(tp) = resolved_transcript_path.clone()
+                    && agent.transcript_path.as_deref() != Some(&tp)
+                {
                     agent.transcript_path = Some(tp);
                     needs_tail = true;
                 }
-            }
-            if let Some(status) = next_status {
-                agent.status = status;
-            }
-        })?;
+                if let Some(status) = next_status {
+                    agent.status = status;
+                }
+            })?
+        };
+
+        if ignored_subagent {
+            return Ok(AdapterNotificationOutcome::Event(QmuxEvent::new(
+                "agent.subagent_activity",
+                notification.pane_id,
+                Some(current.id),
+                json!({
+                    "hookEvent": notification.event,
+                    "payload": notification.payload,
+                }),
+            )));
+        }
 
         let drained = if fully_idle_stop {
             if let Some(agent) = updated.as_ref() {
@@ -509,12 +558,14 @@ impl AntigravityAdapter {
         };
 
         let send_tracking = if notification.event == "PreInvocation" {
-            let prompt = super::string_field(&notification.payload, "prompt").or_else(|| {
-                current_agent
-                    .as_ref()
-                    .and_then(|agent| agent.transcript_path.as_deref())
-                    .and_then(latest_antigravity_user_prompt)
-            });
+            let prompt = super::string_field(&notification.payload, "prompt")
+                .or_else(|| super::string_field(&notification.payload, "lastUserInput"))
+                .or_else(|| {
+                    current_agent
+                        .as_ref()
+                        .and_then(|agent| agent.transcript_path.as_deref())
+                        .and_then(latest_antigravity_user_prompt)
+                });
             Some(state.match_agent_prompt_submit(&current.id, prompt.as_deref())?)
         } else {
             None
@@ -538,6 +589,20 @@ impl AntigravityAdapter {
             event_payload,
         )))
     }
+}
+
+fn antigravity_payload_has_empty_user_input(payload: &Value) -> bool {
+    payload
+        .get("lastUserInput")
+        .and_then(Value::as_str)
+        .is_some_and(|input| input.trim().is_empty())
+}
+
+fn antigravity_hook_can_bind_session(event: &str, payload: &Value) -> bool {
+    if antigravity_payload_has_empty_user_input(payload) {
+        return false;
+    }
+    matches!(event, "PreInvocation" | "Stop")
 }
 
 fn finish_agent_after_stop(state: &AppState, agent: &AgentInfo) -> Result<bool, String> {
@@ -1636,6 +1701,184 @@ mod tests {
         assert_eq!(
             state.agent("agent-1").unwrap().unwrap().status,
             AgentStatus::Done
+        );
+    }
+
+    #[test]
+    fn subagent_hooks_cannot_clobber_session_or_complete_parent_pane() {
+        let state = AppState::new(test_config());
+        let adapter = AntigravityAdapter::new(&test_config());
+        state.insert_agent(sample_agent()).unwrap();
+        state
+            .record_agent_send(
+                "agent-1",
+                "main prompt".to_string(),
+                crate::state::AgentSendSource::QueuedTurn,
+            )
+            .unwrap();
+
+        // Main session claims conversationId on first PreInvocation.
+        let main_pre = adapter
+            .ingest_antigravity_notification(
+                &state,
+                AdapterNotification {
+                    adapter_id: Some("antigravity".to_string()),
+                    agent_id: Some("agent-1".to_string()),
+                    pane_id: None,
+                    event: "PreInvocation".to_string(),
+                    payload: json!({
+                        "conversationId": "parent-conv",
+                        "lastUserInput": "main prompt",
+                    }),
+                },
+            )
+            .unwrap();
+        let AdapterNotificationOutcome::Event(evt) = main_pre;
+        assert_eq!(evt.event_type, "agent.prompt_submitted");
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            Some("parent-conv")
+        );
+
+        // Record a queued follow-up send to verify subagent PreInvocation cannot clear it.
+        state
+            .record_agent_send(
+                "agent-1",
+                "steer prompt".to_string(),
+                crate::state::AgentSendSource::DirectSend,
+            )
+            .unwrap();
+
+        // Parent pauses waiting on a background subagent (`fullyIdle: false`).
+        let parent_wait = adapter
+            .ingest_antigravity_notification(
+                &state,
+                AdapterNotification {
+                    adapter_id: Some("antigravity".to_string()),
+                    agent_id: Some("agent-1".to_string()),
+                    pane_id: None,
+                    event: "Stop".to_string(),
+                    payload: json!({
+                        "conversationId": "parent-conv",
+                        "fullyIdle": false,
+                        "lastUserInput": "main prompt",
+                    }),
+                },
+            )
+            .unwrap();
+        let AdapterNotificationOutcome::Event(evt) = parent_wait;
+        assert_eq!(evt.event_type, "agent.running");
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().status,
+            AgentStatus::Running
+        );
+
+        // Subagent PreInvocation and Stop (`fullyIdle: true`) with a foreign conversationId
+        // must be classified as subagent activity and leave parent state untouched.
+        for (event, payload) in [
+            (
+                "PreInvocation",
+                json!({
+                    "conversationId": "subagent-conv",
+                    "lastUserInput": "",
+                }),
+            ),
+            (
+                "Stop",
+                json!({
+                    "conversationId": "subagent-conv",
+                    "fullyIdle": true,
+                    "lastUserInput": "",
+                }),
+            ),
+        ] {
+            let outcome = adapter
+                .ingest_antigravity_notification(
+                    &state,
+                    AdapterNotification {
+                        adapter_id: Some("antigravity".to_string()),
+                        agent_id: Some("agent-1".to_string()),
+                        pane_id: None,
+                        event: event.to_string(),
+                        payload,
+                    },
+                )
+                .unwrap();
+            let AdapterNotificationOutcome::Event(evt) = outcome;
+            assert_eq!(evt.event_type, "agent.subagent_activity");
+            let agent = state.agent("agent-1").unwrap().unwrap();
+            assert_eq!(agent.status, AgentStatus::Running);
+            assert_eq!(agent.session_id.as_deref(), Some("parent-conv"));
+            assert_eq!(state.outstanding_agent_sends("agent-1").unwrap().len(), 1);
+        }
+
+        // Parent's own final Stop (`fullyIdle: true`) still completes the pane.
+        let parent_done = adapter
+            .ingest_antigravity_notification(
+                &state,
+                AdapterNotification {
+                    adapter_id: Some("antigravity".to_string()),
+                    agent_id: Some("agent-1".to_string()),
+                    pane_id: None,
+                    event: "Stop".to_string(),
+                    payload: json!({
+                        "conversationId": "parent-conv",
+                        "fullyIdle": true,
+                        "lastUserInput": "main prompt",
+                    }),
+                },
+            )
+            .unwrap();
+        let AdapterNotificationOutcome::Event(evt) = parent_done;
+        assert_eq!(evt.event_type, "agent.done");
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(agent.status, AgentStatus::Done);
+        assert_eq!(agent.session_id.as_deref(), Some("parent-conv"));
+    }
+
+    #[test]
+    fn empty_user_input_subagent_hook_does_not_claim_unbound_session() {
+        let state = AppState::new(test_config());
+        let adapter = AntigravityAdapter::new(&test_config());
+        state.insert_agent(sample_agent()).unwrap();
+
+        // A stray subagent hook arriving before the parent binds must not claim session_id.
+        adapter
+            .ingest_antigravity_notification(
+                &state,
+                AdapterNotification {
+                    adapter_id: Some("antigravity".to_string()),
+                    agent_id: Some("agent-1".to_string()),
+                    pane_id: None,
+                    event: "PreInvocation".to_string(),
+                    payload: json!({
+                        "conversationId": "subagent-conv",
+                        "lastUserInput": "",
+                    }),
+                },
+            )
+            .unwrap();
+        assert_eq!(state.agent("agent-1").unwrap().unwrap().session_id, None);
+
+        // Once the real parent fires with a user prompt, it claims and pins the session.
+        adapter
+            .ingest_antigravity_notification(
+                &state,
+                AdapterNotification {
+                    adapter_id: Some("antigravity".to_string()),
+                    agent_id: Some("agent-1".to_string()),
+                    pane_id: None,
+                    event: "PreInvocation".to_string(),
+                    payload: json!({
+                        "conversationId": "parent-conv",
+                        "lastUserInput": "real prompt",
+                    }),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
+            Some("parent-conv")
         );
     }
 }

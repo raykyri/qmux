@@ -3630,4 +3630,43 @@ mod tests {
             assert_eq!(agent.session_id.as_deref(), Some("child-session"));
         }
     }
+
+    #[test]
+    fn replay08_antigravity_subagent_stop_cannot_complete_pinned_parent() {
+        let state = replay08_fixture("antigravity", AgentStatus::Running);
+        state
+            .mutate_agent("agent-1", |a| a.session_id = Some("parent-conv".into()))
+            .unwrap();
+        replay08_deliver(
+            &state,
+            "subagent-stop",
+            "antigravity",
+            "Stop",
+            json!({
+                "conversationId": "subagent-conv",
+                "fullyIdle": true,
+                "lastUserInput": ""
+            }),
+            true,
+        );
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(agent.status, AgentStatus::Running);
+        assert_eq!(agent.session_id.as_deref(), Some("parent-conv"));
+
+        replay08_deliver(
+            &state,
+            "parent-stop",
+            "antigravity",
+            "Stop",
+            json!({
+                "conversationId": "parent-conv",
+                "fullyIdle": true,
+                "lastUserInput": "work"
+            }),
+            true,
+        );
+        let agent = state.agent("agent-1").unwrap().unwrap();
+        assert_eq!(agent.status, AgentStatus::Done);
+        assert_eq!(agent.session_id.as_deref(), Some("parent-conv"));
+    }
 }

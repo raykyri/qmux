@@ -15,7 +15,26 @@ pub enum HookObservation {
 }
 
 pub fn hook_payload_is_subagent(payload: &Value) -> bool {
-    payload.get("agent_id").is_some() || payload.get("agentId").is_some()
+    payload.get("agent_id").is_some()
+        || payload.get("agentId").is_some()
+        || [
+            "subagent_id",
+            "subagentId",
+            "parent_conversation_id",
+            "parentConversationId",
+        ]
+        .into_iter()
+        .any(|key| {
+            payload
+                .get(key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty())
+        })
+        || payload
+            .get("isSubagent")
+            .or_else(|| payload.get("is_subagent"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
 }
 
 pub fn hook_observation(event: &str, payload: &Value) -> Option<HookObservation> {
@@ -107,5 +126,30 @@ mod tests {
             Some(HookObservation::AwaitingInput)
         );
         assert_eq!(hook_observation("SubagentStop", &Value::Null), None);
+    }
+
+    #[test]
+    fn subagent_payload_detector_recognizes_explicit_markers() {
+        for payload in [
+            json!({"agent_id": "child"}),
+            json!({"agentId": "child"}),
+            json!({"subagent_id": "child"}),
+            json!({"subagentId": "child"}),
+            json!({"parent_conversation_id": "parent"}),
+            json!({"parentConversationId": "parent"}),
+            json!({"isSubagent": true}),
+            json!({"is_subagent": true}),
+        ] {
+            assert!(hook_payload_is_subagent(&payload), "expected subagent: {payload}");
+        }
+        for payload in [
+            Value::Null,
+            json!({}),
+            json!({"conversationId": "main"}),
+            json!({"parentConversationId": ""}),
+            json!({"isSubagent": false}),
+        ] {
+            assert!(!hook_payload_is_subagent(&payload), "unexpected subagent: {payload}");
+        }
     }
 }

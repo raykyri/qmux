@@ -35,6 +35,89 @@ struct Recovery {
     confirmed: bool,
 }
 
+#[derive(Serialize, Deserialize)]
+struct PinnedSession {
+    #[serde(rename = "agentId")]
+    agent_id: Option<String>,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    updated: u64,
+}
+
+fn payload_has_empty_user_input(notification: &Value) -> bool {
+    notification
+        .get("payload")
+        .and_then(|payload| payload.get("lastUserInput"))
+        .and_then(Value::as_str)
+        .is_some_and(|input| input.trim().is_empty())
+}
+
+fn load_or_pin_antigravity_session(
+    queue: &Path,
+    notification: &Value,
+) -> Result<Option<String>, String> {
+    if notification.get("adapterId").and_then(Value::as_str) != Some("antigravity") {
+        return Ok(None);
+    }
+    let agent_id = notification
+        .get("agentId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if let Ok(bytes) = fs::read(queue.join("pinned_session.json"))
+        && let Ok(saved) = serde_json::from_slice::<PinnedSession>(&bytes)
+        && saved.agent_id == agent_id
+        && now().saturating_sub(saved.updated) < TTL
+    {
+        return Ok(Some(saved.session_id));
+    }
+    let payload = notification.get("payload").unwrap_or(&Value::Null);
+    if qmux_proto::hook_payload_is_subagent(payload) {
+        return Ok(None);
+    }
+    let root_from_env = std::env::var("QMUX_ROOT_SESSION_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let candidate = root_from_env.or_else(|| {
+        let can_bind = !payload_has_empty_user_input(notification)
+            && matches!(
+                notification.get("event").and_then(Value::as_str),
+                Some("PreInvocation" | "Stop")
+            );
+        can_bind
+            .then(|| session_identity(notification).map(str::to_string))
+            .flatten()
+    });
+    let Some(session_id) = candidate else {
+        return Ok(None);
+    };
+    let pinned = PinnedSession {
+        agent_id,
+        session_id: session_id.clone(),
+        updated: now(),
+    };
+    atomic_write(
+        queue,
+        "pinned_session.json",
+        &serde_json::to_vec(&pinned).map_err(|e| e.to_string())?,
+    )?;
+    Ok(Some(session_id))
+}
+
+fn load_pinned_antigravity_session(queue: &Path, notification: &Value) -> Option<String> {
+    if notification.get("adapterId").and_then(Value::as_str) != Some("antigravity") {
+        return None;
+    }
+    let agent_id = notification
+        .get("agentId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let bytes = fs::read(queue.join("pinned_session.json")).ok()?;
+    let saved = serde_json::from_slice::<PinnedSession>(&bytes).ok()?;
+    (saved.agent_id == agent_id && now().saturating_sub(saved.updated) < TTL)
+        .then_some(saved.session_id)
+}
+
 fn save_recovery(queue: &Path, recovery: &Recovery) -> Result<(), String> {
     atomic_write(
         queue,
@@ -201,6 +284,12 @@ fn collect_expired_queue(queue: &Path) -> Result<(), String> {
         let name = path.file_name().unwrap().to_string_lossy();
         if (name.starts_with('.') && name.ends_with(".tmp"))
             || (pending == 0 && matches!(name.as_ref(), "reconciliation.json" | "recovering"))
+            || (pending == 0
+                && name.as_ref() == "pinned_session.json"
+                && fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<PinnedSession>(&bytes).ok())
+                    .is_none_or(|saved| now().saturating_sub(saved.updated) >= TTL))
         {
             fs::remove_file(path).map_err(|e| e.to_string())?;
             changed = true;
@@ -325,6 +414,7 @@ fn enqueue_locked(queue: &Path, notification: Value) -> Result<(), String> {
     .ok_or("hook outbox sequence exhausted")?;
     let name = format!("{counter:020}.event");
     let id = format!("{}-{counter}", queue.file_name().unwrap().to_string_lossy());
+    let _ = load_or_pin_antigravity_session(queue, &notification);
     let event = Event {
         id,
         created: now(),
@@ -432,7 +522,13 @@ pub(super) fn run(queue: PathBuf) -> Result<(), String> {
         let previous = fs::read(queue.join("reconciliation.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
-        let snapshot = reconcile_snapshot(previous.as_ref(), &event.notification);
+        let pinned_session = load_pinned_antigravity_session(&queue, &event.notification)
+            .or_else(|| load_or_pin_antigravity_session(&queue, &event.notification).ok().flatten());
+        let snapshot = reconcile_snapshot_with_pin(
+            previous.as_ref(),
+            &event.notification,
+            pinned_session.as_deref(),
+        );
         event.attempted = true;
         atomic_write(
             &queue,
@@ -525,7 +621,42 @@ fn session_identity(notification: &Value) -> Option<&str> {
     .find_map(|key| payload.get(key).and_then(Value::as_str))
 }
 
+fn notification_is_subagent(
+    notification: &Value,
+    pinned_session: Option<&str>,
+    previous: Option<&Value>,
+) -> bool {
+    let payload = notification.get("payload").unwrap_or(&Value::Null);
+    if qmux_proto::hook_payload_is_subagent(payload) {
+        return true;
+    }
+    if notification.get("adapterId").and_then(Value::as_str) != Some("antigravity") {
+        return false;
+    }
+    let Some(reported) = session_identity(notification) else {
+        return false;
+    };
+    if let Some(main) = pinned_session {
+        return main != reported;
+    }
+    previous.is_some_and(|prev| {
+        prev.get("agentId") == notification.get("agentId")
+            && prev.get("adapterId") == notification.get("adapterId")
+            && session_identity(prev).is_some_and(|main| main != reported)
+    })
+}
+
+#[cfg(test)]
 fn reconcile_snapshot(previous: Option<&Value>, notification: &Value) -> Value {
+    reconcile_snapshot_with_pin(previous, notification, None)
+}
+
+fn reconcile_snapshot_with_pin(
+    previous: Option<&Value>,
+    notification: &Value,
+    pinned_session: Option<&str>,
+) -> Value {
+    let is_subagent = notification_is_subagent(notification, pinned_session, previous);
     let previous = previous.filter(|previous| {
         previous.get("agentId") == notification.get("agentId")
             && previous.get("adapterId") == notification.get("adapterId")
@@ -533,22 +664,20 @@ fn reconcile_snapshot(previous: Option<&Value>, notification: &Value) -> Value {
                 notification.get("event").and_then(Value::as_str),
                 Some("SessionStart" | "sessionStart")
             )
-            && !(!qmux_proto::hook_payload_is_subagent(
-                notification.get("payload").unwrap_or(&Value::Null),
-            ) && session_identity(previous).is_some()
+            && !(!is_subagent
+                && session_identity(previous).is_some()
                 && session_identity(notification).is_some()
                 && session_identity(previous) != session_identity(notification))
     });
-    let lifecycle =
-        !qmux_proto::hook_payload_is_subagent(notification.get("payload").unwrap_or(&Value::Null))
-            && qmux_proto::hook_observation(
-                notification
-                    .get("event")
-                    .and_then(Value::as_str)
-                    .unwrap_or(""),
-                notification.get("payload").unwrap_or(&Value::Null),
-            )
-            .is_some();
+    let lifecycle = !is_subagent
+        && qmux_proto::hook_observation(
+            notification
+                .get("event")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+            notification.get("payload").unwrap_or(&Value::Null),
+        )
+        .is_some();
     let mut snapshot = if lifecycle {
         notification.clone()
     } else {
@@ -556,8 +685,13 @@ fn reconcile_snapshot(previous: Option<&Value>, notification: &Value) -> Value {
     };
     // Session and transcript hints are independent of lifecycle state. Carry
     // hints across non-lifecycle hooks, but never across agent generations.
-    for source in [previous, Some(notification)].into_iter().flatten() {
-        if qmux_proto::hook_payload_is_subagent(source.get("payload").unwrap_or(&Value::Null)) {
+    for (index, source) in [previous, Some(notification)].into_iter().flatten().enumerate() {
+        let source_is_subagent = if index == 0 && previous.is_some() {
+            notification_is_subagent(source, pinned_session, None)
+        } else {
+            is_subagent
+        };
+        if source_is_subagent {
             continue;
         }
         for key in [
@@ -1072,5 +1206,91 @@ mod tests {
         }
     }
 
+    #[test]
+    fn antigravity_subagent_conversation_keeps_parent_snapshot_and_pin() {
+        let dir = temp();
+        let parent_pre = json!({
+            "agentId": "a",
+            "adapterId": "antigravity",
+            "event": "PreInvocation",
+            "payload": {
+                "conversationId": "parent-conv",
+                "transcriptPath": "/brain/parent-conv/transcript_full.jsonl",
+                "lastUserInput": "main prompt"
+            }
+        });
+        let parent_wait = json!({
+            "agentId": "a",
+            "adapterId": "antigravity",
+            "event": "Stop",
+            "payload": {
+                "conversationId": "parent-conv",
+                "fullyIdle": false,
+                "lastUserInput": "main prompt"
+            }
+        });
+        let subagent_stop = json!({
+            "agentId": "a",
+            "adapterId": "antigravity",
+            "event": "Stop",
+            "payload": {
+                "conversationId": "subagent-conv",
+                "transcriptPath": "/brain/subagent-conv/transcript_full.jsonl",
+                "fullyIdle": true,
+                "lastUserInput": ""
+            }
+        });
+        let parent_done = json!({
+            "agentId": "a",
+            "adapterId": "antigravity",
+            "event": "Stop",
+            "payload": {
+                "conversationId": "parent-conv",
+                "fullyIdle": true,
+                "lastUserInput": "main prompt"
+            }
+        });
 
+        // Empty lastUserInput subagent does not claim the pin.
+        assert_eq!(load_or_pin_antigravity_session(&dir, &subagent_stop).unwrap(), None);
+        // Parent claims the pin; subagent cannot overwrite it.
+        assert_eq!(
+            load_or_pin_antigravity_session(&dir, &parent_pre).unwrap().as_deref(),
+            Some("parent-conv")
+        );
+        assert_eq!(
+            load_or_pin_antigravity_session(&dir, &subagent_stop).unwrap().as_deref(),
+            Some("parent-conv")
+        );
+
+        // Subagent Stop cannot replace parent waiting snapshot or clobber metadata.
+        let waiting = reconcile_snapshot_with_pin(Some(&parent_pre), &parent_wait, Some("parent-conv"));
+        let after_subagent = reconcile_snapshot_with_pin(Some(&waiting), &subagent_stop, Some("parent-conv"));
+        assert_eq!(after_subagent, waiting);
+
+        // Even if outage began with no previous snapshot and subagent Stop arrived first,
+        // a later parent Stop cleanly supersedes it without carrying subagent metadata.
+        let cold_subagent = reconcile_snapshot_with_pin(None, &subagent_stop, Some("parent-conv"));
+        let recovered_parent = reconcile_snapshot_with_pin(Some(&cold_subagent), &parent_done, Some("parent-conv"));
+        assert_eq!(recovered_parent["event"], "Stop");
+        assert_eq!(recovered_parent["payload"]["conversationId"], "parent-conv");
+        assert_eq!(recovered_parent["payload"]["fullyIdle"], true);
+        assert!(recovered_parent["payload"].get("transcriptPath").is_none());
+
+        // A new agent in the same pane resets the pinned session.
+        let next_agent = json!({
+            "agentId": "b",
+            "adapterId": "antigravity",
+            "event": "PreInvocation",
+            "payload": {
+                "conversationId": "next-parent",
+                "lastUserInput": "next prompt"
+            }
+        });
+        assert_eq!(
+            load_or_pin_antigravity_session(&dir, &next_agent).unwrap().as_deref(),
+            Some("next-parent")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

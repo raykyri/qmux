@@ -5258,8 +5258,14 @@ impl AppState {
             let Some(agent) = model.agents.get(agent_id) else {
                 return Ok(None);
             };
+            let pinned_session_mismatch = matches!(agent.adapter.as_str(), "antigravity" | "muse")
+                && matches!(
+                    (agent.session_id.as_deref(), session),
+                    (Some(main), Some(reported)) if main != reported
+                );
             if agent.pane_id.as_deref() != Some(pane_id)
                 || session.is_some_and(|session| agent.fork_point.as_deref() == Some(session))
+                || pinned_session_mismatch
             {
                 return Ok(None);
             }

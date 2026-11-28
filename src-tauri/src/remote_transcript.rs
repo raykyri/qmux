@@ -276,7 +276,7 @@ pub fn preview_source(
 /// Called only after adapter ingestion has accepted the session identity. Ignore
 /// subagent and stale-session metadata rather than following a different session.
 pub fn observe(state: &AppState, pane: &str, payload: &Value) {
-    if payload.get("agent_id").is_some() || payload.get("agentId").is_some() {
+    if qmux_proto::hook_payload_is_subagent(payload) {
         return;
     }
     let result = (|| -> Result<(), String> {
@@ -300,6 +300,8 @@ pub fn observe(state: &AppState, pane: &str, payload: &Value) {
         let reported = payload
             .get("session_id")
             .or_else(|| payload.get("sessionId"))
+            .or_else(|| payload.get("conversation_id"))
+            .or_else(|| payload.get("conversationId"))
             .or_else(|| payload.get("resource_id"))
             .or_else(|| payload.get("resourceId"))
             .and_then(Value::as_str);
@@ -922,7 +924,9 @@ mod tests {
             .unwrap();
         for payload in [
             json!({"session_id":"stale", "transcript_path":"/bad"}),
+            json!({"conversationId":"subagent-conv", "transcriptPath":"/bad"}),
             json!({"agent_id":"subagent", "session_id":"session", "transcript_path":"/bad"}),
+            json!({"parentConversationId":"session", "conversationId":"session", "transcriptPath":"/bad"}),
         ] {
             observe(&state, "p", &payload);
             assert_eq!(READERS.lock().unwrap().get(&key), Some(&binding));
