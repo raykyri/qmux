@@ -855,15 +855,33 @@ fn valid_antigravity_session_id(session_id: &str) -> Option<&str> {
     .then_some(session_id)
 }
 
-pub(crate) fn antigravity_home() -> Result<PathBuf, String> {
-    env::var_os("ANTIGRAVITY_APP_DATA_DIR")
-        .or_else(|| env::var_os("ANTIGRAVITY_HOME"))
+fn antigravity_home_from(
+    app_data_dir: Option<std::ffi::OsString>,
+    antigravity_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    app_data_dir
+        .filter(|value| !value.is_empty())
+        .or_else(|| antigravity_home.filter(|value| !value.is_empty()))
         .map(PathBuf::from)
         .or_else(|| {
-            env::var_os("HOME")
+            home.filter(|value| !value.is_empty())
                 .map(|home| PathBuf::from(home).join(".gemini").join("antigravity-cli"))
         })
         .ok_or_else(|| "HOME is not set; cannot resolve Antigravity home".to_string())
+}
+
+pub(crate) fn antigravity_home() -> Result<PathBuf, String> {
+    antigravity_home_from(
+        env::var_os("ANTIGRAVITY_APP_DATA_DIR"),
+        env::var_os("ANTIGRAVITY_HOME"),
+        env::var_os("HOME"),
+    )
+}
+
+pub(crate) fn antigravity_brain_dir() -> Option<PathBuf> {
+    let home = antigravity_home().ok()?;
+    home.is_absolute().then(|| home.join("brain"))
 }
 
 pub(crate) fn antigravity_config_dir() -> Result<PathBuf, String> {
@@ -1880,5 +1898,38 @@ mod tests {
             state.agent("agent-1").unwrap().unwrap().session_id.as_deref(),
             Some("parent-conv")
         );
+    }
+
+    #[test]
+    fn antigravity_home_resolution_prefers_non_empty_overrides() {
+        use std::ffi::OsString;
+        assert_eq!(
+            antigravity_home_from(
+                Some(OsString::from("/custom/app-data")),
+                Some(OsString::from("/custom/home")),
+                Some(OsString::from("/Users/test")),
+            )
+            .unwrap(),
+            PathBuf::from("/custom/app-data")
+        );
+        assert_eq!(
+            antigravity_home_from(
+                Some(OsString::from("")),
+                Some(OsString::from("/custom/home")),
+                Some(OsString::from("/Users/test")),
+            )
+            .unwrap(),
+            PathBuf::from("/custom/home")
+        );
+        assert_eq!(
+            antigravity_home_from(
+                None,
+                Some(OsString::from("")),
+                Some(OsString::from("/Users/test")),
+            )
+            .unwrap(),
+            PathBuf::from("/Users/test/.gemini/antigravity-cli")
+        );
+        assert!(antigravity_home_from(None, None, None).is_err());
     }
 }

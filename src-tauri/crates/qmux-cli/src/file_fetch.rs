@@ -56,12 +56,37 @@ fn open_canonical(path: &Path) -> Result<File, String> {
     }
     Ok(file)
 }
+fn antigravity_brain_dir_from(
+    app_data_dir: Option<std::ffi::OsString>,
+    antigravity_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    let base = app_data_dir
+        .filter(|value| !value.is_empty())
+        .or_else(|| antigravity_home.filter(|value| !value.is_empty()))
+        .map(PathBuf::from)
+        .or_else(|| {
+            home.filter(|value| !value.is_empty())
+                .map(|dir| PathBuf::from(dir).join(".gemini").join("antigravity-cli"))
+        })?;
+    base.is_absolute().then(|| base.join("brain"))
+}
+
+fn antigravity_brain_dir() -> Option<PathBuf> {
+    antigravity_brain_dir_from(
+        std::env::var_os("ANTIGRAVITY_APP_DATA_DIR"),
+        std::env::var_os("ANTIGRAVITY_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
 fn prepare(request: &Request) -> Result<(File, Metadata), String> {
     if request.path.len() > 8192 || !Path::new(&request.cwd).is_absolute() { return Err("Invalid remote file context".into()); }
     let requested = Path::new(&request.cwd).join(&request.path);
     let canonical = fs::canonicalize(&requested).map_err(|e| format!("Remote file unavailable: {e}"))?;
     let roots = request.roots.iter().map(PathBuf::from)
-        .chain([PathBuf::from("/tmp"), std::env::temp_dir()]);
+        .chain([PathBuf::from("/tmp"), std::env::temp_dir()])
+        .chain(antigravity_brain_dir());
     if !roots.filter_map(|root| fs::canonicalize(root).ok()).any(|root| root != Path::new("/") && canonical.starts_with(root)) {
         return Err("Remote file is outside this transcript's workspace and temporary directories".into());
     }
@@ -147,5 +172,30 @@ mod tests {
         assert!(prepare(&req).unwrap_err().contains("outside"));
         req.path = ".".into(); assert!(prepare(&req).unwrap_err().contains("regular file"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn antigravity_brain_dir_resolution_ignores_empty_and_relative_values() {
+        use std::ffi::OsString;
+        assert_eq!(
+            antigravity_brain_dir_from(
+                Some(OsString::from("/opt/antigravity")),
+                None,
+                Some(OsString::from("/home/u")),
+            ),
+            Some(PathBuf::from("/opt/antigravity/brain"))
+        );
+        assert_eq!(
+            antigravity_brain_dir_from(
+                Some(OsString::from("")),
+                Some(OsString::from("")),
+                Some(OsString::from("/home/u")),
+            ),
+            Some(PathBuf::from("/home/u/.gemini/antigravity-cli/brain"))
+        );
+        assert_eq!(
+            antigravity_brain_dir_from(Some(OsString::from("relative/path")), None, None),
+            None
+        );
     }
 }

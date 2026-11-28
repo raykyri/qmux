@@ -7982,11 +7982,17 @@ fn local_file_preview_roots_include_temporary_artifact_directories() {
     assert!(roots.contains(&std::env::temp_dir()));
     assert!(roots.contains(&std::path::PathBuf::from("/tmp")));
     assert!(roots.contains(&std::path::PathBuf::from("/private/tmp")));
+    if let Some(brain_dir) = crate::adapters::antigravity::antigravity_brain_dir() {
+        assert!(roots.contains(&brain_dir));
+    }
 
     let search_roots = state.pane_file_search_roots("pane-1");
     assert!(search_roots.contains(&std::path::PathBuf::from("/tmp/work/agent-1")));
     assert!(!search_roots.contains(&std::path::PathBuf::from("/tmp")));
     assert!(!search_roots.contains(&std::path::PathBuf::from("/private/tmp")));
+    if let Some(brain_dir) = crate::adapters::antigravity::antigravity_brain_dir() {
+        assert!(!search_roots.contains(&brain_dir));
+    }
 }
 
 #[test]

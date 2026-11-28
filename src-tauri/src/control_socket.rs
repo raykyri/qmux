@@ -1623,7 +1623,15 @@ pub(crate) fn resolve_browser_target(
             &roots,
             &requested,
         )
-        .map_err(|_| format!("'{target}' was not found"))?;
+        .map_err(|_| {
+            if std::fs::canonicalize(&requested).is_ok() {
+                format!(
+                    "'{target}' is outside this pane's preview folders; use Reveal or Open with default app"
+                )
+            } else {
+                format!("'{target}' was not found")
+            }
+        })?;
         (path, true)
     };
     let port = state
@@ -2008,6 +2016,103 @@ mod tests {
             err,
             "'/Users/raymond/Code/multitool/dev/menubar-design-variants.html' was not found"
         );
+    }
+
+    #[test]
+    fn browser_target_distinguishes_outside_preview_folders_from_missing_files() {
+        let state = test_state();
+        let pane_dir = state.config().workspace_root.join("project");
+        fs::create_dir_all(&pane_dir).unwrap();
+        state
+            .update_group(GroupInfo {
+                id: "group-local".to_string(),
+                name: "Local".to_string(),
+                name_override: None,
+                dir: pane_dir.to_string_lossy().into_owned(),
+                managed_dir: pane_dir.to_string_lossy().into_owned(),
+                base_repo: None,
+                base_ref: None,
+                parent_id: None,
+                created_at: 0,
+                collapsed: false,
+                scope: WorkspaceScope::Terminal,
+                imported_research_archive_id: None,
+                remote: None,
+                agents: Vec::new(),
+            })
+            .unwrap();
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        drop(pair.slave);
+        state
+            .insert_pane(PaneRuntime {
+                info: PaneInfo {
+                    id: "pane-local".to_string(),
+                    title: "Local shell".to_string(),
+                    last_osc_title: None,
+                    kind: PaneKind::Shell,
+                    agent_id: None,
+                    group_id: "group-local".to_string(),
+                    cwd: pane_dir.to_string_lossy().into_owned(),
+                    active_workspace: None,
+                    remote_session: None,
+                    remote_connection: None,
+                    remote_client: None,
+                    cols: 80,
+                    rows: 24,
+                    status: PaneStatus::Running,
+                    last_active_at: 0,
+                    recovered: false,
+                    depth: 0,
+                },
+                backend: PaneBackend::HostPty(HostPtyBackend {
+                    child: Arc::new(Mutex::new(Box::new(FakeChild))),
+                    master: Arc::new(Mutex::new(pair.master)),
+                    writer: Arc::new(Mutex::new(Box::new(io::sink()))),
+                    backlog: Default::default(),
+                    native_surface: false,
+                }),
+                cwd_observation_seq: 0,
+            })
+            .unwrap();
+
+        let existing_outside = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let existing_err = resolve_browser_target(
+            &state,
+            "pane-local",
+            existing_outside.to_str().unwrap(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            existing_err,
+            format!(
+                "'{}' is outside this pane's preview folders; use Reveal or Open with default app",
+                existing_outside.display()
+            )
+        );
+
+        let missing_outside =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("definitely-missing-qmux-artifact.md");
+        let missing_err = resolve_browser_target(
+            &state,
+            "pane-local",
+            missing_outside.to_str().unwrap(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            missing_err,
+            format!("'{}' was not found", missing_outside.display())
+        );
+
+        let _ = fs::remove_dir_all(&state.config().workspace_root);
     }
 
     #[test]

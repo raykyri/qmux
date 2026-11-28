@@ -84,12 +84,12 @@ impl AppState {
             &node.worktree_dir
         });
         let canonical = crate::canonical_os_action_path(path, Some(cwd))?;
+        let mut preview_roots = vec![cwd.to_path_buf(), std::path::PathBuf::from(&workspace.dir)];
+        if let Some(brain_dir) = crate::adapters::antigravity::antigravity_brain_dir() {
+            preview_roots.push(brain_dir);
+        }
         if preview
-            && crate::file_server::resolve_under_roots(
-                &canonical,
-                &[cwd.to_path_buf(), std::path::PathBuf::from(&workspace.dir)],
-            )
-            .is_none()
+            && crate::file_server::resolve_under_roots(&canonical, &preview_roots).is_none()
         {
             return Err("file is outside this research node's preview folders; use Reveal or Open with default app".to_string());
         }
@@ -224,14 +224,16 @@ impl AppState {
 
     /// Roots a preview from a pane may read. This deliberately excludes other
     /// qmux groups and any cwd at or above the private workspace root. Local
-    /// temporary directories are explicit shared roots because agents commonly
-    /// write disposable HTML artifacts there rather than beneath their cwd.
+    /// temporary directories and Antigravity's brain artifact directory are
+    /// explicit shared roots because agents write disposable and conversation
+    /// artifacts there rather than beneath their cwd.
     pub fn pane_file_roots(&self, pane_id: &str) -> Vec<std::path::PathBuf> {
         self.pane_file_roots_inner(pane_id, true)
     }
 
-    /// Project roots for a filename search. Shared temporary directories are
-    /// valid for explicit previews, but far too broad for a basename lookup.
+    /// Project roots for a filename search. Shared temporary and agent artifact
+    /// directories are valid for explicit previews, but far too broad for a
+    /// basename lookup.
     pub fn pane_file_search_roots(&self, pane_id: &str) -> Vec<std::path::PathBuf> {
         self.pane_file_roots_inner(pane_id, false)
     }
@@ -284,14 +286,20 @@ impl AppState {
             // Include both conventional macOS spellings even though `/tmp`
             // normally canonicalizes to `/private/tmp`; `temp_dir` also covers
             // a host whose configured temporary directory lives elsewhere.
+            // Also include Antigravity's brain directory so conversation and
+            // subagent artifact links preview cleanly across panes.
             if include_temporary {
-                for temp_root in [
-                    std::env::temp_dir(),
-                    std::path::PathBuf::from("/tmp"),
-                    std::path::PathBuf::from("/private/tmp"),
-                ] {
-                    if !roots.contains(&temp_root) {
-                        roots.push(temp_root);
+                for extra_root in [
+                    Some(std::env::temp_dir()),
+                    Some(std::path::PathBuf::from("/tmp")),
+                    Some(std::path::PathBuf::from("/private/tmp")),
+                    crate::adapters::antigravity::antigravity_brain_dir(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    if !roots.contains(&extra_root) {
+                        roots.push(extra_root);
                     }
                 }
             }
